@@ -236,6 +236,14 @@ summary::-webkit-details-marker{display:none}
 /* Required connection field left empty — set while the setup prompt is up. */
 .ta.invalid{border-color:var(--danger);background:rgba(243,139,168,.08)}
 .ta.invalid:focus{border-color:var(--danger)}
+
+/* Two-step verification prompt — highlighted, since it blocks everything
+   else until it is answered. */
+.otp-field{
+  border:1px solid var(--warn);border-radius:6px;
+  background:rgba(250,179,135,.08);padding:8px;
+}
+#otpCode{font-variant-numeric:tabular-nums;letter-spacing:.15em}
 select.ta{cursor:pointer}
 textarea.ta{resize:vertical}
 

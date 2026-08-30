@@ -72,6 +72,9 @@ const btnDeleteYes   = $('btnDeleteAllYes');
 const btnDeleteNo    = $('btnDeleteAllNo');
 const totalSpeedEl   = $('totalSpeed');
 const extractHintEl  = document.querySelector('[data-i18n="extractArchivesHint"]');
+const otpField       = $('otpField');
+const otpCodeEl      = $('otpCode');
+const btnOtpSubmit   = $('btnOtpSubmit');
 const statusDot      = $('statusDot');
 const statusText     = $('statusText');
 const taskListEl     = $('taskList');
@@ -218,6 +221,15 @@ function saveFilterState() {
 }
 
 async function saveSettings() {
+  // A device token belongs to one NAS and one account — if either changes,
+  // the background has to throw it away.
+  const credentialsChanged =
+    settings.host     !== hostEl.value.trim() ||
+    settings.username !== usernameEl.value.trim() ||
+    settings.password !== passwordEl.value ||
+    settings.protocol !== protocolEl.value ||
+    settings.port     !== (parseInt(portEl.value, 10) || 5001);
+
   settings = {
     ...settings,
     protocol:           protocolEl.value,
@@ -236,7 +248,7 @@ async function saveSettings() {
     tasksPerPage:       parseInt(perPageEl.value, 10) || 50,
   };
   await browser.storage.local.set(settings);
-  await browser.runtime.sendMessage({ action: 'settingsUpdated' });
+  await browser.runtime.sendMessage({ action: 'settingsUpdated', credentialsChanged });
   currentPage = 1;
   syncArchiveField();
   renderTasks();
@@ -488,26 +500,79 @@ function errText(error, fallbackKey) {
   return msg(fallbackKey);
 }
 
-async function testConnection() {
+/**
+ * Show or hide the two-step verification prompt. DSM only asks once per
+ * device: the login that carries a code also asks for a device token, which
+ * the background stores and reuses.
+ */
+function showOtpPrompt(show, wrong = false) {
+  otpField.hidden = !show;
+  if (!show) { otpCodeEl.value = ''; return; }
+
+  activateTab('settings');
+  document.getElementById('connectionSection').open = true;
+  setStatus('error', wrong ? msg('otpWrong') : msg('otpRequired'));
+  otpCodeEl.focus();
+  otpCodeEl.select();
+}
+
+/**
+ * Run a connection attempt, optionally carrying a freshly typed code.
+ * Returns true once connected.
+ */
+async function attemptConnect(otpCode) {
   setStatus('checking', msg('connecting'));
-  btnTest.disabled = true;
   try {
-    const result = await browser.runtime.sendMessage({ action: 'testConnection' });
+    const result = await browser.runtime.sendMessage({ action: 'testConnection', otpCode });
+
     if (result.success) {
+      showOtpPrompt(false);
       const v = result.info?.authVersion ?? '?';
       setStatus('connected', msg('connectedWithVersion', String(v)));
+      refreshTasks();
+      syncExtractHint();
       startAutoRefresh();
-    } else {
-      setStatus('error', errText(result.error, 'connectionFailed'));
-      stopAutoRefresh();
+      return true;
     }
+    if (result.otpRequired || result.otpWrong) {
+      showOtpPrompt(true, result.otpWrong);
+      stopAutoRefresh();
+      return false;
+    }
+    setStatus('error', errText(result.error, 'connectionFailed'));
+    stopAutoRefresh();
+    return false;
   } catch (err) {
     setStatus('error', err.message || msg('extensionError'));
     stopAutoRefresh();
+    return false;
+  }
+}
+
+async function testConnection() {
+  btnTest.disabled = true;
+  try {
+    await attemptConnect();
   } finally {
     btnTest.disabled = false;
   }
 }
+
+async function submitOtp() {
+  const code = otpCodeEl.value.trim();
+  if (!code) { otpCodeEl.focus(); return; }
+  btnOtpSubmit.disabled = true;
+  try {
+    await attemptConnect(code);
+  } finally {
+    btnOtpSubmit.disabled = false;
+  }
+}
+
+btnOtpSubmit.addEventListener('click', submitOtp);
+otpCodeEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitOtp(); }
+});
 
 // ---------------------------------------------------------------------------
 // Task list
@@ -1206,23 +1271,16 @@ browser.runtime.connect({ name: 'popup' });
       // Background not ready after retries — fall through to full login
     }
 
-    setStatus('checking', msg('connecting'));
+    // Wake the background first, then let attemptConnect handle the result —
+    // including a two-step verification prompt if DSM asks for one.
     try {
-      const result = await sendWithRetry('testConnection');
-      if (result.success) {
-        const v = result.info?.authVersion ?? '?';
-        setStatus('connected', msg('connectedWithVersion', String(v)));
-        refreshTasks();
-        syncExtractHint();
-        startAutoRefresh();
-      } else {
-        setStatus('error', errText(result.error, 'notConnected'));
-        showMessage(msg('noTasks'));
-      }
+      await sendWithRetry('getStatus');
     } catch {
       setStatus('error', msg('backgroundUnavailable'));
       showMessage(msg('noTasks'));
+      return;
     }
+    if (!await attemptConnect()) showMessage(msg('noTasks'));
   } finally {
     overlay.style.display = 'none';
   }

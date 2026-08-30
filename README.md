@@ -60,6 +60,8 @@ watch and manage the resulting tasks without opening DSM.
 - **Adaptive polling.** After you add something, a background check follows it
   to completion once a minute and then stops by itself. Seeding, paused and
   finished tasks do not keep it running.
+- **Two-factor authentication** — enter the code once; the browser is then
+  registered as a trusted device, so background operations never prompt again.
 - **Six languages** — English, German, Spanish, French, Brazilian Portuguese,
   Russian; follows the browser language.
 
@@ -93,10 +95,21 @@ sub-folders as well, not only to the top-level shared folder.
 Download Station access and write permission on exactly one folder — no admin
 rights, no other shares.
 
-**Two-factor authentication is not supported.** The Web API's 2FA flow needs an
-interactive code prompt this extension does not implement, so an account with
-2FA enabled cannot log in (error 403 from `SYNO.API.Auth`). Use an account
-without 2FA.
+### Two-factor authentication
+
+Supported. When DSM asks for a code, the popup shows a field for it. That
+login also registers this browser as a trusted device, and the returned device
+token is reused from then on — so background work (context menu, polling) keeps
+working without ever prompting again.
+
+Changing the host, account or password discards the token; the next login will
+ask for a code once more.
+
+**Trade-off:** a stored device token is, by design, a standing bypass of the
+second factor for this extension. Anyone who can read the Firefox profile can
+use it. That is the same exposure as the stored password, but worth knowing.
+DSM lists the device under *Control Panel → Security → Account*, where the
+trust can be revoked at any time.
 
 ---
 
@@ -229,7 +242,8 @@ for AMO, zip the directory contents with `manifest.json` at the root.
 
 ## APIs used
 
-`SYNO.API.Info` (discovery) · `SYNO.API.Auth` (login/logout) ·
+`SYNO.API.Info` (discovery) · `SYNO.API.Auth` (login incl. `otp_code` and
+device token, logout) ·
 `SYNO.DownloadStation.Task` (list, create, pause, resume, delete) ·
 `SYNO.DownloadStation.Info` (`getinfo` for `is_manager`) ·
 `SYNO.DownloadStation.Statistic` (total transfer rates)

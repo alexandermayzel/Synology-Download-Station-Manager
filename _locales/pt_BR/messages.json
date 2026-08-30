@@ -114,6 +114,11 @@
   "statusFinished": { "message": "Concluídas" },
   "tasksPerPage": { "message": "Tarefas por página" },
 
+  "otpRequired": { "message": "Código de verificação necessário" },
+  "otpLabel": { "message": "Código de verificação" },
+  "otpSubmit": { "message": "Entrar" },
+  "otpWrong": { "message": "O código de verificação está incorreto." },
+  "otpHint": { "message": "Seis dígitos do seu aplicativo autenticador. Este dispositivo é memorizado depois, então você só deve precisar dele uma vez." },
   "connection": { "message": "Conexão" },
   "protocol": { "message": "Protocolo" },
   "host": { "message": "Host" },

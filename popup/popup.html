@@ -219,6 +219,20 @@
           </div>
         </div>
       </details>
+
+      <!-- Appears only when DSM asks for a two-step verification code -->
+      <div class="field otp-field" id="otpField" hidden>
+        <label for="otpCode" class="label" data-i18n="otpLabel">Verification code</label>
+        <div class="row middle">
+          <input type="text" id="otpCode" class="ta grow" inputmode="numeric"
+                 autocomplete="one-time-code" maxlength="8" placeholder="123456" />
+          <button type="button" id="btnOtpSubmit" class="btn-secondary" data-i18n="otpSubmit">Sign in</button>
+        </div>
+        <span class="hint" data-i18n="otpHint">
+          Six digits from your authenticator app. This device is remembered afterwards,
+          so you should only need it once.
+        </span>
+      </div>
       </div>
     </details>
 

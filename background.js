@@ -197,11 +197,25 @@ async function discoverApiPaths(protocol, host, port) {
 // Session / Auth
 // ---------------------------------------------------------------------------
 
+/** Auth error codes for the two-step verification flow. */
+const OTP_REQUIRED_CODE = 403;
+const OTP_WRONG_CODE    = 404;
+
+/** Shown in DSM's trusted-devices list once a device token is issued. */
+const DEVICE_NAME = 'Firefox - Download Station Manager';
+
 /**
  * Log in and return the session ID.
- * Throws on failure with a message that includes the API error code.
+ *
+ * Two-step verification: DSM answers 403 when it wants a code. The caller
+ * then asks the user for one and calls again with `otpCode`; that login also
+ * requests a device token, which is stored and sent on every later login so
+ * background work never needs a code again.
+ *
+ * Throws on failure. A 403 carries `otpRequired` so callers can tell "needs a
+ * code" apart from "wrong credentials".
  */
-async function login(settings) {
+async function login(settings, otpCode) {
   const { protocol, host, port, username, password } = settings;
   if (!isConfigured(settings)) {
     throw new Error(msg('setupRequired'));
@@ -209,18 +223,39 @@ async function login(settings) {
   const apis = await discoverApiPaths(protocol, host, port);
   const base = buildBaseUrl(protocol, host, port);
 
-  const url = `${base}/${apis.authPath}` +
+  const { deviceToken } = await browser.storage.local.get({ deviceToken: '' });
+
+  let url = `${base}/${apis.authPath}` +
     `?api=SYNO.API.Auth&version=${apis.authVersion}&method=login` +
     `&account=${encodeURIComponent(username)}` +
     `&passwd=${encodeURIComponent(password)}` +
     `&session=DownloadStation&format=sid`;
 
+  if (otpCode) {
+    // Ask DSM to remember us, so this is the only time a code is needed.
+    url += `&otp_code=${encodeURIComponent(otpCode)}` +
+           `&enable_device_token=yes` +
+           `&device_name=${encodeURIComponent(DEVICE_NAME)}`;
+  } else if (deviceToken) {
+    url += `&device_id=${encodeURIComponent(deviceToken)}`;
+  }
+
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const json = await resp.json();
+
   if (!json.success) {
-    throw new Error(msg('errLoginFailed', describeError(AUTH_ERRORS, json.error?.code ?? 'unknown')));
+    const code = json.error?.code;
+    const err = new Error(msg('errLoginFailed', describeError(AUTH_ERRORS, code ?? 'unknown')));
+    if (code === OTP_REQUIRED_CODE) err.otpRequired = true;
+    if (code === OTP_WRONG_CODE)    err.otpWrong = true;
+    throw err;
   }
+
+  // Present only on the login that asked for a token; keep it for next time.
+  const did = json.data?.did || json.data?.device_id;
+  if (did) await browser.storage.local.set({ deviceToken: did });
+
   return json.data.sid;
 }
 
@@ -642,13 +677,22 @@ async function apiListTasks() {
   });
 }
 
-async function apiTestConnection() {
+async function apiTestConnection(otpCode) {
   await stateReady;
   const settings = await getSettings();
   clearAll(); // force fresh discovery + login
   try {
     const apis = await discoverApiPaths(settings.protocol, settings.host, settings.port);
-    await getSession(settings);
+
+    // An explicit code bypasses the shared-login cache: the user just typed
+    // it, so this attempt must actually carry it.
+    if (otpCode) {
+      cachedSid = await login(settings, otpCode);
+      browser.storage.session.set({ sid: cachedSid });
+    } else {
+      await getSession(settings);
+    }
+
     return {
       success: true,
       info: {
@@ -658,7 +702,12 @@ async function apiTestConnection() {
       },
     };
   } catch (err) {
-    return { success: false, error: { message: err.message } };
+    return {
+      success: false,
+      otpRequired: err.otpRequired === true,
+      otpWrong:    err.otpWrong === true,
+      error: { message: err.message },
+    };
   }
 }
 
@@ -899,6 +948,9 @@ function respondWith(promise, sendResponse) {
     .then(sendResponse)
     .catch((err) => sendResponse({
       success: false,
+      // Lets the popup show a code field instead of a plain failure.
+      otpRequired: err?.otpRequired === true,
+      otpWrong:    err?.otpWrong === true,
       error: { message: err?.message ?? String(err) },
     }));
 }
@@ -927,7 +979,7 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
 
     case 'testConnection':
-      respondWith(apiTestConnection(), sendResponse);
+      respondWith(apiTestConnection(message.otpCode), sendResponse);
       return true;
 
     case 'pauseTask':
@@ -1021,8 +1073,13 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         .catch(() => {})
         .then(() => {
           clearAll(); // host/port/protocol may have changed
-          return syncKeepaliveAlarm();
+          // The device token was issued for the old NAS and account; keeping
+          // it would send a meaningless id to whatever is configured now.
+          if (message.credentialsChanged) {
+            return browser.storage.local.remove('deviceToken');
+          }
         })
+        .then(() => syncKeepaliveAlarm())
         .then(() => sendResponse({ ok: true }))
         .catch(() => sendResponse({ ok: false }));
       return true;

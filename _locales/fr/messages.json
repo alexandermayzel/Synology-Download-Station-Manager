@@ -114,6 +114,11 @@
   "statusFinished": { "message": "Terminées" },
   "tasksPerPage": { "message": "Tâches par page" },
 
+  "otpRequired": { "message": "Code de vérification requis" },
+  "otpLabel": { "message": "Code de vérification" },
+  "otpSubmit": { "message": "Se connecter" },
+  "otpWrong": { "message": "Le code de vérification est incorrect." },
+  "otpHint": { "message": "Six chiffres depuis votre application d'authentification. Cet appareil est ensuite mémorisé, vous ne devriez en avoir besoin qu'une fois." },
   "connection": { "message": "Connexion" },
   "protocol": { "message": "Protocole" },
   "host": { "message": "Hôte" },

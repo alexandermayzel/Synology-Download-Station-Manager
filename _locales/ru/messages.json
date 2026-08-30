@@ -114,6 +114,11 @@
   "statusFinished": { "message": "Завершено" },
   "tasksPerPage": { "message": "Задач на странице" },
 
+  "otpRequired": { "message": "Требуется код подтверждения" },
+  "otpLabel": { "message": "Код подтверждения" },
+  "otpSubmit": { "message": "Войти" },
+  "otpWrong": { "message": "Код подтверждения неверен." },
+  "otpHint": { "message": "Шесть цифр из приложения-аутентификатора. После этого устройство запоминается, поэтому код понадобится только один раз." },
   "connection": { "message": "Подключение" },
   "protocol": { "message": "Протокол" },
   "host": { "message": "Хост" },

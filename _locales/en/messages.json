@@ -123,6 +123,11 @@
   "statusFinished": { "message": "Finished" },
   "tasksPerPage": { "message": "Tasks per page" },
 
+  "otpRequired": { "message": "Two-factor code required" },
+  "otpLabel": { "message": "Verification code" },
+  "otpSubmit": { "message": "Sign in" },
+  "otpWrong": { "message": "The verification code was incorrect." },
+  "otpHint": { "message": "Six digits from your authenticator app. This device is remembered afterwards, so you should only need it once." },
   "connection": { "message": "Connection" },
   "protocol": { "message": "Protocol" },
   "host": { "message": "Host" },

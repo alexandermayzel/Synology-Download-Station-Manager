@@ -114,6 +114,11 @@
   "statusFinished": { "message": "Fertig" },
   "tasksPerPage": { "message": "Aufgaben pro Seite" },
 
+  "otpRequired": { "message": "Bestätigungscode erforderlich" },
+  "otpLabel": { "message": "Bestätigungscode" },
+  "otpSubmit": { "message": "Anmelden" },
+  "otpWrong": { "message": "Der Bestätigungscode war falsch." },
+  "otpHint": { "message": "Sechsstelliger Code aus deiner Authenticator-App. Dieses Gerät wird danach gemerkt, du brauchst ihn also nur einmal." },
   "connection": { "message": "Verbindung" },
   "protocol": { "message": "Protokoll" },
   "host": { "message": "Host" },
