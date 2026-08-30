@@ -1,6 +1,6 @@
 {
   "extensionName": { "message": "Synology - Download Station Manager" },
-  "extensionDescription": { "message": "Enviar links magnet e downloads para o Download Station" },
+  "extensionDescription": { "message": "Envie links, links magnet e arquivos torrent para o Download Station do seu NAS Synology e gerencie os downloads sem abrir o DSM." },
   "contextMenuTitle": { "message": "Baixar com o Download Station" },
 
   "loading": { "message": "Carregando…" },

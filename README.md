@@ -95,9 +95,9 @@ sub-folders as well, not only to the top-level shared folder.
 Download Station access and write permission on exactly one folder — no admin
 rights, no other shares.
 
-### Two-factor authentication
+### Two-factor authentication (experimental)
 
-Supported. When DSM asks for a code, the popup shows a field for it. That
+When DSM asks for a code, the popup shows a field for it. That
 login also registers this browser as a trusted device, and the returned device
 token is reused from then on — so background work (context menu, polling) keeps
 working without ever prompting again.
