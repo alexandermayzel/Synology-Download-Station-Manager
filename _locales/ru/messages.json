@@ -1,0 +1,237 @@
+{
+  "extensionName": { "message": "Synology - Download Station Manager" },
+  "extensionDescription": { "message": "Отправка magnet-ссылок и загрузок в Download Station" },
+  "contextMenuTitle": { "message": "Скачать через Download Station" },
+
+  "loading": { "message": "Загрузка…" },
+  "tabDownloads": { "message": "Загрузки" },
+  "tabSettings": { "message": "Настройки" },
+
+  "connecting": { "message": "Подключение…" },
+  "connected": { "message": "Подключено" },
+  "connectedWithVersion": {
+    "message": "Подключено (auth v$VERSION$)",
+    "placeholders": { "version": { "content": "$1", "example": "6" } }
+  },
+  "connectionFailed": { "message": "Не удалось подключиться" },
+  "notConnected": { "message": "Нет подключения" },
+  "extensionError": { "message": "Ошибка расширения" },
+  "backgroundUnavailable": { "message": "Фоновая служба недоступна" },
+  "backgroundUnreachable": { "message": "Не удалось связаться с фоновой службой." },
+  "errorPrefix": { "message": "Ошибка:" },
+  "test": { "message": "Проверить" },
+
+  "addDownloads": { "message": "Добавить загрузки" },
+  "oneLinkPerLine": { "message": "По одной ссылке в строке…" },
+  "addAll": { "message": "Добавить все ссылки" },
+  "clearList": { "message": "Очистить список" },
+  "addTorrent": { "message": "Добавить torrent-файл…" },
+  "addingFiles": {
+    "message": "Добавление файлов: $COUNT$…",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "filesAdded": {
+    "message": "Добавлено файлов: $COUNT$.",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "noLinksEntered": { "message": "Ссылки не введены." },
+  "addingLinks": {
+    "message": "Добавление ссылок: $COUNT$…",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "linksAdded": {
+    "message": "Добавлено ссылок: $COUNT$.",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "linksPartial": {
+    "message": "Добавлено: $ADDED$, с ошибкой: $FAILED$",
+    "placeholders": {
+      "added":  { "content": "$1", "example": "8" },
+      "failed": { "content": "$2", "example": "4" }
+    }
+  },
+  "addLinksFailed": { "message": "Не удалось добавить ссылки." },
+
+  "filterFinished": { "message": "Завершённые" },
+  "filterPaused": { "message": "На паузе" },
+  "clear": { "message": "Очистить" },
+  "refresh": { "message": "Обновить" },
+  "pauseAll": { "message": "Приостановить все" },
+  "resumeAll": { "message": "Возобновить все" },
+  "clearFinished": { "message": "Очистить завершённые загрузки" },
+  "deleteAll": { "message": "Удалить все задачи" },
+  "confirmDeleteAll": { "message": "Удалить все задачи? Текущие загрузки будут отменены, отменить это действие нельзя." },
+  "cancel": { "message": "Отмена" },
+  "noTasks": { "message": "Задач пока нет." },
+  "pause": { "message": "Пауза" },
+  "resume": { "message": "Продолжить" },
+
+  "tasks": { "message": "Задачи" },
+  "filterAll": { "message": "Все" },
+  "filterActive": { "message": "Активные" },
+  "filterWaiting": { "message": "В очереди" },
+  "filterFailed": { "message": "С ошибкой" },
+  "statusFailed": { "message": "С ошибкой" },
+  "retry": { "message": "Повторить" },
+  "remove": { "message": "Удалить" },
+  "setupRequired": { "message": "Сначала настройте подключение — нужны хост, имя пользователя и пароль." },
+  "setupRequiredShort": { "message": "Подключение не настроено" },
+  "pagerInfo": {
+    "message": "$FROM$–$TO$ из $TOTAL$",
+    "placeholders": {
+      "from":  { "content": "$1", "example": "1" },
+      "to":    { "content": "$2", "example": "50" },
+      "total": { "content": "$3", "example": "128" }
+    }
+  },
+  "prevPage": { "message": "Предыдущая страница" },
+  "nextPage": { "message": "Следующая страница" },
+
+  "taskRefreshInterval": { "message": "Интервал обновления задач" },
+  "refreshIntervalHint": { "message": "Работает только при наличии активных задач — когда всё завершено или приостановлено, обновление прекращается само." },
+  "interval3": { "message": "3 секунды" },
+  "interval10": { "message": "10 секунд" },
+  "interval30": { "message": "30 секунд" },
+  "intervalManual": { "message": "Только вручную" },
+
+  "sortTasksBy": { "message": "Сортировать задачи по" },
+  "sortStatus": { "message": "По статусу" },
+  "sortAdded": { "message": "Дате добавления" },
+  "sortName": { "message": "Имени" },
+  "sortProgress": { "message": "Прогрессу" },
+  "sortSize": { "message": "Размеру" },
+  "sortDescending": { "message": "По убыванию" },
+  "sortAscending": { "message": "По возрастанию" },
+
+  "statusOrder": { "message": "Порядок статусов" },
+  "statusOrderHint": { "message": "Перетащите за маркер или используйте стрелки. То, что вверху, показывается первым — активные загрузки остаются на странице 1." },
+  "reset": { "message": "Сбросить" },
+  "moveUp": { "message": "Вверх" },
+  "moveDown": { "message": "Вниз" },
+  "statusDownloading": { "message": "Загружается" },
+  "statusWaiting": { "message": "В очереди" },
+  "statusPaused": { "message": "Приостановлено" },
+  "statusFinished": { "message": "Завершено" },
+  "tasksPerPage": { "message": "Задач на странице" },
+
+  "connection": { "message": "Подключение" },
+  "protocol": { "message": "Протокол" },
+  "host": { "message": "Хост" },
+  "port": { "message": "Порт" },
+  "credentials": { "message": "Учётные данные" },
+  "username": { "message": "Имя пользователя" },
+  "password": { "message": "Пароль" },
+
+  "options": { "message": "Параметры" },
+  "autoCaptureMagnets": { "message": "Автоматически перехватывать magnet-ссылки" },
+  "extractArchives": { "message": "Автоматически распаковывать архивы" },
+  "extractArchivesHint": { "message": "Добавляет поле пароля рядом со списком ссылок, чтобы можно было распаковывать защищённые паролем архивы. Сама автоматическая распаковка — общесерверная настройка в DSM: Download Station → Настройки → Автораспаковка." },
+  "extractArchivesHintNoAdmin": { "message": "Добавляет поле пароля рядом со списком ссылок, чтобы можно было распаковывать защищённые паролем архивы. Сама автоматическая распаковка — общесерверная настройка; эта учётная запись не является менеджером Download Station, поэтому включить её может только администратор в DSM: Download Station → Настройки → Автораспаковка." },
+  "totalSpeed": {
+    "message": "↓ $DOWN$  ↑ $UP$",
+    "placeholders": {
+      "down": { "content": "$1", "example": "4.2 MB/s" },
+      "up":   { "content": "$2", "example": "220 KB/s" }
+    }
+  },
+  "archivePassword": { "message": "Пароль архива (необязательно)" },
+  "archivePasswordHint": { "message": "Отправляется вместе со ссылками, добавляемыми сейчас. Не сохраняется — исчезает при закрытии окна." },
+  "statusExtracting": { "message": "Распаковка" },
+  "keepaliveLabel": { "message": "Поддерживать сеанс в фоновом режиме" },
+  "keepaliveHint": {
+    "message": "Опрашивает NAS каждые 3 минуты, чтобы окно сразу показывало «Подключено». Включение может помешать переходу жёстких дисков NAS в спящий режим при простое."
+  },
+  "defaultDestination": { "message": "Папка назначения по умолчанию (необязательно)" },
+  "destinationHint": {
+    "message": "Имя папки относительно общей папки, без ведущей косой черты (например, «downloads», а не «/downloads» или «/volume1/downloads»). Оставьте пустым, чтобы использовать папку назначения, уже настроенную на самом NAS (DSM → Download Station → Настройки → Общие)."
+  },
+  "saveSettings": { "message": "Сохранить настройки" },
+  "saved": { "message": "Сохранено!" },
+
+  "notifyAdded": { "message": "Загрузка успешно добавлена" },
+  "notifyFailed": { "message": "Download Station — Ошибка" },
+  "notifyError": { "message": "Download Station — Ошибка" },
+  "notifyPartial": { "message": "Download Station — Частичная ошибка" },
+  "notifyBulkAdded": {
+    "message": "Добавлено ссылок: $COUNT$",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "notifyBulkPartial": {
+    "message": "Добавлено: $ADDED$, с ошибкой: $FAILED$ — $REASON$",
+    "placeholders": {
+      "added":  { "content": "$1", "example": "8" },
+      "failed": { "content": "$2", "example": "4" },
+      "reason": { "content": "$3", "example": "Папка назначения по умолчанию не задана." }
+    }
+  },
+
+  "errLoginFailed": {
+    "message": "Не удалось войти — $REASON$",
+    "placeholders": { "reason": { "content": "$1", "example": "Неверное имя пользователя или пароль." } }
+  },
+  "errWithCode": {
+    "message": "$MESSAGE$ (код $CODE$)",
+    "placeholders": {
+      "message": { "content": "$1", "example": "Сеанс истёк." },
+      "code":    { "content": "$2", "example": "106" }
+    }
+  },
+  "errUnknownCode": {
+    "message": "NAS вернул код ошибки $CODE$.",
+    "placeholders": { "code": { "content": "$1", "example": "123" } }
+  },
+
+  "detail_broken_link": { "message": "Ссылка нерабочая или больше недоступна." },
+  "detail_destination_not_exist": { "message": "Папка назначения не существует." },
+  "detail_destination_denied": { "message": "Нет прав на запись в папку назначения." },
+  "detail_disk_full": { "message": "Том заполнен." },
+  "detail_quota_reached": { "message": "Квота хранилища учётной записи исчерпана." },
+  "detail_timeout": { "message": "Превышено время ожидания соединения." },
+  "detail_exceed_max_file_system_size": { "message": "Файл больше, чем допускает файловая система." },
+  "detail_exceed_max_destination_size": { "message": "Файл превышает ограничение размера папки назначения." },
+  "detail_exceed_max_temp_size": { "message": "Файл превышает ограничение размера временной папки." },
+  "detail_encrypted_name_too_long": { "message": "Зашифрованное имя файла слишком длинное." },
+  "detail_name_too_long": { "message": "Имя файла слишком длинное." },
+  "detail_torrent_duplicate": { "message": "Этот торрент уже есть в списке задач." },
+  "detail_file_not_exist": { "message": "Исходный файл не существует." },
+  "detail_required_premium_account": { "message": "Для этого файлообменника нужна премиум-учётная запись." },
+  "detail_not_supported_type": { "message": "Этот тип файла или ссылки не поддерживается." },
+  "detail_try_it_later": { "message": "Файлообменник просит повторить попытку позже." },
+  "detail_task_encryption": { "message": "Задача зашифрована и не может быть обработана." },
+  "detail_missing_python": { "message": "На NAS отсутствует Python — установите его из Центра пакетов." },
+  "detail_private_video": { "message": "Видео является частным." },
+  "detail_ftp_encryption_not_supported_type": { "message": "Этот тип шифрования FTP не поддерживается." },
+  "detail_extract_failed": { "message": "Не удалось распаковать архив." },
+  "detail_extract_failed_wrong_password": { "message": "Неверный пароль архива." },
+  "detail_extract_failed_invalid_archive": { "message": "Архив повреждён или не является допустимым архивом." },
+  "detail_extract_failed_quota_reached": { "message": "Распаковка прервана — квота хранилища исчерпана." },
+  "detail_extract_failed_disk_full": { "message": "Распаковка прервана — том заполнен." },
+  "detail_unknown": { "message": "Неизвестная ошибка." },
+
+  "err100": { "message": "Неизвестная ошибка на NAS." },
+  "err101": { "message": "На NAS отправлен некорректный запрос." },
+  "err102": { "message": "Этот API недоступен на NAS." },
+  "err103": { "message": "Этот метод не поддерживается." },
+  "err104": { "message": "Версия DSM на этом NAS не поддерживает эту функцию." },
+  "err105": { "message": "У этой учётной записи нет прав на это действие." },
+  "err106": { "message": "Сеанс истёк." },
+  "err107": { "message": "Выход выполнен, так как под этой учётной записью вошёл другой сеанс." },
+
+  "errAuth400": { "message": "Неверное имя пользователя или пароль." },
+  "errAuth401": { "message": "Эта учётная запись отключена." },
+  "errAuth402": { "message": "Доступ для этой учётной записи запрещён." },
+  "errAuth403": { "message": "Требуется код двухфакторной аутентификации — это расширение не поддерживает 2FA. Используйте отдельную учётную запись без 2FA." },
+  "errAuth404": { "message": "Код двухфакторной аутентификации неверен." },
+
+  "errTask400": { "message": "NAS не смог принять этот файл или ссылку." },
+  "errTask401": { "message": "На NAS достигнуто максимальное количество задач загрузки." },
+  "errTask402": { "message": "Доступ к папке назначения запрещён — проверьте, есть ли у этой учётной записи права на чтение и запись в неё." },
+  "errTask403": { "message": "Папка назначения не найдена — проверьте имя папки (вкладка «Настройки») и наличие у этой учётной записи прав на её просмотр." },
+  "errTask403NoDest": { "message": "Папка назначения по умолчанию, настроенная на самом NAS, не существует или недоступна этой учётной записи. Укажите допустимую папку в разделе «Настройки → Папка назначения по умолчанию» либо исправьте её в DSM: Download Station → Настройки → Общие." },
+  "errTask404": { "message": "Задача не найдена (возможно, она уже удалена на NAS)." },
+  "errTask405": { "message": "Это действие сейчас недоступно для данной задачи." },
+  "errTask406": { "message": "Папка назначения по умолчанию не задана. Задайте её в DSM: Download Station → Настройки → Общие, либо заполните «Папка назначения по умолчанию» на вкладке «Настройки» этого расширения." },
+  "errTask407": { "message": "Не удалось задать папку назначения." },
+  "errTask408": { "message": "Исходный файл не найден." }
+
+}

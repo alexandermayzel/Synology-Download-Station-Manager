@@ -1,0 +1,9 @@
+# Keep LF in the repository regardless of the checkout platform, so the
+# extension sources stay byte-identical to what gets packaged and signed.
+* text=auto eol=lf
+
+# Binary assets must never be touched by line-ending conversion.
+*.png  binary
+*.woff2 binary
+*.zip  binary
+*.xpi  binary

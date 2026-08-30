@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at http://mozilla.org/MPL/2.0/.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Synology - Download Station Manager</title>
+  <style>
+    /* Critical inline CSS — guarantees Firefox sees a sized popup on the
+       very first frame, before the external stylesheet finishes loading.
+       Without this the body starts at 0×0 and Firefox auto-closes the popup. */
+    body { width: 640px; min-height: 200px; background: #42414d; margin: 0; }
+  </style>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+<div class="shell">
+
+  <!-- Loading overlay — visible until JS init completes -->
+  <div id="loadingOverlay" class="loading">
+    <div class="spinner"></div>
+    <span class="loading-text" data-i18n="loading">Loading…</span>
+  </div>
+
+  <!-- Header -->
+  <header class="header">
+    <img src="../icons/icon-48.png" alt="" class="logo" />
+    <h1 class="title" data-i18n="extensionName">Synology - Download Station Manager</h1>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="tabs">
+    <button type="button" class="tab active" data-tab="downloads" data-i18n="tabDownloads">Downloads</button>
+    <button type="button" class="tab" data-tab="settings" data-i18n="tabSettings">Settings</button>
+  </nav>
+
+  <!-- ===================== Downloads tab ===================== -->
+  <section class="panel active" data-panel="downloads">
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <span id="statusDot" class="dot dot-checking"></span>
+      <span id="statusText" class="status-text" data-i18n="connecting">Connecting…</span>
+      <span id="totalSpeed" class="total-speed" hidden></span>
+      <button id="btnTest" class="btn-sm" data-i18n="test">Test</button>
+    </div>
+
+    <!-- Add downloads — collapsed by default so the task list gets the room -->
+    <details class="section collapsible" id="addSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="addDownloads">Add downloads</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
+        <textarea id="bulkLinks" rows="4" data-i18n-placeholder="oneLinkPerLine"
+                  placeholder="One link per line…" class="ta"></textarea>
+
+        <!-- Only shown while "Extract archives automatically" is on in Options -->
+        <div class="field" id="archivePasswordField" hidden>
+          <label for="unzipPassword" class="label" data-i18n="archivePassword">Archive password (optional)</label>
+          <input type="password" id="unzipPassword" class="ta" autocomplete="off" />
+          <span class="hint" data-i18n="archivePasswordHint">
+            Sent with the links you add now. Not stored — it is gone when the popup closes.
+          </span>
+        </div>
+
+        <div class="row middle">
+          <button id="btnAddBulk" class="btn-primary grow" data-i18n="addAll">Add all links</button>
+          <button id="btnClearList" class="btn-secondary" data-i18n="clearList">Clear list</button>
+        </div>
+
+        <button id="btnAddTorrent" class="btn-secondary wide" data-i18n="addTorrent">Add torrent file…</button>
+        <input type="file" id="torrentInput" accept=".torrent,.nzb" multiple hidden />
+
+        <p id="bulkStatus" class="hint center"></p>
+      </div>
+    </details>
+
+    <!-- Tasks -->
+    <details class="section collapsible" id="tasksSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="tasks">Tasks</span>
+        <div class="head-actions">
+          <button id="btnPauseAll" class="head-btn" title="Pause all" data-i18n-title="pauseAll">
+            <svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+              <rect x="2" y="2" width="3" height="8" rx=".5"/><rect x="7" y="2" width="3" height="8" rx=".5"/>
+            </svg>
+          </button>
+          <button id="btnResumeAll" class="head-btn" title="Resume all" data-i18n-title="resumeAll">
+            <svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+              <polygon points="3,2 10,6 3,10"/>
+            </svg>
+          </button>
+          <span class="head-sep"></span>
+          <button id="btnClear" class="head-btn" title="Clear finished downloads" data-i18n-title="clearFinished">
+            <!-- Broom, matching Download Station's own "clear completed" icon -->
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 1.5 5.8 4.7"/>
+              <path d="M4.4 4.1 8 7.7l-1.1 1.1a2.5 2.5 0 0 1-3.6 0l-.1-.1a2.5 2.5 0 0 1 0-3.5z"/>
+              <path d="M3.2 9.6 1.5 12.5M5.4 10.2 4.4 12.5M7 9.6l.6 2.9"/>
+            </svg>
+          </button>
+          <button id="btnDeleteAll" class="head-btn danger" title="Delete all tasks" data-i18n-title="deleteAll">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2.5 3.5h9M5.5 3.5v-1h3v1M3.5 3.5l.6 8h5.8l.6-8M6 5.5v4M8 5.5v4"/>
+            </svg>
+          </button>
+          <button id="btnRefresh" class="head-btn" title="Refresh" data-i18n-title="refresh">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M11.5 7a4.5 4.5 0 1 1-1.35-3.2"/><path d="M11.8 1.5v3h-3"/>
+            </svg>
+          </button>
+        </div>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
+
+      <!-- Shown only after "Delete all" is clicked -->
+      <div class="confirm-bar" id="deleteAllConfirm" hidden>
+        <span class="hint" data-i18n="confirmDeleteAll">
+          Delete all tasks? Running downloads are cancelled and this cannot be undone.
+        </span>
+        <button type="button" id="btnDeleteAllYes" class="btn-danger" data-i18n="deleteAll">Delete all tasks</button>
+        <button type="button" id="btnDeleteAllNo" class="btn-sm" data-i18n="cancel">Cancel</button>
+      </div>
+
+      <div class="filters" id="filters">
+        <button type="button" class="fbtn on" data-filter="all">
+          <span data-i18n="filterAll">All</span><span class="n" data-count="all">0</span>
+        </button>
+        <button type="button" class="fbtn" data-filter="active">
+          <span data-i18n="filterActive">Active</span><span class="n" data-count="active">0</span>
+        </button>
+        <button type="button" class="fbtn" data-filter="waiting">
+          <span data-i18n="filterWaiting">Waiting</span><span class="n" data-count="waiting">0</span>
+        </button>
+        <button type="button" class="fbtn" data-filter="failed">
+          <span data-i18n="filterFailed">Failed</span><span class="n" data-count="failed">0</span>
+        </button>
+        <button type="button" class="fbtn" data-filter="paused">
+          <span data-i18n="filterPaused">Paused</span><span class="n" data-count="paused">0</span>
+        </button>
+        <button type="button" class="fbtn" data-filter="finished">
+          <span data-i18n="filterFinished">Finished</span><span class="n" data-count="finished">0</span>
+        </button>
+      </div>
+
+      <div id="taskList" class="task-list">
+        <p class="hint center" data-i18n="connecting">Connecting…</p>
+      </div>
+
+      <div class="pager" id="pager" hidden></div>
+      </div>
+    </details>
+  </section>
+
+  <!-- ===================== Settings tab ===================== -->
+  <section class="panel" data-panel="settings">
+
+    <details class="section collapsible" id="connectionSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="connection">Connection</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
+
+      <div class="row">
+        <div class="field" style="width:88px">
+          <label for="protocol" class="label" data-i18n="protocol">Protocol</label>
+          <select id="protocol" class="ta">
+            <option value="https">HTTPS</option>
+            <option value="http">HTTP</option>
+          </select>
+        </div>
+        <div class="field grow">
+          <label for="host" class="label" data-i18n="host">Host</label>
+          <input type="text" id="host" placeholder="10.1.10.189" class="ta" />
+        </div>
+        <div class="field fixed">
+          <label for="port" class="label" data-i18n="port">Port</label>
+          <input type="number" id="port" placeholder="5001" min="1" max="65535" class="ta" />
+        </div>
+      </div>
+
+      <!-- Credentials (nested collapsible) -->
+      <details class="credentials">
+        <summary class="credentials-toggle">
+          <span data-i18n="credentials">Credentials</span>
+          <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </summary>
+        <div class="credentials-body">
+          <div class="field">
+            <label for="username" class="label" data-i18n="username">Username</label>
+            <input type="text" id="username" placeholder="admin"
+                   autocomplete="username" class="ta" />
+          </div>
+          <div class="field">
+            <label for="password" class="label" data-i18n="password">Password</label>
+            <input type="password" id="password"
+                   autocomplete="current-password" class="ta" />
+          </div>
+        </div>
+      </details>
+      </div>
+    </details>
+
+    <details class="section collapsible" id="optionsSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="options">Options</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
+      <label class="checkline">
+        <input type="checkbox" id="autoCaptureMagnets" class="checkbox" />
+        <span data-i18n="autoCaptureMagnets">Auto-capture magnet links</span>
+      </label>
+      <div class="field">
+        <label class="checkline">
+          <input type="checkbox" id="extractArchives" class="checkbox" />
+          <span data-i18n="extractArchives">Extract archives automatically</span>
+        </label>
+        <span class="hint" data-i18n="extractArchivesHint">
+          Auto-extract itself is a server-wide setting only an administrator can switch on,
+          in DSM under Download Station → Settings → Auto Extract. This option adds an
+          archive password field next to the link list, so password-protected archives can
+          be extracted.
+        </span>
+      </div>
+
+      <div class="field">
+        <label class="checkline">
+          <input type="checkbox" id="keepaliveEnabled" class="checkbox" />
+          <span data-i18n="keepaliveLabel">Keep session alive in background</span>
+        </label>
+        <span class="hint" data-i18n="keepaliveHint">
+          Pings the NAS every 3 minutes so the popup shows "Connected" instantly.
+          Disable to allow HDD hibernation on the NAS when idle.
+        </span>
+      </div>
+      <div class="field">
+        <label for="refreshInterval" class="label" data-i18n="taskRefreshInterval">Task refresh interval</label>
+        <select id="refreshInterval" class="ta" style="width:150px">
+          <option value="3" data-i18n="interval3">3 seconds</option>
+          <option value="10" data-i18n="interval10">10 seconds</option>
+          <option value="30" data-i18n="interval30">30 seconds</option>
+          <option value="0" data-i18n="intervalManual">Manual only</option>
+        </select>
+        <span class="hint" data-i18n="refreshIntervalHint">
+          Only runs while there are active tasks — once everything is finished or paused,
+          refreshing stops on its own.
+        </span>
+      </div>
+
+      <div class="field">
+        <label for="sortBy" class="label" data-i18n="sortTasksBy">Sort tasks by</label>
+        <div class="row">
+          <select id="sortBy" class="ta grow">
+            <option value="status" data-i18n="sortStatus">By status</option>
+            <option value="added" data-i18n="sortAdded">Date added</option>
+            <option value="name" data-i18n="sortName">Name</option>
+            <option value="progress" data-i18n="sortProgress">Progress</option>
+            <option value="size" data-i18n="sortSize">Size</option>
+          </select>
+          <select id="sortDir" class="ta" style="width:150px" hidden>
+            <option value="desc" data-i18n="sortDescending">Descending</option>
+            <option value="asc" data-i18n="sortAscending">Ascending</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Only shown while "By status" is the chosen sort -->
+      <div class="field" id="statusOrderField">
+        <span class="label" data-i18n="statusOrder">Status order</span>
+        <div class="order-list" id="orderList"></div>
+        <div class="row middle">
+          <span class="hint" style="flex:1" data-i18n="statusOrderHint">
+            Drag the handle or use the arrows. Top of the list appears first, so what's still
+            running stays on page 1.
+          </span>
+          <button type="button" id="btnOrderReset" class="btn-sm" data-i18n="reset">Reset</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="tasksPerPage" class="label" data-i18n="tasksPerPage">Tasks per page</label>
+        <select id="tasksPerPage" class="ta" style="width:120px">
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="defaultDestination" class="label" data-i18n="defaultDestination">Default destination (optional)</label>
+        <input type="text" id="defaultDestination" placeholder="downloads" class="ta" />
+        <span class="hint" data-i18n="destinationHint">
+          Folder name relative to a shared folder, no leading slash (e.g. "downloads",
+          not "/downloads" or "/volume1/downloads"). Leave empty to use the default
+          destination already configured on the NAS itself (DSM → Download Station →
+          Settings → General).
+        </span>
+      </div>
+      </div>
+    </details>
+
+    <button id="btnSave" class="btn-primary" data-i18n="saveSettings">Save Settings</button>
+  </section>
+
+</div>
+
+<template id="taskCardTpl">
+  <div class="task">
+    <div class="task-name" data-field="name"></div>
+    <div class="task-row">
+      <span class="badge" data-field="badge"></span>
+      <div class="bar"><div class="bar-fill" data-field="bar"></div></div>
+      <span class="pct" data-field="pct"></span>
+      <button class="icon-btn" title="Pause" data-i18n-title="pause" data-action="pauseTask" data-field="pauseBtn" hidden>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="1" width="3" height="8" rx="0.5"/><rect x="6" y="1" width="3" height="8" rx="0.5"/></svg>
+      </button>
+      <button class="icon-btn" title="Resume" data-i18n-title="resume" data-action="resumeTask" data-field="resumeBtn" hidden>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><polygon points="2,1 9,5 2,9"/></svg>
+      </button>
+      <button class="icon-btn" title="Retry" data-i18n-title="retry" data-action="retryTask" data-field="retryBtn" hidden>
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 6a4 4 0 1 1-1.2-2.85"/><path d="M10.2 1.4v2.6H7.6"/>
+        </svg>
+      </button>
+      <button class="icon-btn danger" title="Remove" data-i18n-title="remove" data-action="deleteTask" data-field="removeBtn" hidden>
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2.5 3.5h7M5 3.5V2.5h2v1M3.5 3.5l.5 6h4l.5-6"/>
+        </svg>
+      </button>
+    </div>
+    <div class="speed" data-field="speed" hidden></div>
+  </div>
+</template>
+<script src="popup.js"></script>
+</body>
+</html>

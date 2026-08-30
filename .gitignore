@@ -1,0 +1,16 @@
+# Packaged builds — produced from the sources in this repository
+*.zip
+*.xpi
+
+# Signing artefacts added by AMO, never checked in
+META-INF/
+
+# web-ext scratch output
+web-ext-artifacts/
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

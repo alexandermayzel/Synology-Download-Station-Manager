@@ -1,0 +1,377 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+@font-face{
+  font-family:Outfit;
+  font-style:normal;
+  font-weight:300 700;
+  font-display:swap;
+  src:url(../fonts/outfit-latin-ext.woff2) format("woff2");
+  unicode-range:u+0100-02ba,u+02bd-02c5,u+02c7-02cc,u+02ce-02d7,u+02dd-02ff,u+0304,u+0308,u+0329,u+1d00-1dbf,u+1e00-1e9f,u+1ef2-1eff,u+2020,u+20a0-20ab,u+20ad-20c0,u+2113,u+2c60-2c7f,u+a720-a7ff
+}
+@font-face{
+  font-family:Outfit;
+  font-style:normal;
+  font-weight:300 700;
+  font-display:swap;
+  src:url(../fonts/outfit-latin.woff2) format("woff2");
+  unicode-range:u+00??,u+0131,u+0152-0153,u+02bb-02bc,u+02c6,u+02da,u+02dc,u+0304,u+0308,u+0329,u+2000-206f,u+20ac,u+2122,u+2191,u+2193,u+2212,u+2215,u+feff,u+fffd
+}
+
+/* ---------------------------------------------------------------------- */
+/* Tokens — Firefox panel grey + cyan accent                              */
+/* ---------------------------------------------------------------------- */
+:root{
+  --bg:#42414d;
+  --surface:#4c4b57;
+  --surface-2:#5b5a67;
+  --border:#5b5a67;
+  --text:#fbfbfe;
+  --muted:#b5b4c0;
+  --accent:#00ddff;
+  --accent-ink:#0b1f24;
+  --accent-hover:#33e4ff;
+  --ok:#8fe0a3;
+  --warn:#fab387;
+  --danger:#f38ba8;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+
+html{font-family:Outfit,ui-sans-serif,system-ui,sans-serif}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-size:13px;
+  line-height:1.375;
+}
+
+button,input,select,textarea{font-family:inherit;color:inherit}
+input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
+[hidden]{display:none !important}
+summary{list-style:none;cursor:pointer}
+summary::-webkit-details-marker{display:none}
+
+/* ---------------------------------------------------------------------- */
+/* Shell                                                                  */
+/* ---------------------------------------------------------------------- */
+.shell{position:relative;padding:12px;display:flex;flex-direction:column;gap:12px}
+
+.loading{
+  position:absolute;inset:0;z-index:50;background:var(--bg);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+}
+.spinner{
+  width:24px;height:24px;border-radius:99px;
+  border:2px solid var(--accent);border-top-color:transparent;
+  animation:spin 1s linear infinite;
+}
+.loading-text{font-size:11px;color:var(--muted)}
+@keyframes spin{to{transform:rotate(1turn)}}
+@media (prefers-reduced-motion: reduce){
+  .spinner{animation-duration:2.4s}
+}
+
+/* ---------------------------------------------------------------------- */
+/* Header + tabs                                                         */
+/* ---------------------------------------------------------------------- */
+.header{
+  display:flex;align-items:center;gap:8px;
+  padding-bottom:10px;border-bottom:1px solid var(--border);
+}
+.logo{width:24px;height:24px;flex:none}
+.title{font-size:15px;font-weight:600;letter-spacing:.01em;flex:1}
+
+.tabs{
+  display:flex;gap:4px;background:var(--surface);border:1px solid var(--border);
+  border-radius:99px;padding:3px;
+}
+.tab{
+  flex:1;text-align:center;cursor:pointer;border:none;background:transparent;color:var(--muted);
+  font-family:inherit;font-size:12.5px;font-weight:500;padding:6px 0;border-radius:99px;
+  transition:background .15s,color .15s;
+}
+.tab.active{background:var(--accent);color:var(--accent-ink);font-weight:600}
+
+.panel{display:none;flex-direction:column;gap:12px}
+.panel.active{display:flex}
+
+/* ---------------------------------------------------------------------- */
+/* Status bar                                                            */
+/* ---------------------------------------------------------------------- */
+.status-bar{
+  display:flex;align-items:center;gap:8px;
+  background:var(--surface);border:1px solid var(--border);border-radius:6px;
+  padding:6px 10px;
+}
+.dot{width:8px;height:8px;border-radius:99px;flex:none}
+.dot-idle{background:var(--muted)}
+.dot-connected{background:var(--ok)}
+.dot-error{background:var(--danger)}
+.dot-checking{background:var(--warn);animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{0%,to{opacity:1}50%{opacity:.35}}
+.status-text{flex:1;color:var(--muted);font-size:12px}
+
+/* ---------------------------------------------------------------------- */
+/* Buttons                                                                */
+/* ---------------------------------------------------------------------- */
+.btn-sm{
+  cursor:pointer;border:none;border-radius:99px;
+  background:var(--surface-2);color:var(--text);
+  padding:4px 12px;font-size:11px;font-weight:500;
+  transition:background .15s,color .15s;
+}
+.btn-sm:hover{background:var(--accent);color:var(--accent-ink)}
+.btn-sm:disabled{cursor:not-allowed;opacity:.5}
+
+.btn-primary{
+  width:100%;cursor:pointer;border:none;border-radius:99px;
+  background:var(--accent);color:var(--accent-ink);
+  padding:9px 0;font-size:13px;font-weight:600;
+  transition:background .15s;
+}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-primary:disabled{cursor:not-allowed;opacity:.6}
+
+/* Same height as .btn-primary so button rows line up. */
+.btn-secondary{
+  cursor:pointer;border:1px solid var(--border);border-radius:99px;
+  background:var(--surface-2);color:var(--text);
+  padding:9px 16px;font-size:13px;font-weight:500;white-space:nowrap;
+  transition:background .15s,color .15s,border-color .15s;
+}
+.btn-secondary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn-secondary:disabled{cursor:not-allowed;opacity:.6}
+.btn-secondary.wide{width:100%}
+
+.icon-btn{
+  display:flex;height:20px;width:20px;flex:none;cursor:pointer;align-items:center;justify-content:center;
+  border-radius:6px;border:none;background:transparent;color:var(--muted);
+  transition:background .15s,color .15s;
+}
+.icon-btn:hover{background:var(--surface-2);color:var(--text)}
+.icon-btn:disabled{cursor:not-allowed;opacity:.4}
+/* Destructive action — only turns red on hover so the row stays calm. */
+.icon-btn.danger:hover{background:rgba(243,139,168,.18);color:var(--danger)}
+
+/* ---------------------------------------------------------------------- */
+/* Sections / fields                                                      */
+/* ---------------------------------------------------------------------- */
+.section{
+  display:flex;flex-direction:column;gap:9px;
+  border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px;
+}
+.section-title{
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);
+  margin:0;display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+
+/* Collapsible section: the whole header is the toggle, so its own controls
+   (Clear / Refresh) stop the click from folding the panel — see popup.js. */
+.section.collapsible{display:block;padding:0}
+.section-head{
+  display:flex;align-items:center;gap:8px;
+  padding:9px 10px;cursor:pointer;user-select:none;
+}
+.section-head:hover{background:rgba(255,255,255,.03)}
+.section-head > .section-title{flex:1}
+.section-head .chev{margin-left:auto}
+.section.collapsible[open] > .section-head{border-bottom:1px solid var(--border)}
+.section.collapsible[open] > .section-head .chev{transform:rotate(180deg)}
+.section-body{display:flex;flex-direction:column;gap:9px;padding:10px}
+
+/* Action buttons living inside a collapsible header. */
+.head-actions{display:flex;align-items:center;gap:2px}
+.head-btn{
+  display:flex;align-items:center;justify-content:center;flex:none;
+  width:24px;height:24px;border:none;border-radius:6px;
+  background:transparent;color:var(--muted);cursor:pointer;
+  transition:background .15s,color .15s;
+}
+.head-btn svg{width:13px;height:13px}
+.head-btn:hover{background:var(--surface-2);color:var(--text)}
+.head-btn.danger:hover{background:rgba(243,139,168,.18);color:var(--danger)}
+.head-btn:disabled{opacity:.35;cursor:default}
+.head-sep{width:1px;height:14px;background:var(--border);margin:0 4px;flex:none}
+
+/* Two-step confirmation for the destructive bulk action. */
+.confirm-bar{
+  display:flex;align-items:center;gap:8px;
+  border:1px solid var(--danger);border-radius:6px;
+  background:rgba(243,139,168,.08);padding:8px;
+}
+.confirm-bar .hint{flex:1;color:var(--text)}
+.btn-danger{
+  cursor:pointer;border:none;border-radius:99px;
+  background:var(--danger);color:#2a0b12;
+  padding:4px 12px;font-size:11px;font-weight:600;white-space:nowrap;
+}
+.btn-danger:hover{filter:brightness(1.1)}
+
+.total-speed{
+  font-size:11px;color:var(--muted);white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+
+.field{display:flex;flex-direction:column;gap:4px}
+.grow{flex:1;min-width:0}
+.field.fixed{width:80px}
+.label{font-size:11px;font-weight:500;color:var(--muted)}
+.row{display:flex;align-items:flex-end;gap:6px}
+/* For rows pairing controls of different heights, e.g. a primary button
+   next to a small one. */
+.row.middle{align-items:center}
+
+.ta{
+  width:100%;border-radius:6px;border:1px solid var(--border);background:var(--bg);
+  color:var(--text);padding:5px 8px;font-size:13px;
+  outline:2px solid transparent;outline-offset:2px;
+  transition:border-color .15s;
+}
+.ta:focus{border-color:var(--accent)}
+/* Required connection field left empty — set while the setup prompt is up. */
+.ta.invalid{border-color:var(--danger);background:rgba(243,139,168,.08)}
+.ta.invalid:focus{border-color:var(--danger)}
+select.ta{cursor:pointer}
+textarea.ta{resize:vertical}
+
+.hint{font-size:11px;color:var(--muted);line-height:1.5;margin:0}
+.hint.center{text-align:center;padding:8px 0}
+.hint.error{color:var(--danger)}
+
+.checkline{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:var(--text)}
+.checkbox{width:14px;height:14px;flex:none;accent-color:var(--accent)}
+
+/* Credentials (nested collapsible) */
+.credentials{border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.credentials-toggle{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);
+}
+.credentials-toggle:hover{color:var(--text)}
+.chev{width:14px;height:14px;flex:none;color:var(--muted);transition:transform .2s}
+.credentials[open] .chev{transform:rotate(180deg)}
+.credentials-body{
+  display:flex;flex-direction:column;gap:10px;padding:8px;border-top:1px solid var(--border);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Filter buttons                                                        */
+/* ---------------------------------------------------------------------- */
+.pills{display:flex;align-items:center;gap:6px}
+
+.filters{display:flex;gap:4px;flex-wrap:wrap}
+.fbtn{
+  cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);
+  font-size:11px;font-weight:500;padding:4px 10px;border-radius:99px;
+  display:flex;align-items:center;gap:5px;
+  transition:background .15s,color .15s,border-color .15s;
+}
+.fbtn:hover{color:var(--text)}
+.fbtn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.fbtn .n{
+  font-size:10px;font-weight:700;background:rgba(255,255,255,.09);
+  border-radius:99px;padding:0 5px;font-variant-numeric:tabular-nums;
+}
+.fbtn.on .n{background:rgba(0,0,0,.18)}
+
+/* ---------------------------------------------------------------------- */
+/* Pagination                                                            */
+/* ---------------------------------------------------------------------- */
+.pager{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}
+.pbtn{
+  cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);
+  font-size:11px;min-width:24px;height:24px;border-radius:99px;padding:0 7px;
+  display:flex;align-items:center;justify-content:center;
+  font-variant-numeric:tabular-nums;
+  transition:background .15s,color .15s,border-color .15s;
+}
+.pbtn:hover:not(:disabled){color:var(--text);border-color:var(--muted)}
+.pbtn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
+.pbtn:disabled{opacity:.35;cursor:default}
+.pager-info{font-size:11px;color:var(--muted);margin-left:4px;font-variant-numeric:tabular-nums}
+.pager-gap{color:var(--muted);font-size:11px;padding:0 2px}
+
+/* ---------------------------------------------------------------------- */
+/* Status order (drag to reorder)                                        */
+/* ---------------------------------------------------------------------- */
+.order-list{display:flex;flex-direction:column;gap:4px}
+.order-item{
+  display:flex;align-items:center;gap:8px;
+  background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px;
+  transition:border-color .15s,opacity .15s;
+}
+.order-item .grip{
+  cursor:grab;color:var(--muted);font-size:13px;line-height:1;
+  user-select:none;padding:0 1px;letter-spacing:-1px;
+}
+.order-item .grip:active{cursor:grabbing}
+.order-item.dragging{opacity:.4;border-color:var(--accent)}
+/* Marks where the dragged row will land. */
+.order-item.drop-before{box-shadow:0 -2px 0 0 var(--accent)}
+.order-item.drop-after{box-shadow:0 2px 0 0 var(--accent)}
+.order-item .ord{
+  font-size:10px;font-weight:700;color:var(--accent-ink);background:var(--accent);
+  border-radius:99px;min-width:16px;height:16px;
+  display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;
+}
+.order-item .onm{flex:1;font-size:12.5px}
+.ord-btn{
+  cursor:pointer;border:none;background:transparent;color:var(--muted);
+  font-size:13px;line-height:1;width:20px;height:20px;border-radius:5px;
+  transition:background .15s,color .15s;
+}
+.ord-btn:hover:not(:disabled){background:var(--surface-2);color:var(--text)}
+.ord-btn:disabled{opacity:.25;cursor:default}
+
+/* ---------------------------------------------------------------------- */
+/* Task list                                                             */
+/* ---------------------------------------------------------------------- */
+/* All tasks are rendered; the list scrolls rather than truncating. The cap is
+   the popup's own height budget — Firefox tops popups out around 600px, and
+   the header, tabs, status bar and Add Links block already claim most of it. */
+.task-list{
+  display:flex;flex-direction:column;gap:6px;
+  max-height:19rem;overflow-y:auto;
+  scrollbar-width:thin;
+  scrollbar-color:var(--surface-2) transparent;
+  /* Room for the scrollbar so it never sits on top of the progress bars. */
+  padding-right:2px;
+}
+.task-list::-webkit-scrollbar{width:6px}
+.task-list::-webkit-scrollbar-track{background:transparent}
+.task-list::-webkit-scrollbar-thumb{background:var(--surface-2);border-radius:99px}
+.task-list::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+
+.task{
+  background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px;
+  display:flex;flex-direction:column;gap:4px;
+}
+.task-name{
+  font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.task-row{display:flex;align-items:center;gap:8px}
+
+.badge{
+  white-space:nowrap;border-radius:2px;padding:1px 6px;font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.025em;
+}
+.badge-downloading{background:rgba(0,221,255,.2);color:var(--accent)}
+.badge-finished{background:rgba(143,224,163,.2);color:var(--ok)}
+.badge-paused{background:rgba(181,180,192,.2);color:var(--muted)}
+.badge-error{background:rgba(243,139,168,.2);color:var(--danger)}
+.badge-waiting{background:rgba(250,179,135,.2);color:var(--warn)}
+
+.bar{flex:1;height:4px;background:var(--border);border-radius:99px;overflow:hidden}
+.bar-fill{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .15s cubic-bezier(.4,0,.2,1)}
+.bar-fill.done{background:var(--ok)}
+.pct{font-size:10px;color:var(--muted);white-space:nowrap}
+.speed{display:flex;gap:10px;font-size:10px;color:var(--muted)}
+/* Same row, but carrying a failure reason instead of transfer rates. */
+.speed.failure{color:var(--danger)}
+.speed.failure span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

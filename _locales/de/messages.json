@@ -1,0 +1,237 @@
+{
+  "extensionName": { "message": "Synology - Download Station Manager" },
+  "extensionDescription": { "message": "Magnet-Links und Downloads an die Download Station senden" },
+  "contextMenuTitle": { "message": "Mit Download Station herunterladen" },
+
+  "loading": { "message": "Wird geladen…" },
+  "tabDownloads": { "message": "Downloads" },
+  "tabSettings": { "message": "Einstellungen" },
+
+  "connecting": { "message": "Verbinde…" },
+  "connected": { "message": "Verbunden" },
+  "connectedWithVersion": {
+    "message": "Verbunden (Auth v$VERSION$)",
+    "placeholders": { "version": { "content": "$1", "example": "6" } }
+  },
+  "connectionFailed": { "message": "Verbindung fehlgeschlagen" },
+  "notConnected": { "message": "Nicht verbunden" },
+  "extensionError": { "message": "Fehler in der Erweiterung" },
+  "backgroundUnavailable": { "message": "Hintergrunddienst nicht verfügbar" },
+  "backgroundUnreachable": { "message": "Hintergrunddienst nicht erreichbar." },
+  "errorPrefix": { "message": "Fehler:" },
+  "test": { "message": "Testen" },
+
+  "addDownloads": { "message": "Downloads hinzufügen" },
+  "oneLinkPerLine": { "message": "Ein Link pro Zeile…" },
+  "addAll": { "message": "Alle Links hinzufügen" },
+  "clearList": { "message": "Liste leeren" },
+  "addTorrent": { "message": "Torrent-Datei hinzufügen…" },
+  "addingFiles": {
+    "message": "$COUNT$ Datei(en) werden hinzugefügt…",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "filesAdded": {
+    "message": "$COUNT$ Datei(en) hinzugefügt.",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "noLinksEntered": { "message": "Keine Links eingegeben." },
+  "addingLinks": {
+    "message": "$COUNT$ Link(s) werden hinzugefügt…",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "linksAdded": {
+    "message": "$COUNT$ Link(s) hinzugefügt.",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "linksPartial": {
+    "message": "$ADDED$ hinzugefügt, $FAILED$ fehlgeschlagen",
+    "placeholders": {
+      "added":  { "content": "$1", "example": "8" },
+      "failed": { "content": "$2", "example": "4" }
+    }
+  },
+  "addLinksFailed": { "message": "Links konnten nicht hinzugefügt werden." },
+
+  "filterFinished": { "message": "Fertig" },
+  "filterPaused": { "message": "Pausiert" },
+  "clear": { "message": "Aufräumen" },
+  "refresh": { "message": "Aktualisieren" },
+  "pauseAll": { "message": "Alle anhalten" },
+  "resumeAll": { "message": "Alle fortsetzen" },
+  "clearFinished": { "message": "Alle fertigen Downloads aufräumen" },
+  "deleteAll": { "message": "Alle Aufgaben löschen" },
+  "confirmDeleteAll": { "message": "Alle Aufgaben löschen? Laufende Downloads werden abgebrochen, das lässt sich nicht rückgängig machen." },
+  "cancel": { "message": "Abbrechen" },
+  "noTasks": { "message": "Noch keine Aufgaben." },
+  "pause": { "message": "Pausieren" },
+  "resume": { "message": "Fortsetzen" },
+
+  "tasks": { "message": "Aufgaben" },
+  "filterAll": { "message": "Alle" },
+  "filterActive": { "message": "Aktiv" },
+  "filterWaiting": { "message": "Wartend" },
+  "filterFailed": { "message": "Fehler" },
+  "statusFailed": { "message": "Fehlgeschlagen" },
+  "retry": { "message": "Wiederholen" },
+  "remove": { "message": "Entfernen" },
+  "setupRequired": { "message": "Zuerst die Verbindung einrichten — Host, Benutzername und Passwort werden benötigt." },
+  "setupRequiredShort": { "message": "Verbindung nicht eingerichtet" },
+  "pagerInfo": {
+    "message": "$FROM$–$TO$ von $TOTAL$",
+    "placeholders": {
+      "from":  { "content": "$1", "example": "1" },
+      "to":    { "content": "$2", "example": "50" },
+      "total": { "content": "$3", "example": "128" }
+    }
+  },
+  "prevPage": { "message": "Vorherige Seite" },
+  "nextPage": { "message": "Nächste Seite" },
+
+  "taskRefreshInterval": { "message": "Aktualisierungsintervall" },
+  "refreshIntervalHint": { "message": "Läuft nur, solange es aktive Aufgaben gibt — sobald alles fertig oder pausiert ist, stoppt die Aktualisierung von selbst." },
+  "interval3": { "message": "3 Sekunden" },
+  "interval10": { "message": "10 Sekunden" },
+  "interval30": { "message": "30 Sekunden" },
+  "intervalManual": { "message": "Nur manuell" },
+
+  "sortTasksBy": { "message": "Aufgaben sortieren nach" },
+  "sortStatus": { "message": "Nach Status" },
+  "sortAdded": { "message": "Hinzugefügt am" },
+  "sortName": { "message": "Name" },
+  "sortProgress": { "message": "Fortschritt" },
+  "sortSize": { "message": "Größe" },
+  "sortDescending": { "message": "Absteigend" },
+  "sortAscending": { "message": "Aufsteigend" },
+
+  "statusOrder": { "message": "Status-Reihenfolge" },
+  "statusOrderHint": { "message": "Am Griff ziehen oder die Pfeile verwenden. Was oben steht, wird zuerst angezeigt — laufende Downloads bleiben so auf Seite 1." },
+  "reset": { "message": "Zurücksetzen" },
+  "moveUp": { "message": "Nach oben" },
+  "moveDown": { "message": "Nach unten" },
+  "statusDownloading": { "message": "Wird geladen" },
+  "statusWaiting": { "message": "Wartend" },
+  "statusPaused": { "message": "Pausiert" },
+  "statusFinished": { "message": "Fertig" },
+  "tasksPerPage": { "message": "Aufgaben pro Seite" },
+
+  "connection": { "message": "Verbindung" },
+  "protocol": { "message": "Protokoll" },
+  "host": { "message": "Host" },
+  "port": { "message": "Port" },
+  "credentials": { "message": "Zugangsdaten" },
+  "username": { "message": "Benutzername" },
+  "password": { "message": "Passwort" },
+
+  "options": { "message": "Optionen" },
+  "autoCaptureMagnets": { "message": "Magnet-Links automatisch abfangen" },
+  "extractArchives": { "message": "Archive automatisch entpacken" },
+  "extractArchivesHint": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein, damit auch passwortgeschützte Archive entpackt werden können. Das automatische Entpacken selbst ist eine serverweite Einstellung in DSM unter Download Station → Einstellungen → Automatisches Entpacken." },
+  "extractArchivesHintNoAdmin": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein, damit auch passwortgeschützte Archive entpackt werden können. Das automatische Entpacken selbst ist eine serverweite Einstellung — dieses Konto ist kein Download-Station-Manager, daher kann nur ein Administrator sie aktivieren, in DSM unter Download Station → Einstellungen → Automatisches Entpacken." },
+  "totalSpeed": {
+    "message": "↓ $DOWN$  ↑ $UP$",
+    "placeholders": {
+      "down": { "content": "$1", "example": "4.2 MB/s" },
+      "up":   { "content": "$2", "example": "220 KB/s" }
+    }
+  },
+  "archivePassword": { "message": "Archiv-Passwort (optional)" },
+  "archivePasswordHint": { "message": "Wird mit den jetzt hinzugefügten Links übermittelt. Nicht gespeichert — beim Schließen des Popups ist es weg." },
+  "statusExtracting": { "message": "Wird entpackt" },
+  "keepaliveLabel": { "message": "Sitzung im Hintergrund aktiv halten" },
+  "keepaliveHint": {
+    "message": "Fragt die NAS alle 3 Minuten ab, damit das Popup sofort „Verbunden“ anzeigt. Aktivieren kann den Ruhezustand der Festplatten auf der NAS bei Inaktivität verhindern."
+  },
+  "defaultDestination": { "message": "Standard-Zielordner (optional)" },
+  "destinationHint": {
+    "message": "Ordnername relativ zu einem freigegebenen Ordner, ohne führenden Schrägstrich (z. B. „downloads“, nicht „/downloads“ oder „/volume1/downloads“). Leer lassen, um den bereits auf der NAS eingestellten Standardordner zu verwenden (DSM → Download Station → Einstellungen → Allgemein)."
+  },
+  "saveSettings": { "message": "Einstellungen speichern" },
+  "saved": { "message": "Gespeichert!" },
+
+  "notifyAdded": { "message": "Download erfolgreich hinzugefügt" },
+  "notifyFailed": { "message": "Download Station — Fehlgeschlagen" },
+  "notifyError": { "message": "Download Station — Fehler" },
+  "notifyPartial": { "message": "Download Station — Teilweise fehlgeschlagen" },
+  "notifyBulkAdded": {
+    "message": "$COUNT$ Link(s) hinzugefügt",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "notifyBulkPartial": {
+    "message": "$ADDED$ hinzugefügt, $FAILED$ fehlgeschlagen — $REASON$",
+    "placeholders": {
+      "added":  { "content": "$1", "example": "8" },
+      "failed": { "content": "$2", "example": "4" },
+      "reason": { "content": "$3", "example": "Kein Standard-Zielordner festgelegt." }
+    }
+  },
+
+  "errLoginFailed": {
+    "message": "Anmeldung fehlgeschlagen — $REASON$",
+    "placeholders": { "reason": { "content": "$1", "example": "Benutzername oder Passwort falsch." } }
+  },
+  "errWithCode": {
+    "message": "$MESSAGE$ (Code $CODE$)",
+    "placeholders": {
+      "message": { "content": "$1", "example": "Sitzung abgelaufen." },
+      "code":    { "content": "$2", "example": "106" }
+    }
+  },
+  "errUnknownCode": {
+    "message": "Die NAS meldete Fehlercode $CODE$.",
+    "placeholders": { "code": { "content": "$1", "example": "123" } }
+  },
+
+  "detail_broken_link": { "message": "Der Link ist defekt oder nicht mehr verfügbar." },
+  "detail_destination_not_exist": { "message": "Der Zielordner existiert nicht." },
+  "detail_destination_denied": { "message": "Keine Schreibberechtigung für den Zielordner." },
+  "detail_disk_full": { "message": "Das Volume ist voll." },
+  "detail_quota_reached": { "message": "Das Speicherkontingent des Kontos ist aufgebraucht." },
+  "detail_timeout": { "message": "Zeitüberschreitung bei der Verbindung." },
+  "detail_exceed_max_file_system_size": { "message": "Die Datei ist größer, als das Dateisystem zulässt." },
+  "detail_exceed_max_destination_size": { "message": "Die Datei überschreitet die Größenbeschränkung des Zielordners." },
+  "detail_exceed_max_temp_size": { "message": "Die Datei überschreitet die Größenbeschränkung des temporären Ordners." },
+  "detail_encrypted_name_too_long": { "message": "Der verschlüsselte Dateiname ist zu lang." },
+  "detail_name_too_long": { "message": "Der Dateiname ist zu lang." },
+  "detail_torrent_duplicate": { "message": "Dieser Torrent ist bereits in der Aufgabenliste." },
+  "detail_file_not_exist": { "message": "Die Quelldatei existiert nicht." },
+  "detail_required_premium_account": { "message": "Dieser Filehoster erfordert ein Premium-Konto." },
+  "detail_not_supported_type": { "message": "Dieser Datei- oder Linktyp wird nicht unterstützt." },
+  "detail_try_it_later": { "message": "Der Filehoster bittet darum, es später erneut zu versuchen." },
+  "detail_task_encryption": { "message": "Die Aufgabe ist verschlüsselt und kann nicht verarbeitet werden." },
+  "detail_missing_python": { "message": "Python fehlt auf der NAS — im Paket-Zentrum installieren." },
+  "detail_private_video": { "message": "Das Video ist privat." },
+  "detail_ftp_encryption_not_supported_type": { "message": "Diese FTP-Verschlüsselung wird nicht unterstützt." },
+  "detail_extract_failed": { "message": "Das Entpacken des Archivs ist fehlgeschlagen." },
+  "detail_extract_failed_wrong_password": { "message": "Falsches Archiv-Passwort." },
+  "detail_extract_failed_invalid_archive": { "message": "Das Archiv ist beschädigt oder kein gültiges Archiv." },
+  "detail_extract_failed_quota_reached": { "message": "Entpacken abgebrochen — Speicherkontingent aufgebraucht." },
+  "detail_extract_failed_disk_full": { "message": "Entpacken abgebrochen — das Volume ist voll." },
+  "detail_unknown": { "message": "Unbekannter Fehler." },
+
+  "err100": { "message": "Unbekannter Fehler auf der NAS." },
+  "err101": { "message": "Ungültige Anfrage an die NAS." },
+  "err102": { "message": "Diese API ist auf der NAS nicht verfügbar." },
+  "err103": { "message": "Diese Methode wird nicht unterstützt." },
+  "err104": { "message": "Die DSM-Version dieser NAS unterstützt diese Funktion nicht." },
+  "err105": { "message": "Dieses Konto hat dafür keine Berechtigung." },
+  "err106": { "message": "Sitzung abgelaufen." },
+  "err107": { "message": "Abgemeldet, weil sich eine andere Sitzung mit demselben Konto angemeldet hat." },
+
+  "errAuth400": { "message": "Benutzername oder Passwort falsch." },
+  "errAuth401": { "message": "Dieses Konto ist deaktiviert." },
+  "errAuth402": { "message": "Zugriff für dieses Konto verweigert." },
+  "errAuth403": { "message": "Bestätigungscode für die 2-Faktor-Authentifizierung erforderlich — diese Erweiterung unterstützt keine 2FA. Verwenden Sie ein eigenes Konto ohne 2FA." },
+  "errAuth404": { "message": "Der Bestätigungscode für die 2-Faktor-Authentifizierung war falsch." },
+
+  "errTask400": { "message": "Die NAS konnte diese Datei oder diesen Link nicht annehmen." },
+  "errTask401": { "message": "Maximale Anzahl an Download-Aufgaben auf der NAS erreicht." },
+  "errTask402": { "message": "Zugriff auf den Zielordner verweigert — prüfen Sie, ob dieses Konto Lese-/Schreibrechte darauf hat." },
+  "errTask403": { "message": "Zielordner nicht gefunden — prüfen Sie den Ordnernamen (Reiter „Einstellungen“) und ob dieses Konto Zugriff darauf hat." },
+  "errTask403NoDest": { "message": "Der auf der NAS selbst eingestellte Standard-Zielordner existiert nicht oder ist für dieses Konto nicht sichtbar. Tragen Sie unter Einstellungen → Standard-Zielordner einen gültigen Ordner ein, oder korrigieren Sie ihn in DSM unter Download Station → Einstellungen → Allgemein." },
+  "errTask404": { "message": "Aufgabe nicht gefunden (möglicherweise wurde sie auf der NAS bereits entfernt)." },
+  "errTask405": { "message": "Diese Aktion ist für diese Aufgabe derzeit nicht möglich." },
+  "errTask406": { "message": "Es ist kein Standard-Zielordner festgelegt. Legen Sie einen in DSM unter Download Station → Einstellungen → Allgemein fest, oder tragen Sie „Standard-Zielordner“ im Reiter „Einstellungen“ dieser Erweiterung ein." },
+  "errTask407": { "message": "Der Zielordner konnte nicht gesetzt werden." },
+  "errTask408": { "message": "Quelldatei nicht gefunden." }
+
+}
