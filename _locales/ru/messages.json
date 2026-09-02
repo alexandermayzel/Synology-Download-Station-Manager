@@ -4,8 +4,14 @@
   "contextMenuTitle": { "message": "Скачать через Download Station" },
 
   "loading": { "message": "Загрузка…" },
-  "tabDownloads": { "message": "Загрузки" },
   "tabSettings": { "message": "Настройки" },
+  "tabAdd": { "message": "Добавить" },
+  "tabsLabel": { "message": "Разделы" },
+  "taskActionFailed": { "message": "Не удалось выполнить." },
+  "addLinksSection": { "message": "Ссылки" },
+  "addFilesSection": { "message": "Файлы" },
+  "addFilesHint": { "message": "Torrent- и NZB-файлы, можно несколько сразу." },
+  "setAsHome": { "message": "Открывать окно на этой вкладке" },
 
   "connecting": { "message": "Подключение…" },
   "connected": { "message": "Подключено" },
@@ -14,14 +20,13 @@
     "placeholders": { "version": { "content": "$1", "example": "6" } }
   },
   "connectionFailed": { "message": "Не удалось подключиться" },
-  "notConnected": { "message": "Нет подключения" },
+  "errNasUnreachable": { "message": "NAS не ответил. Возможно, он спит или недоступен." },
   "extensionError": { "message": "Ошибка расширения" },
   "backgroundUnavailable": { "message": "Фоновая служба недоступна" },
   "backgroundUnreachable": { "message": "Не удалось связаться с фоновой службой." },
   "errorPrefix": { "message": "Ошибка:" },
   "test": { "message": "Проверить" },
 
-  "addDownloads": { "message": "Добавить загрузки" },
   "oneLinkPerLine": { "message": "По одной ссылке в строке…" },
   "addAll": { "message": "Добавить все ссылки" },
   "clearList": { "message": "Очистить список" },
@@ -51,10 +56,14 @@
     }
   },
   "addLinksFailed": { "message": "Не удалось добавить ссылки." },
+  "addingInProgress": { "message": "Добавление…" },
+  "addBusy": { "message": "Ссылки уже добавляются. Подождите." },
+  "linksFailed": { "message": "Не удалось добавить ссылок: $COUNT$. Они остались в списке.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksFailedReason": { "message": "Не удалось добавить ссылок: $COUNT$ — $REASON$ Они остались в списке.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
+  "linksUncertain": { "message": "NAS не ответил, поэтому неизвестно, дошли ли эти ссылки ($COUNT$). Проверьте задачи, прежде чем пробовать снова.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Завершённые" },
   "filterPaused": { "message": "На паузе" },
-  "clear": { "message": "Очистить" },
   "refresh": { "message": "Обновить" },
   "pauseAll": { "message": "Приостановить все" },
   "resumeAll": { "message": "Возобновить все" },
@@ -76,6 +85,14 @@
   "remove": { "message": "Удалить" },
   "setupRequired": { "message": "Сначала настройте подключение — нужны хост, имя пользователя и пароль." },
   "setupRequiredShort": { "message": "Подключение не настроено" },
+  "fillRequiredField": {
+    "message": "Заполните обязательное поле: $FIELD$.",
+    "placeholders": { "field": { "content": "$1", "example": "Пароль" } }
+  },
+  "fillRequiredFields": {
+    "message": "Заполните обязательные поля: $FIELDS$.",
+    "placeholders": { "fields": { "content": "$1", "example": "Имя пользователя и Пароль" } }
+  },
   "pagerInfo": {
     "message": "$FROM$–$TO$ из $TOTAL$",
     "placeholders": {
@@ -87,8 +104,8 @@
   "prevPage": { "message": "Предыдущая страница" },
   "nextPage": { "message": "Следующая страница" },
 
-  "taskRefreshInterval": { "message": "Интервал обновления задач" },
-  "refreshIntervalHint": { "message": "Работает только при наличии активных задач — когда всё завершено или приостановлено, обновление прекращается само." },
+  "taskRefreshInterval": { "message": "Интервал фонового обновления задач" },
+  "refreshIntervalHint": { "message": "Работает только при наличии активных задач — когда всё завершено или приостановлено, обновление прекращается само. В течение полуминуты после добавления список обновляется каждые 3 секунды независимо от этой настройки, затем она снова вступает в силу." },
   "interval3": { "message": "3 секунды" },
   "interval10": { "message": "10 секунд" },
   "interval30": { "message": "30 секунд" },
@@ -127,7 +144,9 @@
   "username": { "message": "Имя пользователя" },
   "password": { "message": "Пароль" },
 
-  "options": { "message": "Параметры" },
+  "options": { "message": "Расширенные параметры" },
+  "settingsDownloads": { "message": "Загрузки" },
+  "settingsNotifications": { "message": "Уведомления" },
   "autoCaptureMagnets": { "message": "Автоматически перехватывать magnet-ссылки" },
   "extractArchives": { "message": "Автоматически распаковывать архивы" },
   "extractArchivesHint": { "message": "Добавляет поле пароля рядом со списком ссылок, чтобы можно было распаковывать защищённые паролем архивы. Сама автоматическая распаковка — общесерверная настройка в DSM: Download Station → Настройки → Автораспаковка." },
@@ -140,8 +159,12 @@
     }
   },
   "archivePassword": { "message": "Пароль архива (необязательно)" },
-  "archivePasswordHint": { "message": "Отправляется вместе со ссылками, добавляемыми сейчас. Не сохраняется — исчезает при закрытии окна." },
+  "archivePasswordHint": { "message": "Действует только для ссылок, которые вы добавляете сейчас. Не сохраняется." },
   "statusExtracting": { "message": "Распаковка" },
+  "statusSeeding": { "message": "Раздача" },
+  "statusFinishing": { "message": "Завершение" },
+  "statusChecking": { "message": "Проверка" },
+  "statusHostWaiting": { "message": "Ожидание хостинга" },
   "keepaliveLabel": { "message": "Поддерживать сеанс в фоновом режиме" },
   "keepaliveHint": {
     "message": "Опрашивает NAS каждые 3 минуты, чтобы окно сразу показывало «Подключено». Включение может помешать переходу жёстких дисков NAS в спящий режим при простое."
@@ -150,13 +173,29 @@
   "destinationHint": {
     "message": "Имя папки относительно общей папки, без ведущей косой черты (например, «downloads», а не «/downloads» или «/volume1/downloads»). Оставьте пустым, чтобы использовать папку назначения, уже настроенную на самом NAS (DSM → Download Station → Настройки → Общие)."
   },
-  "saveSettings": { "message": "Сохранить настройки" },
+  "resetAll": { "message": "Сбросить все настройки" },
+  "confirmResetAll": { "message": "Сбросить все настройки? Учётные данные, параметры подключения и все опции будут удалены. Загрузки на NAS не затрагиваются." },
+  "logout": { "message": "Выйти" },
+  "logoutHint": { "message": "Выйти: удаляет имя пользователя и пароль и отзывает доверие к этому устройству при двухфакторной проверке. Адрес NAS и все параметры сохраняются." },
+  "saveAndTest": { "message": "Сохранить и проверить подключение" },
+  "save": { "message": "Сохранить" },
   "saved": { "message": "Сохранено!" },
 
   "notifyAdded": { "message": "Загрузка успешно добавлена" },
+  "notificationsLabel": { "message": "Уведомления" },
+  "notificationsHint": { "message": "Системные сообщения вне окна расширения. О проблемах, из-за которых ничего не работает — вход и папка назначения — сообщается независимо от этих настроек." },
+  "notifyOnAddedLabel": { "message": "Загрузки добавлены" },
+  "notifyOnFailedLabel": { "message": "Загрузки с ошибкой" },
+  "notifyOnFinishedLabel": { "message": "Загрузки завершены" },
+  "notifyAllDone": { "message": "Все загрузки завершены" },
+  "notifyDoneCount":   { "message": "завершено: $COUNT$",  "placeholders": { "count": { "content": "$1", "example": "12" } } },
+  "notifyFailedCount": { "message": "с ошибкой: $COUNT$",  "placeholders": { "count": { "content": "$1", "example": "2" } } },
+  "notifyPausedCount": { "message": "на паузе: $COUNT$",   "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Ошибка" },
   "notifyError": { "message": "Download Station — Ошибка" },
   "notifyPartial": { "message": "Download Station — Частичная ошибка" },
+  "notifyWaking": { "message": "NAS спит. Ожидание ответа, после чего загрузка будет добавлена." },
+  "notifyUncertain": { "message": "NAS не ответил. Дошла ли загрузка, неизвестно — проверьте «Задачи», прежде чем добавлять её снова." },
   "notifyBulkAdded": {
     "message": "Добавлено ссылок: $COUNT$",
     "placeholders": { "count": { "content": "$1", "example": "12" } }

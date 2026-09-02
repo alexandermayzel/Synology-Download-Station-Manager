@@ -28,20 +28,86 @@
   --bg:#42414d;
   --surface:#4c4b57;
   --surface-2:#5b5a67;
-  --border:#5b5a67;
+  /* Grouping edges — task cards, tabs, buttons. Not a control boundary, so it
+     is allowed to stay quiet, but the old value was invisible against the
+     panel it framed. */
+  --border:#7a7986;
+  /* Input outlines are a control boundary, which WCAG puts at 3:1. */
+  --field-border:#9a99a7;
+  /* The progress groove, a recess rather than a lighter grey.
+     Two things pull against each other here: the groove wants to be visible
+     against the card, and the fill wants to be visible against the groove — and
+     the card sits in the middle of the range, so no value satisfies both. The
+     fill is what carries the meaning (where the bar ends is also printed as a
+     percentage beside it), so the groove goes down rather than up.
+     Against the old #5b5a67 this improves both at once: 1.62:1 against the card
+     instead of 1.48, and 9.9:1 for the fill instead of 4.12. Same value as
+     --scroll-track-edge, and the same recess-plus-bright-content language the
+     filter chips and the scrollbar already use. */
+  --bar-track:#211f28;
   --text:#fbfbfe;
-  --muted:#b5b4c0;
+  /* Carries hints, labels, placeholders and the inactive tab — a lot of small
+     11px type, so it sits closer to the foreground than a muted grey usually
+     would. The gap to --text is still enough to keep the hierarchy.
+     Raised from #c9c8d4: at 5.18:1 on a panel it cleared the 4.5:1 threshold on
+     paper but still read as faint at 11px, and next to the cyan of the active
+     tab an inactive one looked switched off rather than merely unselected.
+     6.18:1 now, while staying 1.34:1 away from --text so secondary type does not
+     start reading as primary. */
+  --muted:#dbdae4;
   --accent:#00ddff;
   --accent-ink:#0b1f24;
   --accent-hover:#33e4ff;
   --ok:#8fe0a3;
   --warn:#fab387;
   --danger:#f38ba8;
+  /* Paused tasks. Every other state badge carries a hue — cyan, green, orange,
+     pink — and paused was the one left in plain grey, so it read as switched
+     off rather than as a state of its own. Violet is the gap those four leave,
+     far enough from all of them to be told apart at a glance, and it is not a
+     colour this interface uses for anything else. */
+  --paused:#d0b0ff;
+  /* Own tokens rather than a reused surface: the scrollbar has to stand out
+     against the task cards, which the panel greys deliberately do not. */
+  --scroll-thumb:#adacba;
+  /* Track for the two scrollbars that sit at the popup's edge, on --bg rather
+     than on a panel. --recess is only 1.2:1 against that ground; this is
+     1.6:1, and keeps the thumb at 7.3:1. */
+  --scroll-track-edge:#211f28;
+  /* Section framing. Four panels sit in one column, so each needs an edge and
+     a title bar of its own to read as a block rather than as running text. */
+  --section-border:#6b6a78;
+  --section-head:rgba(0,0,0,.18);
+  --section-head-hover:rgba(0,0,0,.09);
+  --section-title:#dbdae4;
+  /* One recess colour for everything sunk into a panel: the switched-off
+     toggle track, the scrollbar groove, the badge pill. Darker than the panel
+     rather than lighter, which is what makes them read as depressions. */
+  --recess:#35343e;
+  /* One step up from the recess, so hovering a chip is visible without it
+     jumping to the selected colour. */
+  --fbtn-hover:#43424e;
+  --toggle-knob:#e4e3ec;
+  /* Badges put coloured text on a dark pill instead of a pale wash of its own
+     hue — a tint of the text colour can never carry that text at 4.5:1. */
+  --badge-bg:rgba(0,0,0,.32);
+  /* Danger as text needs to be lighter than danger as a dot or a button fill. */
+  --danger-text:#ffb3c6;
 }
 
 *,*::before,*::after{box-sizing:border-box}
 
-html{font-family:Outfit,ui-sans-serif,system-ui,sans-serif}
+/* The document itself must never scroll. The inline block in popup.html asks
+   for 600px — the most Firefox will grant — but the window can end up shorter,
+   and then the body overflows it and Firefox draws a native scrollbar for the
+   whole document. That one runs past the tab bar, carries arrow buttons, and
+   ignores every scrollbar rule below, because it belongs to the root and not
+   to the panel that was meant to scroll. */
+html{font-family:Outfit,ui-sans-serif,system-ui,sans-serif;overflow:hidden}
+/* The height comes from the inline block in popup.html's <head> (600px, the
+   most Firefox will show). Don't set it here — this file loads afterwards and
+   would override it, leaving the body with no definite height for .shell to
+   measure against. */
 body{
   margin:0;
   background:var(--bg);
@@ -59,7 +125,55 @@ summary::-webkit-details-marker{display:none}
 /* ---------------------------------------------------------------------- */
 /* Shell                                                                  */
 /* ---------------------------------------------------------------------- */
-.shell{position:relative;padding:12px;display:flex;flex-direction:column;gap:12px}
+/* The whole popup is one vertical flex column so the task list can absorb
+   whatever height the sections above it don't use. */
+/* 100vh, not 100% of the body: the body claims a fixed 600px so Firefox opens
+   the popup at full size, but if the window grants less, 100% would keep
+   reserving 600 and push the bottom out of sight. 100vh is whatever the popup
+   actually got, so the panel below always ends where the window does. */
+.shell{
+  position:relative;padding:12px;display:flex;flex-direction:column;gap:12px;
+  height:100vh;box-sizing:border-box;overflow:hidden;
+}
+
+/* The visible panel takes the remaining height; min-height:0 is what lets a
+   flex child actually shrink instead of being sized by its content. */
+.panel.active{flex:1 1 auto;min-height:0}
+/* Settings and Add can be taller than the popup, so they scroll as a whole.
+   The negative margin pulls the scrolling box out through .shell's 12px
+   padding to the window edge, where a scrollbar belongs; the matching padding
+   puts the content back where it was. Without it the bar floats 12px inside
+   the popup with a dead strip beside it. */
+/* These two only take effect where the platform draws a scrollbar of its own
+   rather than an overlay one. Windows 11 hides scrollbars by default and
+   expands them on hover, and no CSS property opts out of that — scrollbar-color
+   and scrollbar-width style a bar, they do not decide whether it is persistent.
+   So this is what the bar looks like on systems that always show one; on the
+   others the platform wins and the setting to change lives in the OS. */
+.panel{
+  scrollbar-width:thin;
+  scrollbar-color:var(--scroll-thumb) var(--scroll-track-edge);
+}
+/* Placing the bar takes both values, and they do different jobs.
+   The margin decides how far it sits from the window edge: -6px moves it out
+   through half of .shell's padding, so it is near the edge without touching it.
+   The padding decides how far the content stays clear of it — and it has to do
+   that on its own, because an overlay scrollbar reserves no space and simply
+   draws over whatever is beneath it. 20px covers the expanded width it takes
+   on hover; anything less and the section frames end up underneath it.
+   (scrollbar-gutter would be the proper tool, but it has no effect on overlay
+   scrollbars.) */
+.panel[data-panel="settings"].active,
+.panel[data-panel="add"].active{
+  overflow-y:auto;
+  margin-right:-6px;
+  padding-right:20px;
+}
+
+/* Tasks does not: its one section stretches and the list scrolls inside it.
+   That is what the separate tab bought us — the height falls out of the flex
+   chain instead of being measured at runtime. */
+.panel[data-panel="tasks"].active{overflow:hidden}
 
 .loading{
   position:absolute;inset:0;z-index:50;background:var(--bg);
@@ -79,12 +193,19 @@ summary::-webkit-details-marker{display:none}
 /* ---------------------------------------------------------------------- */
 /* Header + tabs                                                         */
 /* ---------------------------------------------------------------------- */
+/* Kept deliberately compact — the title is only there for orientation, and
+   every pixel here is one the task list doesn't get. Both texts can shrink
+   and clip; the title yields first because the status is the useful half. */
 .header{
-  display:flex;align-items:center;gap:8px;
-  padding-bottom:10px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:7px;
+  padding-bottom:6px;border-bottom:1px solid var(--border);
 }
-.logo{width:24px;height:24px;flex:none}
-.title{font-size:15px;font-weight:600;letter-spacing:.01em;flex:1}
+.logo{width:18px;height:18px;flex:none}
+.title{
+  flex:1 1 auto;min-width:0;
+  font-size:13px;font-weight:600;letter-spacing:.01em;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 
 .tabs{
   display:flex;gap:4px;background:var(--surface);border:1px solid var(--border);
@@ -97,24 +218,60 @@ summary::-webkit-details-marker{display:none}
 }
 .tab.active{background:var(--accent);color:var(--accent-ink);font-weight:600}
 
+/* Each tab shares its slot with a small house marking the start page. The two
+   are siblings, not nested — a button inside a button is invalid HTML. */
+.tabitem{position:relative;flex:1;display:flex}
+.tabitem .tab{flex:1;padding-right:22px}
+.home{
+  position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  width:18px;height:18px;padding:0;border:none;border-radius:5px;
+  background:transparent;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:background .15s;
+}
+/* Outlined normally, solid on the tab that is the start page — the shape
+   itself says which one, not just its colour.
+   The stroke lives here rather than on the markup: the three houses are one
+   <symbol> referenced by <use>, and stroke properties inherit into that shadow
+   tree, so the shape is described once instead of three times. */
+.home svg{
+  width:12px;height:12px;fill:none;
+  stroke:currentColor;stroke-width:1.4;stroke-linejoin:round;
+}
+.home[aria-pressed="true"] svg{fill:currentColor}
+
+/* All three are visible all the time, and equally legible — the fill is what
+   says which tab is the start page, so the outlined ones must not be a shade
+   fainter than the solid one. Colour follows the ground the house sits on,
+   never its state: accent on the panel, ink on the active tab's cyan. */
+.home{color:var(--accent)}
+.tab.active + .home{color:var(--accent-ink)}
+
+/* Hover changes the backing, not the colour, so nothing brightens or dims. */
+.home:hover{background:rgba(255,255,255,.14)}
+.tab.active + .home:hover{background:rgba(0,0,0,.14)}
+
+.home:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
 .panel{display:none;flex-direction:column;gap:12px}
 .panel.active{display:flex}
 
 /* ---------------------------------------------------------------------- */
 /* Status bar                                                            */
 /* ---------------------------------------------------------------------- */
-.status-bar{
-  display:flex;align-items:center;gap:8px;
-  background:var(--surface);border:1px solid var(--border);border-radius:6px;
-  padding:6px 10px;
-}
 .dot{width:8px;height:8px;border-radius:99px;flex:none}
 .dot-idle{background:var(--muted)}
 .dot-connected{background:var(--ok)}
 .dot-error{background:var(--danger)}
 .dot-checking{background:var(--warn);animation:pulse 1s ease-in-out infinite}
 @keyframes pulse{0%,to{opacity:1}50%{opacity:.35}}
-.status-text{flex:1;color:var(--muted);font-size:12px}
+/* Capped so a long error can't push the title out entirely; the full text is
+   on the tooltip and repeated in the task-list area. */
+.status-text{
+  flex:0 1 auto;min-width:0;max-width:55%;
+  color:var(--muted);font-size:12px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 
 /* ---------------------------------------------------------------------- */
 /* Buttons                                                                */
@@ -127,32 +284,48 @@ summary::-webkit-details-marker{display:none}
 }
 .btn-sm:hover{background:var(--accent);color:var(--accent-ink)}
 .btn-sm:disabled{cursor:not-allowed;opacity:.5}
+/* Something has been typed that isn't stored yet — makes the pending save
+   visible instead of leaving it to be remembered. */
+.btn-sm.pending{background:var(--accent);color:var(--accent-ink);font-weight:600}
 
+/* Same height as the tab buttons — padding and font size match .tab. */
 .btn-primary{
   width:100%;cursor:pointer;border:none;border-radius:99px;
   background:var(--accent);color:var(--accent-ink);
-  padding:9px 0;font-size:13px;font-weight:600;
+  padding:6px 0;font-size:12.5px;font-weight:600;
   transition:background .15s;
 }
 .btn-primary:hover{background:var(--accent-hover)}
 .btn-primary:disabled{cursor:not-allowed;opacity:.6}
 
-/* Same height as .btn-primary so button rows line up. */
+/* Same height as .btn-primary so button rows line up.
+   --field-border, not --border: the fill sits barely above the panel it is on,
+   so the outline is what says "button". At --border that outline was 2:1, under
+   the 3:1 WCAG asks for a control boundary. --field-border does the same job on
+   the input fields and clears it at 3.05:1. */
 .btn-secondary{
-  cursor:pointer;border:1px solid var(--border);border-radius:99px;
+  cursor:pointer;border:1px solid var(--field-border);border-radius:99px;
   background:var(--surface-2);color:var(--text);
-  padding:9px 16px;font-size:13px;font-weight:500;white-space:nowrap;
+  padding:6px 16px;font-size:12.5px;font-weight:500;white-space:nowrap;
   transition:background .15s,color .15s,border-color .15s;
 }
 .btn-secondary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .btn-secondary:disabled{cursor:not-allowed;opacity:.6}
+/* Extra breathing room in front, for an action that belongs to a different
+   input than the buttons next to it. */
+/* Full width, for a button that is the only thing in its section. */
 .btn-secondary.wide{width:100%}
 
+/* 24×24 is the minimum WCAG 2.2 sets for a pointer target (2.5.8), and it puts
+   these on the same footing as the buttons in the section headers, which were
+   already that size. The four pixels they gained are paid back by the card's
+   own padding, so the list still shows the same number of tasks. */
 .icon-btn{
-  display:flex;height:20px;width:20px;flex:none;cursor:pointer;align-items:center;justify-content:center;
+  display:flex;height:24px;width:24px;flex:none;cursor:pointer;align-items:center;justify-content:center;
   border-radius:6px;border:none;background:transparent;color:var(--muted);
   transition:background .15s,color .15s;
 }
+.icon-btn svg{width:13px;height:13px}
 .icon-btn:hover{background:var(--surface-2);color:var(--text)}
 .icon-btn:disabled{cursor:not-allowed;opacity:.4}
 /* Destructive action — only turns red on hover so the row stays calm. */
@@ -161,28 +334,48 @@ summary::-webkit-details-marker{display:none}
 /* ---------------------------------------------------------------------- */
 /* Sections / fields                                                      */
 /* ---------------------------------------------------------------------- */
+/* Every section is a header plus a body, and the body brings its own padding.
+   So no padding and no gap here — those would push the header away from the
+   frame it is supposed to sit flush against. */
 .section{
-  display:flex;flex-direction:column;gap:9px;
-  border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px;
+  display:block;
+  border:1px solid var(--section-border);border-radius:8px;background:var(--surface);
 }
 .section-title{
-  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);
+  font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--section-title);
   margin:0;display:flex;align-items:center;justify-content:space-between;gap:8px;
 }
 
 /* Collapsible section: the whole header is the toggle, so its own controls
    (Clear / Refresh) stop the click from folding the panel — see popup.js. */
-.section.collapsible{display:block;padding:0}
+/* The header is a title bar, darker than the body below it. Without that the
+   panels run into one another and only the thin outer border separates them. */
 .section-head{
   display:flex;align-items:center;gap:8px;
   padding:9px 10px;cursor:pointer;user-select:none;
+  background:var(--section-head);
+  border-radius:7px 7px 0 0;
 }
-.section-head:hover{background:rgba(255,255,255,.03)}
+/* Folded away there is no body underneath, so the bar is the whole panel. */
+.section.collapsible:not([open]) > .section-head{border-radius:7px}
+.section-head:hover{background:var(--section-head-hover)}
 .section-head > .section-title{flex:1}
 .section-head .chev{margin-left:auto}
-.section.collapsible[open] > .section-head{border-bottom:1px solid var(--border)}
+.section.collapsible[open] > .section-head{border-bottom:1px solid var(--section-border)}
 .section.collapsible[open] > .section-head .chev{transform:rotate(180deg)}
 .section-body{display:flex;flex-direction:column;gap:9px;padding:10px}
+
+/* A header that is not a toggle: no pointer, no hover, and the bottom rule is
+   always there because a body always follows it. */
+.section-head.plain{cursor:default;border-bottom:1px solid var(--section-border)}
+.section-head.plain:hover{background:var(--section-head)}
+
+/* The tasks section takes whatever the panel gives it and passes it down to
+   the list. min-height:0 at each level is what lets a flex child shrink below
+   its content instead of overflowing. */
+.section.grow{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+.section.grow > .section-body{flex:1 1 auto;min-height:0}
 
 /* Action buttons living inside a collapsible header. */
 .head-actions{display:flex;align-items:center;gap:2px}
@@ -212,6 +405,17 @@ summary::-webkit-details-marker{display:none}
 }
 .btn-danger:hover{filter:brightness(1.1)}
 
+/* Destructive but rarely wanted — kept quiet so it isn't hit by accident. */
+.btn-link-danger{
+  align-self:center;cursor:pointer;border:none;background:none;
+  color:var(--muted);font-size:11px;padding:2px 6px;border-radius:4px;
+  text-decoration:underline;text-underline-offset:2px;
+  transition:color .15s;
+}
+/* --danger-text, not --danger: as text on the panel --danger reaches only
+   3.7:1. That is the whole reason --danger-text exists. */
+.btn-link-danger:hover{color:var(--danger-text)}
+
 .total-speed{
   font-size:11px;color:var(--muted);white-space:nowrap;
   font-variant-numeric:tabular-nums;
@@ -221,13 +425,15 @@ summary::-webkit-details-marker{display:none}
 .grow{flex:1;min-width:0}
 .field.fixed{width:80px}
 .label{font-size:11px;font-weight:500;color:var(--muted)}
+/* Label beside its input rather than above it, for rows where the height
+   matters more than the usual stacked layout. */
 .row{display:flex;align-items:flex-end;gap:6px}
 /* For rows pairing controls of different heights, e.g. a primary button
    next to a small one. */
 .row.middle{align-items:center}
 
 .ta{
-  width:100%;border-radius:6px;border:1px solid var(--border);background:var(--bg);
+  width:100%;border-radius:6px;border:1px solid var(--field-border);background:var(--bg);
   color:var(--text);padding:5px 8px;font-size:13px;
   outline:2px solid transparent;outline-offset:2px;
   transition:border-color .15s;
@@ -245,14 +451,79 @@ summary::-webkit-details-marker{display:none}
 }
 #otpCode{font-variant-numeric:tabular-nums;letter-spacing:.15em}
 select.ta{cursor:pointer}
-textarea.ta{resize:vertical}
+/* The link box takes the height the Add tab has left over.
+   Worked out in CSS rather than measured at runtime, because a flex chain
+   cannot reach into a <details> — Firefox renders its body in an internal
+   slot — and runtime measurement is what caused the layout to oscillate
+   before. The subtrahend is everything else on the tab: header, tabs and shell
+   padding, this section's own frame and buttons, the Files section, and the
+   gap between them.
+   It is rounded up by about ten pixels on purpose. Guessing low costs a
+   scrollbar on a tab that should not need one; guessing high costs a sliver of
+   unused space at the bottom, which is by far the cheaper mistake. The
+   min-height keeps the box usable if the window is shorter than the popup
+   asked for. */
+.linkbox{
+  height:calc(100vh - 356px);
+  min-height:96px;
+}
+/* The archive password field appears above the buttons and takes its own
+   95px, so the box gives exactly that back. */
+.linkbox.with-password{height:calc(100vh - 451px)}
+
+/* No resize handle: the height follows from the tab, so a handle would only
+   fight it. */
+textarea.ta{resize:none;min-height:56px}
 
 .hint{font-size:11px;color:var(--muted);line-height:1.5;margin:0}
 .hint.center{text-align:center;padding:8px 0}
-.hint.error{color:var(--danger)}
+.hint.error{color:var(--danger-text)}
+/* A status line with nothing to report shouldn't reserve padding and a flex
+   gap — that leaves a dead strip under the buttons above it. */
+.hint.center:empty{display:none}
 
 .checkline{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:var(--text)}
-.checkbox{width:14px;height:14px;flex:none;accent-color:var(--accent)}
+
+/* Toggle switch. The real checkbox stays in the DOM and keeps the id, so it
+   still carries the state and the label still toggles it — it is just moved
+   out of sight and drawn as the pill next to it. Styling the input itself is
+   not an option: pseudo-elements don't render on replaced elements. */
+.toggle-input{
+  position:absolute;width:1px;height:1px;opacity:0;margin:0;pointer-events:none;
+}
+/* Switched off, the track is a recess barely above the panel and the only thing
+   drawing the switch is its outline. At --section-border that was 1.61:1; a
+   control's boundary needs 3:1, which --field-border gives at 3.05:1. Switched
+   on the accent fill carries it and the border follows the fill. */
+.toggle{
+  position:relative;flex:none;
+  width:30px;height:17px;border-radius:99px;
+  background:var(--recess);border:1px solid var(--field-border);
+  transition:background .15s,border-color .15s;
+}
+.toggle::after{
+  content:"";position:absolute;top:2px;left:2px;
+  width:11px;height:11px;border-radius:99px;background:var(--toggle-knob);
+  transition:transform .15s,background .15s;
+}
+.toggle-input:checked + .toggle{background:var(--accent);border-color:var(--accent)}
+.toggle-input:checked + .toggle::after{transform:translateX(13px);background:var(--accent-ink)}
+.toggle-input:focus-visible + .toggle{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Switches that belong to the one above them. The rule on the left says which
+   ones, without needing a second heading for a group of three. */
+.suboptions{
+  display:flex;flex-direction:column;gap:7px;
+  margin:7px 0 0 9px;padding-left:12px;
+  border-left:2px solid var(--section-border);
+}
+/* Disabled by their parent switch, not by anything the user did wrong — so
+   they dim rather than take on an error or warning colour. */
+.suboptions.disabled{opacity:.45}
+.suboptions.disabled .checkline{cursor:not-allowed}
+@media (prefers-reduced-motion: reduce){
+  .toggle,.toggle::after{transition:none}
+}
 
 /* Credentials (nested collapsible) */
 .credentials{border:1px solid var(--border);border-radius:6px;overflow:hidden}
@@ -271,19 +542,22 @@ textarea.ta{resize:vertical}
 /* ---------------------------------------------------------------------- */
 /* Filter buttons                                                        */
 /* ---------------------------------------------------------------------- */
-.pills{display:flex;align-items:center;gap:6px}
-
 .filters{display:flex;gap:4px;flex-wrap:wrap}
+/* A chip with a body, not a ring around nothing. Transparent on a mid-grey
+   panel left these reading as faint outlines, and the outline alone was below
+   the 3:1 a control boundary needs. The unselected ones are sunk into the
+   panel, which also puts the selected cyan one 7.5:1 clear of the rest. */
 .fbtn{
-  cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);
+  cursor:pointer;border:1px solid var(--field-border);
+  background:var(--recess);color:var(--muted);
   font-size:11px;font-weight:500;padding:4px 10px;border-radius:99px;
   display:flex;align-items:center;gap:5px;
   transition:background .15s,color .15s,border-color .15s;
 }
-.fbtn:hover{color:var(--text)}
+.fbtn:hover{background:var(--fbtn-hover);color:var(--text)}
 .fbtn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
 .fbtn .n{
-  font-size:10px;font-weight:700;background:rgba(255,255,255,.09);
+  font-size:10px;font-weight:700;background:rgba(255,255,255,.12);
   border-radius:99px;padding:0 5px;font-variant-numeric:tabular-nums;
 }
 .fbtn.on .n{background:rgba(0,0,0,.18)}
@@ -292,14 +566,16 @@ textarea.ta{resize:vertical}
 /* Pagination                                                            */
 /* ---------------------------------------------------------------------- */
 .pager{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap}
+/* Same treatment as the filter chips — they are the same kind of control. */
 .pbtn{
-  cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);
+  cursor:pointer;border:1px solid var(--field-border);
+  background:var(--recess);color:var(--muted);
   font-size:11px;min-width:24px;height:24px;border-radius:99px;padding:0 7px;
   display:flex;align-items:center;justify-content:center;
   font-variant-numeric:tabular-nums;
   transition:background .15s,color .15s,border-color .15s;
 }
-.pbtn:hover:not(:disabled){color:var(--text);border-color:var(--muted)}
+.pbtn:hover:not(:disabled){background:var(--fbtn-hover);color:var(--text)}
 .pbtn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
 .pbtn:disabled{opacity:.35;cursor:default}
 .pager-info{font-size:11px;color:var(--muted);margin-left:4px;font-variant-numeric:tabular-nums}
@@ -340,46 +616,84 @@ textarea.ta{resize:vertical}
 /* ---------------------------------------------------------------------- */
 /* Task list                                                             */
 /* ---------------------------------------------------------------------- */
-/* All tasks are rendered; the list scrolls rather than truncating. The cap is
-   the popup's own height budget — Firefox tops popups out around 600px, and
-   the header, tabs, status bar and Add Links block already claim most of it. */
+/* All tasks are rendered; the list scrolls rather than truncating. It takes
+   whatever the section gives it — plain flex, since the tasks tab holds
+   nothing else. */
 .task-list{
   display:flex;flex-direction:column;gap:6px;
-  max-height:19rem;overflow-y:auto;
+  flex:1 1 auto;min-height:0;
+  overflow-y:auto;
+  /* Only two or three cards fit at a time, so the bar is the one hint that
+     forty more are below it. A track that is visible in its own right shows
+     how far down the list reaches — a lone thumb on an empty groove reads as
+     a stray line. Both are deliberately lighter than the surrounding panel. */
   scrollbar-width:thin;
-  scrollbar-color:var(--surface-2) transparent;
-  /* Room for the scrollbar so it never sits on top of the progress bars. */
-  padding-right:2px;
+  scrollbar-color:var(--scroll-thumb) var(--recess);
+  /* The list spans the section body exactly, so the frame sits the same 10px
+     from the cards on the left as it does from the scrollbar on the right.
+     The padding is the clearance between cards and bar, and covers the width
+     the bar takes when it expands on hover rather than its thin resting state.
+     No negative margin here: a pixel of overhang on one side is precisely what
+     makes the two sides look unequal. */
+  padding-right:14px;
 }
-.task-list::-webkit-scrollbar{width:6px}
-.task-list::-webkit-scrollbar-track{background:transparent}
-.task-list::-webkit-scrollbar-thumb{background:var(--surface-2);border-radius:99px}
+
+/* Firefox ignores these — it styles scrollbars through the two properties
+   above. Kept in step with them for any Chromium-based build. */
+.task-list::-webkit-scrollbar{width:10px}
+.task-list::-webkit-scrollbar-track{background:var(--recess);border-radius:99px}
+.task-list::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:99px}
 .task-list::-webkit-scrollbar-thumb:hover{background:var(--muted)}
 
+/* Padding and gap are a pixel tighter than they were, which is what pays for
+   the taller action buttons: the card grew by one pixel instead of four, so the
+   list still fits the same number of tasks. */
 .task{
-  background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px;
-  display:flex;flex-direction:column;gap:4px;
+  background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:5px;
+  display:flex;flex-direction:column;gap:3px;
 }
+/* Status, name and transfer rates share one line: the name takes what's left,
+   the badge and the rates keep their natural width at either end. Centred, not
+   baseline-aligned, because the badge is a pill rather than a run of text. */
+.task-head{display:flex;align-items:center;gap:8px}
 .task-name{
+  flex:1 1 auto;min-width:0;
   font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
 .task-row{display:flex;align-items:center;gap:8px}
+/* Fixed widths on the right so every bar ends at the same place. Wide enough
+   for "100%" and for two buttons — a task offering only one leaves the slot
+   empty rather than letting its bar run further than its neighbour's. */
+.pct{width:32px;text-align:right;flex:none}
+.task-acts{display:flex;align-items:center;gap:4px;flex:none;min-width:52px;justify-content:flex-end}
 
 .badge{
   white-space:nowrap;border-radius:2px;padding:1px 6px;font-size:10px;font-weight:700;
   text-transform:uppercase;letter-spacing:.025em;
 }
-.badge-downloading{background:rgba(0,221,255,.2);color:var(--accent)}
-.badge-finished{background:rgba(143,224,163,.2);color:var(--ok)}
-.badge-paused{background:rgba(181,180,192,.2);color:var(--muted)}
-.badge-error{background:rgba(243,139,168,.2);color:var(--danger)}
-.badge-waiting{background:rgba(250,179,135,.2);color:var(--warn)}
+/* The badge keeps its full width; the file name beside it is what gives way,
+   which it already does with an ellipsis. */
+.task-head .badge{flex:none}
+.badge-downloading{background:var(--badge-bg);color:var(--accent)}
+.badge-finished{background:var(--badge-bg);color:var(--ok)}
+.badge-paused{background:var(--badge-bg);color:var(--paused)}
+.badge-error{background:var(--badge-bg);color:var(--danger-text)}
+.badge-waiting{background:var(--badge-bg);color:var(--warn)}
 
-.bar{flex:1;height:4px;background:var(--border);border-radius:99px;overflow:hidden}
+.bar{flex:1;height:4px;background:var(--bar-track);border-radius:99px;overflow:hidden}
 .bar-fill{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .15s cubic-bezier(.4,0,.2,1)}
 .bar-fill.done{background:var(--ok)}
-.pct{font-size:10px;color:var(--muted);white-space:nowrap}
-.speed{display:flex;gap:10px;font-size:10px;color:var(--muted)}
-/* Same row, but carrying a failure reason instead of transfer rates. */
-.speed.failure{color:var(--danger)}
-.speed.failure span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pct{font-size:10px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.speed{
+  flex:0 0 auto;display:flex;gap:10px;
+  font-size:10px;color:var(--muted);white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+/* Failure reason — its own line, since it can run long.
+   --danger-text like every other red text: --danger reached 4.33:1 on the card,
+   just under the 4.5:1 small type needs. It was the one place the switch to
+   --danger-text was missed. */
+.failure{
+  font-size:10px;color:var(--danger-text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}

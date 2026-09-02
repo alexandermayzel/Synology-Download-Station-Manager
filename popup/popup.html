@@ -12,7 +12,9 @@
     /* Critical inline CSS — guarantees Firefox sees a sized popup on the
        very first frame, before the external stylesheet finishes loading.
        Without this the body starts at 0×0 and Firefox auto-closes the popup. */
-    body { width: 640px; min-height: 200px; background: #42414d; margin: 0; }
+    /* 600px is the tallest Firefox will render a popup; claiming it up front
+       means the task list can use everything that's left over. */
+    body { width: 640px; height: 600px; background: #42414d; margin: 0; }
   </style>
   <link rel="stylesheet" href="popup.css" />
 </head>
@@ -26,76 +28,155 @@
   </div>
 
   <!-- Header -->
+  <!-- Title left, connection status right. Sharing one row with the title
+       saves a whole strip of height for the task list. -->
   <header class="header">
     <img src="../icons/icon-48.png" alt="" class="logo" />
     <h1 class="title" data-i18n="extensionName">Synology - Download Station Manager</h1>
+    <span id="statusDot" class="dot dot-checking" aria-hidden="true"></span>
+    <!-- Connecting, connected, or why not. The one place the extension answers
+         "is it working?", so it is announced rather than only drawn. -->
+    <span id="statusText" class="status-text" role="status" data-i18n="connecting">Connecting…</span>
+    <span id="totalSpeed" class="total-speed" hidden></span>
+    <button id="btnTest" class="btn-sm" data-i18n="test">Test</button>
   </header>
 
-  <!-- Tabs -->
-  <nav class="tabs">
-    <button type="button" class="tab active" data-tab="downloads" data-i18n="tabDownloads">Downloads</button>
-    <button type="button" class="tab" data-tab="settings" data-i18n="tabSettings">Settings</button>
+  <!-- Every icon that appears more than once, drawn once here and referenced
+       with <use>. The bin is why: it existed as two separate paths, one for the
+       header and a narrower one for the task cards that was missing the two
+       strokes inside the body — a difference nothing would ever have reported.
+       Pause and resume had drifted onto different grids the same way. -->
+  <svg hidden aria-hidden="true">
+    <!-- One closed silhouette, so the same path works outlined and filled. -->
+    <symbol id="homeIcon" viewBox="0 0 14 14">
+      <path d="M7 1.9 1.8 6.1v6.1h10.4V6.1z"/>
+    </symbol>
+    <symbol id="binIcon" viewBox="0 0 14 14">
+      <path d="M2.5 3.5h9M5.5 3.5v-1h3v1M3.5 3.5l.6 8h5.8l.6-8M6 5.5v4M8 5.5v4"
+            fill="none" stroke="currentColor" stroke-width="1.3"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="pauseIcon" viewBox="0 0 12 12">
+      <rect x="2" y="2" width="3" height="8" rx=".5" fill="currentColor"/>
+      <rect x="7" y="2" width="3" height="8" rx=".5" fill="currentColor"/>
+    </symbol>
+    <symbol id="playIcon" viewBox="0 0 12 12">
+      <polygon points="3,2 10,6 3,10" fill="currentColor"/>
+    </symbol>
+  </svg>
+
+  <!-- Tabs. Each is a wrapper holding two buttons: the tab itself and the
+       little house that marks which one the popup opens on. Nested buttons
+       are invalid HTML, hence the wrapper rather than an icon inside the tab.
+       The wrapper is role="presentation" so the tabs still count as children
+       of the tablist, which is what the roles require. -->
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Sections" data-i18n-aria-label="tabsLabel">
+    <div class="tabitem" role="presentation">
+      <button type="button" class="tab active" id="tab-add" data-tab="add"
+              role="tab" aria-selected="true" aria-controls="panel-add" tabindex="0"
+              data-i18n="tabAdd">Add</button>
+      <button type="button" class="home" data-home="add" data-i18n-title="setAsHome" aria-pressed="false">
+        <svg aria-hidden="true"><use href="#homeIcon"/></svg>
+      </button>
+    </div>
+    <div class="tabitem" role="presentation">
+      <button type="button" class="tab" id="tab-tasks" data-tab="tasks"
+              role="tab" aria-selected="false" aria-controls="panel-tasks" tabindex="-1"
+              data-i18n="tasks">Tasks</button>
+      <button type="button" class="home" data-home="tasks" data-i18n-title="setAsHome" aria-pressed="false">
+        <svg aria-hidden="true"><use href="#homeIcon"/></svg>
+      </button>
+    </div>
+    <div class="tabitem" role="presentation">
+      <button type="button" class="tab" id="tab-settings" data-tab="settings"
+              role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1"
+              data-i18n="tabSettings">Settings</button>
+      <button type="button" class="home" data-home="settings" data-i18n-title="setAsHome" aria-pressed="false">
+        <svg aria-hidden="true"><use href="#homeIcon"/></svg>
+      </button>
+    </div>
   </nav>
 
-  <!-- ===================== Downloads tab ===================== -->
-  <section class="panel active" data-panel="downloads">
+  <!-- ===================== Add tab ===================== -->
+  <!-- With the task list on its own tab there is room to give each input what
+       it needs, instead of three of them sharing one collapsible block. -->
+  <section class="panel active" id="panel-add" data-panel="add"
+           role="tabpanel" aria-labelledby="tab-add" tabindex="0">
 
-    <!-- Status bar -->
-    <div class="status-bar">
-      <span id="statusDot" class="dot dot-checking"></span>
-      <span id="statusText" class="status-text" data-i18n="connecting">Connecting…</span>
-      <span id="totalSpeed" class="total-speed" hidden></span>
-      <button id="btnTest" class="btn-sm" data-i18n="test">Test</button>
-    </div>
-
-    <!-- Add downloads — collapsed by default so the task list gets the room -->
-    <details class="section collapsible" id="addSection" open>
+    <details class="section collapsible" id="addLinksSection" open>
       <summary class="section-head">
-        <span class="section-title" data-i18n="addDownloads">Add downloads</span>
+        <span class="section-title" data-i18n="addLinksSection">Links</span>
         <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </summary>
       <div class="section-body">
-        <textarea id="bulkLinks" rows="4" data-i18n-placeholder="oneLinkPerLine"
-                  placeholder="One link per line…" class="ta"></textarea>
+        <textarea id="bulkLinks" rows="8" data-i18n-placeholder="oneLinkPerLine"
+                  placeholder="One link per line…" class="ta linkbox"></textarea>
 
-        <!-- Only shown while "Extract archives automatically" is on in Options -->
+        <!-- Belongs to the links above, not in a category of its own: it is
+             sent with them and applies only to this one batch. Shown while
+             "Extract archives automatically" is on in Settings. -->
         <div class="field" id="archivePasswordField" hidden>
           <label for="unzipPassword" class="label" data-i18n="archivePassword">Archive password (optional)</label>
           <input type="password" id="unzipPassword" class="ta" autocomplete="off" />
           <span class="hint" data-i18n="archivePasswordHint">
-            Sent with the links you add now. Not stored — it is gone when the popup closes.
+            Applies only to the links you add now. It is not stored.
           </span>
         </div>
+
+        <!-- Which links the NAS would not take. Sits under the box because the
+             box is what it is about: the links left in it are exactly the ones
+             that failed, and everything accepted has been taken out. -->
+        <p id="linksMessage" class="hint error" role="status" hidden></p>
 
         <div class="row middle">
           <button id="btnAddBulk" class="btn-primary grow" data-i18n="addAll">Add all links</button>
           <button id="btnClearList" class="btn-secondary" data-i18n="clearList">Clear list</button>
         </div>
-
-        <button id="btnAddTorrent" class="btn-secondary wide" data-i18n="addTorrent">Add torrent file…</button>
-        <input type="file" id="torrentInput" accept=".torrent,.nzb" multiple hidden />
-
-        <p id="bulkStatus" class="hint center"></p>
       </div>
     </details>
 
-    <!-- Tasks -->
-    <details class="section collapsible" id="tasksSection" open>
+    <details class="section collapsible" id="addFilesSection" open>
       <summary class="section-head">
+        <span class="section-title" data-i18n="addFilesSection">Files</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
+        <button id="btnAddTorrent" class="btn-secondary wide" data-i18n="addTorrent">Add torrent file…</button>
+        <input type="file" id="torrentInput" accept=".torrent,.nzb" multiple hidden />
+        <span class="hint" data-i18n="addFilesHint">
+          Torrent and NZB files, several at once.
+        </span>
+      </div>
+    </details>
+
+    <!-- How the last add went. Announced, since it is the only confirmation
+         that links actually reached the NAS. -->
+    <p id="bulkStatus" class="hint center" role="status"></p>
+  </section>
+
+  <!-- ===================== Tasks tab ===================== -->
+  <!-- A plain section rather than a collapsible one: it is the only thing on
+       this tab, so there is nothing to fold away — and Firefox renders the
+       body of a disclosure element in an internal slot, which a flex chain
+       cannot reach through. That is what forced the old runtime height
+       measurement, and why this one is a plain div. -->
+  <section class="panel" id="panel-tasks" data-panel="tasks"
+           role="tabpanel" aria-labelledby="tab-tasks" tabindex="0">
+    <div class="section grow">
+      <div class="section-head plain">
         <span class="section-title" data-i18n="tasks">Tasks</span>
         <div class="head-actions">
           <button id="btnPauseAll" class="head-btn" title="Pause all" data-i18n-title="pauseAll">
-            <svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-              <rect x="2" y="2" width="3" height="8" rx=".5"/><rect x="7" y="2" width="3" height="8" rx=".5"/>
-            </svg>
+            <svg aria-hidden="true"><use href="#pauseIcon"/></svg>
           </button>
           <button id="btnResumeAll" class="head-btn" title="Resume all" data-i18n-title="resumeAll">
-            <svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
-              <polygon points="3,2 10,6 3,10"/>
-            </svg>
+            <svg aria-hidden="true"><use href="#playIcon"/></svg>
           </button>
           <span class="head-sep"></span>
           <button id="btnClear" class="head-btn" title="Clear finished downloads" data-i18n-title="clearFinished">
@@ -108,10 +189,7 @@
             </svg>
           </button>
           <button id="btnDeleteAll" class="head-btn danger" title="Delete all tasks" data-i18n-title="deleteAll">
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"
-                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M2.5 3.5h9M5.5 3.5v-1h3v1M3.5 3.5l.6 8h5.8l.6-8M6 5.5v4M8 5.5v4"/>
-            </svg>
+            <svg aria-hidden="true"><use href="#binIcon"/></svg>
           </button>
           <button id="btnRefresh" class="head-btn" title="Refresh" data-i18n-title="refresh">
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3"
@@ -120,11 +198,7 @@
             </svg>
           </button>
         </div>
-        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </summary>
+      </div>
       <div class="section-body">
 
       <!-- Shown only after "Delete all" is clicked -->
@@ -157,17 +231,24 @@
         </button>
       </div>
 
+      <!-- Why a pause, resume, retry, remove or bulk action did not work.
+           These used to fail in silence: the request came back with an error,
+           the list was redrawn unchanged, and the button simply appeared to do
+           nothing. Takes no room until there is something to say. -->
+      <p id="taskStatus" class="hint center error" role="status" hidden></p>
+
       <div id="taskList" class="task-list">
         <p class="hint center" data-i18n="connecting">Connecting…</p>
       </div>
 
       <div class="pager" id="pager" hidden></div>
       </div>
-    </details>
+    </div>
   </section>
 
   <!-- ===================== Settings tab ===================== -->
-  <section class="panel" data-panel="settings">
+  <section class="panel" id="panel-settings" data-panel="settings"
+           role="tabpanel" aria-labelledby="tab-settings" tabindex="0">
 
     <details class="section collapsible" id="connectionSection" open>
       <summary class="section-head">
@@ -198,7 +279,7 @@
       </div>
 
       <!-- Credentials (nested collapsible) -->
-      <details class="credentials">
+      <details class="credentials" id="credentialsSection">
         <summary class="credentials-toggle">
           <span data-i18n="credentials">Credentials</span>
           <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -233,47 +314,125 @@
           so you should only need it once.
         </span>
       </div>
+
+      <!-- Repeated here so the connection details can be saved without
+           scrolling past everything else in this tab. -->
+      <div class="row middle">
+        <button id="btnSaveConnection" class="btn-primary grow" data-i18n="saveAndTest">Save and test connection</button>
+        <button id="btnLogout" class="btn-secondary" data-i18n="logout">Sign out</button>
+      </div>
+      <!-- Says what to do about the red fields, right where they are. -->
+      <p id="connMessage" class="hint error" hidden></p>
+      <span class="hint" data-i18n="logoutHint">
+        Sign out: clears the username and password, and revokes this device's two-factor
+        trust. The NAS address and all options stay.
+      </span>
       </div>
     </details>
 
-    <details class="section collapsible" id="optionsSection" open>
+    <!-- Everything that shapes what gets downloaded and where it lands. -->
+    <details class="section collapsible" id="downloadsSection" open>
       <summary class="section-head">
-        <span class="section-title" data-i18n="options">Options</span>
+        <span class="section-title" data-i18n="settingsDownloads">Downloads</span>
         <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </summary>
       <div class="section-body">
-      <label class="checkline">
-        <input type="checkbox" id="autoCaptureMagnets" class="checkbox" />
-        <span data-i18n="autoCaptureMagnets">Auto-capture magnet links</span>
-      </label>
+      <!-- Where downloads land comes first: it is the one setting here that
+           has to be right before anything can be downloaded at all. -->
       <div class="field">
-        <label class="checkline">
-          <input type="checkbox" id="extractArchives" class="checkbox" />
-          <span data-i18n="extractArchives">Extract archives automatically</span>
-        </label>
-        <span class="hint" data-i18n="extractArchivesHint">
-          Auto-extract itself is a server-wide setting only an administrator can switch on,
-          in DSM under Download Station → Settings → Auto Extract. This option adds an
-          archive password field next to the link list, so password-protected archives can
-          be extracted.
+        <label for="defaultDestination" class="label" data-i18n="defaultDestination">Default destination (optional)</label>
+        <div class="row middle">
+          <input type="text" id="defaultDestination" placeholder="downloads" class="ta grow" />
+          <button type="button" id="btnSaveDest" class="btn-sm" data-i18n="save">Save</button>
+        </div>
+        <span class="hint" data-i18n="destinationHint">
+          Folder name relative to a shared folder, no leading slash (e.g. "downloads",
+          not "/downloads" or "/volume1/downloads"). Leave empty to use the default
+          destination already configured on the NAS itself (DSM → Download Station →
+          Settings → General).
         </span>
       </div>
 
+      <label class="checkline">
+        <input type="checkbox" id="autoCaptureMagnets" class="toggle-input" />
+        <span class="toggle" aria-hidden="true"></span>
+        <span data-i18n="autoCaptureMagnets">Auto-capture magnet links</span>
+      </label>
+
       <div class="field">
         <label class="checkline">
-          <input type="checkbox" id="keepaliveEnabled" class="checkbox" />
-          <span data-i18n="keepaliveLabel">Keep session alive in background</span>
+          <input type="checkbox" id="extractArchives" class="toggle-input" />
+          <span class="toggle" aria-hidden="true"></span>
+          <span data-i18n="extractArchives">Extract archives automatically</span>
         </label>
-        <span class="hint" data-i18n="keepaliveHint">
-          Pings the NAS every 3 minutes so the popup shows "Connected" instantly.
-          Disable to allow HDD hibernation on the NAS when idle.
+        <span class="hint" data-i18n="extractArchivesHint">
+          Adds an archive password field next to the link list, so password-protected
+          archives can be extracted. Auto-extract itself is a server-wide setting in DSM
+          under Download Station → Settings → Auto Extract.
         </span>
       </div>
+      </div>
+    </details>
+
+    <details class="section collapsible" id="notificationsSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="settingsNotifications">Notifications</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
       <div class="field">
-        <label for="refreshInterval" class="label" data-i18n="taskRefreshInterval">Task refresh interval</label>
+        <label class="checkline">
+          <input type="checkbox" id="notificationsEnabled" class="toggle-input" />
+          <span class="toggle" aria-hidden="true"></span>
+          <span data-i18n="notificationsLabel">Notifications</span>
+        </label>
+        <!-- Indented and greyed out while the switch above is off. Each keeps
+             its own state, so turning the master back on restores the same
+             selection instead of resetting to all-on. -->
+        <div class="suboptions" id="notifySubOptions">
+          <label class="checkline">
+            <input type="checkbox" id="notifyOnAdded" class="toggle-input" />
+            <span class="toggle" aria-hidden="true"></span>
+            <span data-i18n="notifyOnAddedLabel">Downloads added</span>
+          </label>
+          <label class="checkline">
+            <input type="checkbox" id="notifyOnFailed" class="toggle-input" />
+            <span class="toggle" aria-hidden="true"></span>
+            <span data-i18n="notifyOnFailedLabel">Downloads failed</span>
+          </label>
+          <label class="checkline">
+            <input type="checkbox" id="notifyOnFinished" class="toggle-input" />
+            <span class="toggle" aria-hidden="true"></span>
+            <span data-i18n="notifyOnFinishedLabel">Downloads finished</span>
+          </label>
+        </div>
+        <span class="hint" data-i18n="notificationsHint">
+          System messages outside the popup. Problems that stop the extension working
+          at all — signing in, or the destination folder — are reported regardless of
+          these settings.
+        </span>
+      </div>
+      </div>
+    </details>
+
+    <!-- How the task list behaves: what it shows, in what order, how often. -->
+    <details class="section collapsible" id="taskOptionsSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="tasks">Tasks</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
+      <div class="field">
+        <label for="refreshInterval" class="label" data-i18n="taskRefreshInterval">Background task refresh interval</label>
         <select id="refreshInterval" class="ta" style="width:150px">
           <option value="3" data-i18n="interval3">3 seconds</option>
           <option value="10" data-i18n="interval10">10 seconds</option>
@@ -282,8 +441,19 @@
         </select>
         <span class="hint" data-i18n="refreshIntervalHint">
           Only runs while there are active tasks — once everything is finished or paused,
-          refreshing stops on its own.
+          refreshing stops on its own. For half a minute after an add the list refreshes
+          every 3 seconds regardless, then returns to this setting.
         </span>
+      </div>
+
+      <div class="field">
+        <label for="tasksPerPage" class="label" data-i18n="tasksPerPage">Tasks per page</label>
+        <select id="tasksPerPage" class="ta" style="width:120px">
+          <option value="10">10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
       </div>
 
       <div class="field">
@@ -303,7 +473,8 @@
         </div>
       </div>
 
-      <!-- Only shown while "By status" is the chosen sort -->
+      <!-- Stays directly under the sort it belongs to: it is only shown while
+           "By status" is the chosen one. -->
       <div class="field" id="statusOrderField">
         <span class="label" data-i18n="statusOrder">Status order</span>
         <div class="order-list" id="orderList"></div>
@@ -316,62 +487,91 @@
         </div>
       </div>
 
-      <div class="field">
-        <label for="tasksPerPage" class="label" data-i18n="tasksPerPage">Tasks per page</label>
-        <select id="tasksPerPage" class="ta" style="width:120px">
-          <option value="25">25</option>
-          <option value="50">50</option>
-          <option value="100">100</option>
-        </select>
       </div>
+    </details>
 
+    <!-- What is left over: one switch that belongs to no category of its own. -->
+    <details class="section collapsible" id="optionsSection" open>
+      <summary class="section-head">
+        <span class="section-title" data-i18n="options">Advanced options</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </summary>
+      <div class="section-body">
       <div class="field">
-        <label for="defaultDestination" class="label" data-i18n="defaultDestination">Default destination (optional)</label>
-        <input type="text" id="defaultDestination" placeholder="downloads" class="ta" />
-        <span class="hint" data-i18n="destinationHint">
-          Folder name relative to a shared folder, no leading slash (e.g. "downloads",
-          not "/downloads" or "/volume1/downloads"). Leave empty to use the default
-          destination already configured on the NAS itself (DSM → Download Station →
-          Settings → General).
+        <label class="checkline">
+          <input type="checkbox" id="keepaliveEnabled" class="toggle-input" />
+          <span class="toggle" aria-hidden="true"></span>
+          <span data-i18n="keepaliveLabel">Keep session alive in background</span>
+        </label>
+        <span class="hint" data-i18n="keepaliveHint">
+          Pings the NAS every 3 minutes so the popup shows "Connected" instantly.
+          Disable to allow HDD hibernation on the NAS when idle.
         </span>
       </div>
       </div>
     </details>
 
-    <button id="btnSave" class="btn-primary" data-i18n="saveSettings">Save Settings</button>
+    <!-- No save button anywhere above: every control applies as soon as it is
+         changed. Only the connection block and the destination need one. -->
+
+    <!-- Shown only after "Reset all settings" is clicked -->
+    <div class="confirm-bar" id="resetAllConfirm" hidden>
+      <span class="hint" data-i18n="confirmResetAll">
+        Reset all settings? Credentials, connection details and every option are deleted.
+        Downloads on the NAS are not touched.
+      </span>
+      <button type="button" id="btnResetAllYes" class="btn-danger" data-i18n="resetAll">Reset all settings</button>
+      <button type="button" id="btnResetAllNo" class="btn-sm" data-i18n="cancel">Cancel</button>
+    </div>
+    <button id="btnResetAll" class="btn-link-danger" data-i18n="resetAll">Reset all settings</button>
   </section>
 
 </div>
 
 <template id="taskCardTpl">
   <div class="task">
-    <div class="task-name" data-field="name"></div>
-    <div class="task-row">
+    <!-- Status, name and transfer rates share the top line.
+         The badge used to sit next to the bar, where its width — anything from
+         "FERTIG" to "ATTENTE DE L'HÉBERGEUR" — decided where the bar started, so
+         no two bars were the same length. Up here it costs the bar nothing and
+         the long labels finally have room. -->
+    <div class="task-head">
       <span class="badge" data-field="badge"></span>
+      <div class="task-name" data-field="name"></div>
+      <div class="speed" data-field="speed" hidden></div>
+    </div>
+    <!-- The bar spans the card. Percentage and buttons keep fixed widths on the
+         right, so the bar ends in the same place whether a task offers one
+         action or two. -->
+    <div class="task-row">
       <div class="bar"><div class="bar-fill" data-field="bar"></div></div>
       <span class="pct" data-field="pct"></span>
-      <button class="icon-btn" title="Pause" data-i18n-title="pause" data-action="pauseTask" data-field="pauseBtn" hidden>
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="1" width="3" height="8" rx="0.5"/><rect x="6" y="1" width="3" height="8" rx="0.5"/></svg>
-      </button>
-      <button class="icon-btn" title="Resume" data-i18n-title="resume" data-action="resumeTask" data-field="resumeBtn" hidden>
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><polygon points="2,1 9,5 2,9"/></svg>
-      </button>
-      <button class="icon-btn" title="Retry" data-i18n-title="retry" data-action="retryTask" data-field="retryBtn" hidden>
-        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M10 6a4 4 0 1 1-1.2-2.85"/><path d="M10.2 1.4v2.6H7.6"/>
-        </svg>
-      </button>
-      <button class="icon-btn danger" title="Remove" data-i18n-title="remove" data-action="deleteTask" data-field="removeBtn" hidden>
-        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M2.5 3.5h7M5 3.5V2.5h2v1M3.5 3.5l.5 6h4l.5-6"/>
-        </svg>
-      </button>
+      <div class="task-acts">
+        <button class="icon-btn" title="Pause" data-i18n-title="pause" data-action="pauseTask" data-field="pauseBtn" hidden>
+          <svg aria-hidden="true"><use href="#pauseIcon"/></svg>
+        </button>
+        <button class="icon-btn" title="Resume" data-i18n-title="resume" data-action="resumeTask" data-field="resumeBtn" hidden>
+          <svg aria-hidden="true"><use href="#playIcon"/></svg>
+        </button>
+        <button class="icon-btn" title="Retry" data-i18n-title="retry" data-action="retryTask" data-field="retryBtn" hidden>
+          <svg aria-hidden="true" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 6a4 4 0 1 1-1.2-2.85"/><path d="M10.2 1.4v2.6H7.6"/>
+          </svg>
+        </button>
+        <button class="icon-btn danger" title="Remove" data-i18n-title="remove" data-action="deleteTask" data-field="removeBtn" hidden>
+          <svg aria-hidden="true"><use href="#binIcon"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="speed" data-field="speed" hidden></div>
+    <!-- Own line: a failure reason can be long and shouldn't squeeze the name. -->
+    <div class="failure" data-field="failure" hidden></div>
   </div>
 </template>
+<script src="../actions.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

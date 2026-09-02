@@ -13,8 +13,14 @@
   },
 
   "loading": { "message": "Loading…" },
-  "tabDownloads": { "message": "Downloads" },
   "tabSettings": { "message": "Settings" },
+  "tabAdd": { "message": "Add" },
+  "tabsLabel": { "message": "Sections" },
+  "taskActionFailed": { "message": "That did not work." },
+  "addLinksSection": { "message": "Links" },
+  "addFilesSection": { "message": "Files" },
+  "addFilesHint": { "message": "Torrent and NZB files, several at once." },
+  "setAsHome": { "message": "Open the popup on this tab" },
 
   "connecting": { "message": "Connecting…" },
   "connected": { "message": "Connected" },
@@ -23,14 +29,13 @@
     "placeholders": { "version": { "content": "$1", "example": "6" } }
   },
   "connectionFailed": { "message": "Connection failed" },
-  "notConnected": { "message": "Not connected" },
+  "errNasUnreachable": { "message": "The NAS did not respond. It may be asleep or unreachable." },
   "extensionError": { "message": "Extension error" },
   "backgroundUnavailable": { "message": "Background unavailable" },
   "backgroundUnreachable": { "message": "Could not reach background." },
   "errorPrefix": { "message": "Error:" },
   "test": { "message": "Test" },
 
-  "addDownloads": { "message": "Add downloads" },
   "oneLinkPerLine": { "message": "One link per line…" },
   "addAll": { "message": "Add all links" },
   "clearList": { "message": "Clear list" },
@@ -60,10 +65,14 @@
     }
   },
   "addLinksFailed": { "message": "Failed to add links." },
+  "addingInProgress": { "message": "Adding…" },
+  "addBusy": { "message": "Links are already being added. Please wait." },
+  "linksFailed": { "message": "$COUNT$ link(s) could not be added. They are still in the list.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksFailedReason": { "message": "$COUNT$ link(s) could not be added: $REASON$ They are still in the list.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
+  "linksUncertain": { "message": "The NAS did not answer, so whether these $COUNT$ link(s) arrived is unknown. Check Tasks before trying again.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Finished" },
   "filterPaused": { "message": "Paused" },
-  "clear": { "message": "Clear" },
   "refresh": { "message": "Refresh" },
   "pauseAll": { "message": "Pause all" },
   "resumeAll": { "message": "Resume all" },
@@ -85,6 +94,14 @@
   "remove": { "message": "Remove" },
   "setupRequired": { "message": "Set up the connection first — host, username and password are required." },
   "setupRequiredShort": { "message": "Connection not set up" },
+  "fillRequiredField": {
+    "message": "Please fill in the required field: $FIELD$.",
+    "placeholders": { "field": { "content": "$1", "example": "Password" } }
+  },
+  "fillRequiredFields": {
+    "message": "Please fill in the required fields: $FIELDS$.",
+    "placeholders": { "fields": { "content": "$1", "example": "Username and Password" } }
+  },
   "pagerInfo": {
     "message": "$FROM$–$TO$ of $TOTAL$",
     "placeholders": {
@@ -96,8 +113,8 @@
   "prevPage": { "message": "Previous page" },
   "nextPage": { "message": "Next page" },
 
-  "taskRefreshInterval": { "message": "Task refresh interval" },
-  "refreshIntervalHint": { "message": "Only runs while there are active tasks — once everything is finished or paused, refreshing stops on its own." },
+  "taskRefreshInterval": { "message": "Background task refresh interval" },
+  "refreshIntervalHint": { "message": "Only runs while there are active tasks — once everything is finished or paused, refreshing stops on its own. For half a minute after an add the list refreshes every 3 seconds regardless, then returns to this setting." },
   "interval3": { "message": "3 seconds" },
   "interval10": { "message": "10 seconds" },
   "interval30": { "message": "30 seconds" },
@@ -136,7 +153,9 @@
   "username": { "message": "Username" },
   "password": { "message": "Password" },
 
-  "options": { "message": "Options" },
+  "options": { "message": "Advanced options" },
+  "settingsDownloads": { "message": "Downloads" },
+  "settingsNotifications": { "message": "Notifications" },
   "autoCaptureMagnets": { "message": "Auto-capture magnet links" },
   "extractArchives": { "message": "Extract archives automatically" },
   "extractArchivesHint": { "message": "Adds an archive password field next to the link list, so password-protected archives can be extracted. Auto-extract itself is a server-wide setting in DSM under Download Station → Settings → Auto Extract." },
@@ -149,8 +168,12 @@
     }
   },
   "archivePassword": { "message": "Archive password (optional)" },
-  "archivePasswordHint": { "message": "Sent with the links you add now. Not stored — it is gone when the popup closes." },
+  "archivePasswordHint": { "message": "Applies only to the links you add now. It is not stored." },
   "statusExtracting": { "message": "Extracting" },
+  "statusSeeding": { "message": "Seeding" },
+  "statusFinishing": { "message": "Finishing" },
+  "statusChecking": { "message": "Checking" },
+  "statusHostWaiting": { "message": "Waiting for host" },
   "keepaliveLabel": { "message": "Keep session alive in background" },
   "keepaliveHint": {
     "message": "Pings the NAS every 3 minutes so the popup shows \"Connected\" instantly. Enabling might block HDD hibernation on the NAS when in idle."
@@ -159,13 +182,29 @@
   "destinationHint": {
     "message": "Folder name relative to a shared folder, no leading slash (e.g. \"downloads\", not \"/downloads\" or \"/volume1/downloads\"). Leave empty to use the default destination already configured on the NAS itself (DSM → Download Station → Settings → General)."
   },
-  "saveSettings": { "message": "Save Settings" },
+  "resetAll": { "message": "Reset all settings" },
+  "confirmResetAll": { "message": "Reset all settings? Credentials, connection details and every option are deleted. Downloads on the NAS are not touched." },
+  "logout": { "message": "Sign out" },
+  "logoutHint": { "message": "Sign out: clears the username and password, and revokes this device's two-factor trust. The NAS address and all options stay." },
+  "saveAndTest": { "message": "Save and test connection" },
+  "save": { "message": "Save" },
   "saved": { "message": "Saved!" },
 
   "notifyAdded": { "message": "Download added successfully" },
+  "notificationsLabel": { "message": "Notifications" },
+  "notificationsHint": { "message": "System messages outside the popup. Problems that stop the extension working at all — signing in, or the destination folder — are reported regardless of these settings." },
+  "notifyOnAddedLabel": { "message": "Downloads added" },
+  "notifyOnFailedLabel": { "message": "Downloads failed" },
+  "notifyOnFinishedLabel": { "message": "Downloads finished" },
+  "notifyAllDone": { "message": "All downloads finished" },
+  "notifyDoneCount":   { "message": "$COUNT$ completed", "placeholders": { "count": { "content": "$1", "example": "12" } } },
+  "notifyFailedCount": { "message": "$COUNT$ failed",    "placeholders": { "count": { "content": "$1", "example": "2" } } },
+  "notifyPausedCount": { "message": "$COUNT$ paused",    "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Failed" },
   "notifyError": { "message": "Download Station — Error" },
   "notifyPartial": { "message": "Download Station — Partial failure" },
+  "notifyWaking": { "message": "The NAS is asleep. Waiting for it to answer, then adding the download." },
+  "notifyUncertain": { "message": "The NAS did not answer. Whether the download arrived is unknown — check Tasks before adding it again." },
   "notifyBulkAdded": {
     "message": "$COUNT$ link(s) added",
     "placeholders": { "count": { "content": "$1", "example": "12" } }

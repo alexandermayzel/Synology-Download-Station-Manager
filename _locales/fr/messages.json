@@ -4,8 +4,14 @@
   "contextMenuTitle": { "message": "Télécharger avec Download Station" },
 
   "loading": { "message": "Chargement…" },
-  "tabDownloads": { "message": "Téléchargements" },
   "tabSettings": { "message": "Paramètres" },
+  "tabAdd": { "message": "Ajouter" },
+  "tabsLabel": { "message": "Sections" },
+  "taskActionFailed": { "message": "Cela n'a pas fonctionné." },
+  "addLinksSection": { "message": "Liens" },
+  "addFilesSection": { "message": "Fichiers" },
+  "addFilesHint": { "message": "Fichiers torrent et NZB, plusieurs à la fois." },
+  "setAsHome": { "message": "Ouvrir la fenêtre sur cet onglet" },
 
   "connecting": { "message": "Connexion…" },
   "connected": { "message": "Connecté" },
@@ -14,14 +20,13 @@
     "placeholders": { "version": { "content": "$1", "example": "6" } }
   },
   "connectionFailed": { "message": "Échec de la connexion" },
-  "notConnected": { "message": "Non connecté" },
+  "errNasUnreachable": { "message": "Le NAS n'a pas répondu. Il est peut-être en veille ou injoignable." },
   "extensionError": { "message": "Erreur de l'extension" },
   "backgroundUnavailable": { "message": "Service en arrière-plan indisponible" },
   "backgroundUnreachable": { "message": "Impossible de joindre le service en arrière-plan." },
   "errorPrefix": { "message": "Erreur :" },
   "test": { "message": "Tester" },
 
-  "addDownloads": { "message": "Ajouter des téléchargements" },
   "oneLinkPerLine": { "message": "Un lien par ligne…" },
   "addAll": { "message": "Ajouter tous les liens" },
   "clearList": { "message": "Vider la liste" },
@@ -51,10 +56,14 @@
     }
   },
   "addLinksFailed": { "message": "Impossible d'ajouter les liens." },
+  "addingInProgress": { "message": "Ajout en cours…" },
+  "addBusy": { "message": "Des liens sont déjà en cours d'ajout. Veuillez patienter." },
+  "linksFailed": { "message": "$COUNT$ lien(s) n'ont pas pu être ajoutés. Ils sont toujours dans la liste.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksFailedReason": { "message": "$COUNT$ lien(s) n'ont pas pu être ajoutés : $REASON$ Ils sont toujours dans la liste.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
+  "linksUncertain": { "message": "Le NAS n'a pas répondu ; on ignore si ces $COUNT$ lien(s) sont arrivés. Vérifiez les tâches avant de réessayer.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Terminées" },
   "filterPaused": { "message": "En pause" },
-  "clear": { "message": "Nettoyer" },
   "refresh": { "message": "Actualiser" },
   "pauseAll": { "message": "Tout mettre en pause" },
   "resumeAll": { "message": "Tout reprendre" },
@@ -76,6 +85,14 @@
   "remove": { "message": "Supprimer" },
   "setupRequired": { "message": "Configurez d'abord la connexion — hôte, nom d'utilisateur et mot de passe sont requis." },
   "setupRequiredShort": { "message": "Connexion non configurée" },
+  "fillRequiredField": {
+    "message": "Veuillez remplir le champ obligatoire : $FIELD$.",
+    "placeholders": { "field": { "content": "$1", "example": "Mot de passe" } }
+  },
+  "fillRequiredFields": {
+    "message": "Veuillez remplir les champs obligatoires : $FIELDS$.",
+    "placeholders": { "fields": { "content": "$1", "example": "Nom d'utilisateur et Mot de passe" } }
+  },
   "pagerInfo": {
     "message": "$FROM$–$TO$ sur $TOTAL$",
     "placeholders": {
@@ -87,8 +104,8 @@
   "prevPage": { "message": "Page précédente" },
   "nextPage": { "message": "Page suivante" },
 
-  "taskRefreshInterval": { "message": "Intervalle d'actualisation" },
-  "refreshIntervalHint": { "message": "Ne s'exécute que tant qu'il y a des tâches actives — une fois tout terminé ou en pause, l'actualisation s'arrête d'elle-même." },
+  "taskRefreshInterval": { "message": "Intervalle d'actualisation en arrière-plan" },
+  "refreshIntervalHint": { "message": "Ne s'exécute que tant qu'il y a des tâches actives — une fois tout terminé ou en pause, l'actualisation s'arrête d'elle-même. Pendant une demi-minute après un ajout, la liste s'actualise toutes les 3 secondes quoi qu'il arrive, puis revient à ce réglage." },
   "interval3": { "message": "3 secondes" },
   "interval10": { "message": "10 secondes" },
   "interval30": { "message": "30 secondes" },
@@ -127,7 +144,9 @@
   "username": { "message": "Nom d'utilisateur" },
   "password": { "message": "Mot de passe" },
 
-  "options": { "message": "Options" },
+  "options": { "message": "Options avancées" },
+  "settingsDownloads": { "message": "Téléchargements" },
+  "settingsNotifications": { "message": "Notifications" },
   "autoCaptureMagnets": { "message": "Intercepter automatiquement les liens magnet" },
   "extractArchives": { "message": "Extraire automatiquement les archives" },
   "extractArchivesHint": { "message": "Ajoute un champ de mot de passe à côté de la liste de liens, afin de pouvoir extraire les archives protégées. L'extraction automatique elle-même est un paramètre applicable à tout le serveur, dans DSM sous Download Station → Paramètres → Extraction automatique." },
@@ -140,8 +159,12 @@
     }
   },
   "archivePassword": { "message": "Mot de passe de l'archive (facultatif)" },
-  "archivePasswordHint": { "message": "Envoyé avec les liens que vous ajoutez maintenant. Non enregistré : il disparaît à la fermeture de la fenêtre." },
+  "archivePasswordHint": { "message": "Ne s'applique qu'aux liens que vous ajoutez maintenant. Il n'est pas enregistré." },
   "statusExtracting": { "message": "Extraction" },
+  "statusSeeding": { "message": "Partage" },
+  "statusFinishing": { "message": "Finalisation" },
+  "statusChecking": { "message": "Vérification" },
+  "statusHostWaiting": { "message": "Attente de l'hébergeur" },
   "keepaliveLabel": { "message": "Maintenir la session active en arrière-plan" },
   "keepaliveHint": {
     "message": "Interroge le NAS toutes les 3 minutes afin que la fenêtre affiche « Connecté » immédiatement. L'activer peut empêcher l'hibernation des disques durs du NAS en cas d'inactivité."
@@ -150,13 +173,29 @@
   "destinationHint": {
     "message": "Nom de dossier relatif à un dossier partagé, sans barre oblique initiale (p. ex. « downloads », et non « /downloads » ou « /volume1/downloads »). Laissez vide pour utiliser la destination par défaut déjà configurée sur le NAS lui-même (DSM → Download Station → Paramètres → Général)."
   },
-  "saveSettings": { "message": "Enregistrer les paramètres" },
+  "resetAll": { "message": "Réinitialiser tous les paramètres" },
+  "confirmResetAll": { "message": "Réinitialiser tous les paramètres ? Les identifiants, les informations de connexion et toutes les options sont supprimés. Les téléchargements sur le NAS ne sont pas touchés." },
+  "logout": { "message": "Se déconnecter" },
+  "logoutHint": { "message": "Se déconnecter : efface le nom d'utilisateur et le mot de passe et révoque la confiance accordée à cet appareil pour la validation en deux étapes. L'adresse du NAS et toutes les options sont conservées." },
+  "saveAndTest": { "message": "Enregistrer et tester la connexion" },
+  "save": { "message": "Enregistrer" },
   "saved": { "message": "Enregistré !" },
 
   "notifyAdded": { "message": "Téléchargement ajouté avec succès" },
+  "notificationsLabel": { "message": "Notifications" },
+  "notificationsHint": { "message": "Messages système hors de la fenêtre. Les problèmes qui empêchent tout fonctionnement — la connexion et le dossier de destination — sont signalés indépendamment de ces réglages." },
+  "notifyOnAddedLabel": { "message": "Téléchargements ajoutés" },
+  "notifyOnFailedLabel": { "message": "Téléchargements en échec" },
+  "notifyOnFinishedLabel": { "message": "Téléchargements terminés" },
+  "notifyAllDone": { "message": "Tous les téléchargements sont terminés" },
+  "notifyDoneCount":   { "message": "$COUNT$ terminés", "placeholders": { "count": { "content": "$1", "example": "12" } } },
+  "notifyFailedCount": { "message": "$COUNT$ en échec", "placeholders": { "count": { "content": "$1", "example": "2" } } },
+  "notifyPausedCount": { "message": "$COUNT$ en pause", "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Échec" },
   "notifyError": { "message": "Download Station — Erreur" },
   "notifyPartial": { "message": "Download Station — Échec partiel" },
+  "notifyWaking": { "message": "Le NAS est en veille. Attente de sa réponse, puis ajout du téléchargement." },
+  "notifyUncertain": { "message": "Le NAS n'a pas répondu. Impossible de savoir si le téléchargement est arrivé : vérifiez Tâches avant de le rajouter." },
   "notifyBulkAdded": {
     "message": "$COUNT$ lien(s) ajouté(s)",
     "placeholders": { "count": { "content": "$1", "example": "12" } }
