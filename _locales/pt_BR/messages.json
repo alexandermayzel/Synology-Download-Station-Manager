@@ -149,8 +149,7 @@
   "settingsNotifications": { "message": "Notificações" },
   "autoCaptureMagnets": { "message": "Capturar links magnet automaticamente" },
   "extractArchives": { "message": "Extrair arquivos compactados automaticamente" },
-  "extractArchivesHint": { "message": "Adiciona um campo de senha ao lado da lista de links, para que arquivos protegidos por senha possam ser extraídos. A extração automática em si é uma configuração de todo o servidor, no DSM em Download Station → Configurações → Extração automática." },
-  "extractArchivesHintNoAdmin": { "message": "Adiciona um campo de senha ao lado da lista de links, para que arquivos protegidos por senha possam ser extraídos. A extração automática em si é uma configuração de todo o servidor — esta conta não é gerente do Download Station, portanto apenas um administrador pode ativá-la, no DSM em Download Station → Configurações → Extração automática." },
+  "extractArchivesHint": { "message": "Adiciona um campo de senha de arquivo ao lado da lista de links. A extração em si é tarefa do NAS: no DSM, em Download Station > Configurações > Extração automática, marque Ativar extração automática para arquivos baixados. Cada conta configura isso para si, e vem desativado." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -159,7 +158,7 @@
     }
   },
   "archivePassword": { "message": "Senha do arquivo compactado (opcional)" },
-  "archivePasswordHint": { "message": "Vale apenas para os links que você adicionar agora. Não é salva." },
+  "archivePasswordHint": { "message": "Vale para os links que você adiciona nesta janela, não para os adicionados com o botão direito. A extensão não a armazena, mas o NAS sim: o DSM a acrescenta à sua lista de senhas e a testa em arquivos posteriores." },
   "statusExtracting": { "message": "Extraindo" },
   "statusSeeding": { "message": "Semeando" },
   "statusFinishing": { "message": "Finalizando" },

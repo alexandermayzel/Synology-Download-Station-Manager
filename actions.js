@@ -37,7 +37,6 @@ const ACTIONS = Object.freeze({
   // Reading
   LIST_TASKS:         'listTasks',
   GET_STATUS:         'getStatus',
-  GET_DS_INFO:        'getDsInfo',
   CONSUME_SETUP_FLAG: 'consumeSetupFlag',
 
   // Acting on one task. These four travel in the task card's data-action

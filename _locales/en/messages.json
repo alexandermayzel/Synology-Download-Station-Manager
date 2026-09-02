@@ -158,8 +158,7 @@
   "settingsNotifications": { "message": "Notifications" },
   "autoCaptureMagnets": { "message": "Auto-capture magnet links" },
   "extractArchives": { "message": "Extract archives automatically" },
-  "extractArchivesHint": { "message": "Adds an archive password field next to the link list, so password-protected archives can be extracted. Auto-extract itself is a server-wide setting in DSM under Download Station → Settings → Auto Extract." },
-  "extractArchivesHintNoAdmin": { "message": "Adds an archive password field next to the link list, so password-protected archives can be extracted. Auto-extract itself is a server-wide setting — this account is not a Download Station manager, so only an administrator can switch it on, in DSM under Download Station → Settings → Auto Extract." },
+  "extractArchivesHint": { "message": "Adds an archive-password field next to the link list. The extraction itself is the NAS's job: in DSM, under Download Station > Settings > Auto extract, tick Enable Auto extract for downloaded files. Every account sets that for itself, and it is off by default." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -168,7 +167,7 @@
     }
   },
   "archivePassword": { "message": "Archive password (optional)" },
-  "archivePasswordHint": { "message": "Applies only to the links you add now. It is not stored." },
+  "archivePasswordHint": { "message": "Applies to the links you add in this window, not to links added by right-click. The extension does not store it - but the NAS does: DSM adds it to its Password List and tries it on later archives." },
   "statusExtracting": { "message": "Extracting" },
   "statusSeeding": { "message": "Seeding" },
   "statusFinishing": { "message": "Finishing" },

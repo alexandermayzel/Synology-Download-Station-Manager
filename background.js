@@ -269,7 +269,6 @@ async function apiFetch(input, init, { repeatable = true, timeout } = {}) {
 const VERSION_CEILING = {
   auth:      7,  // DSM 7 tops out at 7; format=sid unchanged since 2
   task:      3,  // guide documents Task up to 3 (uri param needs 3+)
-  info:      1,
 };
 
 /** Pick the newest version both sides support, within what we understand. */
@@ -297,13 +296,11 @@ async function discoverApiPaths(protocol, host, port) {
     authVersion:    3,
     taskPath:       'DownloadStation/task.cgi',
     taskVersion:    3,
-    infoPath:       'DownloadStation/info.cgi',
-    infoVersion:    1,
   };
 
   try {
     const query = encodeURIComponent(
-      'SYNO.API.Auth,SYNO.DownloadStation.Task,SYNO.DownloadStation.Info'
+      'SYNO.API.Auth,SYNO.DownloadStation.Task'
     );
     const url = `${protocol}://${host}:${port}/webapi/query.cgi` +
       `?api=SYNO.API.Info&version=1&method=query&query=${query}`;
@@ -317,15 +314,12 @@ async function discoverApiPaths(protocol, host, port) {
 
     const authInfo = json.data['SYNO.API.Auth'];
     const taskInfo = json.data['SYNO.DownloadStation.Task'];
-    const dsInfo   = json.data['SYNO.DownloadStation.Info'];
 
     cachedApiPaths = {
       authPath:    authInfo?.path ?? fallback.authPath,
       authVersion: pickVersion(authInfo, VERSION_CEILING.auth, fallback.authVersion),
       taskPath:    taskInfo?.path ?? fallback.taskPath,
       taskVersion: pickVersion(taskInfo, VERSION_CEILING.task, fallback.taskVersion),
-      infoPath:    dsInfo?.path   ?? fallback.infoPath,
-      infoVersion: pickVersion(dsInfo, VERSION_CEILING.info, fallback.infoVersion),
     };
     browser.storage.session.set({ apiPaths: cachedApiPaths });
     return cachedApiPaths;
@@ -838,25 +832,6 @@ async function addDownloadTasksBulk(urls, unzipPassword, { announce = false } = 
   }
 
   return summariseAdd(added, failed, 'failedUrls');
-}
-
-/**
- * Download Station's own info: build version and, more usefully here,
- * is_manager — whether this account may change server-wide settings such as
- * auto-extract. Unlike getconfig this needs no admin privilege.
- */
-async function apiGetInfo() {
-  return withSession(async (settings, sid, apis) => {
-    const base = buildBaseUrl(settings.protocol, settings.host, settings.port);
-    const body = new URLSearchParams({
-      api:     'SYNO.DownloadStation.Info',
-      version: String(apis.infoVersion),
-      method:  'getinfo',
-      _sid:    sid,
-    });
-    const resp = await apiFetch(`${base}/${apis.infoPath}`, { method: 'POST', body });
-    return resp.json();
-  });
 }
 
 /**
@@ -1511,10 +1486,6 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await addTaskFiles(message.files, message.unzipPassword))),
         sendResponse,
       );
-      return true;
-
-    case ACTIONS.GET_DS_INFO:
-      respondWith(apiGetInfo(), sendResponse);
       return true;
 
     case ACTIONS.CONSUME_SETUP_FLAG:

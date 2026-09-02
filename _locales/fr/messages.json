@@ -149,8 +149,7 @@
   "settingsNotifications": { "message": "Notifications" },
   "autoCaptureMagnets": { "message": "Intercepter automatiquement les liens magnet" },
   "extractArchives": { "message": "Extraire automatiquement les archives" },
-  "extractArchivesHint": { "message": "Ajoute un champ de mot de passe à côté de la liste de liens, afin de pouvoir extraire les archives protégées. L'extraction automatique elle-même est un paramètre applicable à tout le serveur, dans DSM sous Download Station → Paramètres → Extraction automatique." },
-  "extractArchivesHintNoAdmin": { "message": "Ajoute un champ de mot de passe à côté de la liste de liens, afin de pouvoir extraire les archives protégées. L'extraction automatique elle-même est un paramètre applicable à tout le serveur — ce compte n'est pas gestionnaire de Download Station, seul un administrateur peut donc l'activer, dans DSM sous Download Station → Paramètres → Extraction automatique." },
+  "extractArchivesHint": { "message": "Ajoute un champ de mot de passe d'archive à côté de la liste de liens. L'extraction elle-même revient au NAS : dans DSM, sous Download Station > Paramètres > Extraction automatique, cochez Activer l'extraction automatique pour les fichiers téléchargés. Chaque compte le règle pour lui-même, et c'est désactivé par défaut." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -159,7 +158,7 @@
     }
   },
   "archivePassword": { "message": "Mot de passe de l'archive (facultatif)" },
-  "archivePasswordHint": { "message": "Ne s'applique qu'aux liens que vous ajoutez maintenant. Il n'est pas enregistré." },
+  "archivePasswordHint": { "message": "S'applique aux liens ajoutés dans cette fenêtre, pas à ceux ajoutés par clic droit. L'extension ne le conserve pas, mais le NAS si : DSM l'ajoute à sa liste de mots de passe et l'essaie sur les archives suivantes." },
   "statusExtracting": { "message": "Extraction" },
   "statusSeeding": { "message": "Partage" },
   "statusFinishing": { "message": "Finalisation" },

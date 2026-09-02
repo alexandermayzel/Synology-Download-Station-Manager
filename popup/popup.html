@@ -122,7 +122,9 @@
           <label for="unzipPassword" class="label" data-i18n="archivePassword">Archive password (optional)</label>
           <input type="password" id="unzipPassword" class="ta" autocomplete="off" />
           <span class="hint" data-i18n="archivePasswordHint">
-            Applies only to the links you add now. It is not stored.
+            Applies to the links you add in this window, not to links added by right-click.
+            The extension does not store it - but the NAS does: DSM adds it to its Password
+            List and tries it on later archives.
           </span>
         </div>
 
@@ -369,9 +371,10 @@
           <span data-i18n="extractArchives">Extract archives automatically</span>
         </label>
         <span class="hint" data-i18n="extractArchivesHint">
-          Adds an archive password field next to the link list, so password-protected
-          archives can be extracted. Auto-extract itself is a server-wide setting in DSM
-          under Download Station → Settings → Auto Extract.
+          Adds an archive-password field next to the link list. The extraction itself is
+          the NAS's job: in DSM, under Download Station &gt; Settings &gt; Auto extract, tick
+          Enable Auto extract for downloaded files. Every account sets that for itself,
+          and it is off by default.
         </span>
       </div>
       </div>

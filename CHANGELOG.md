@@ -3,6 +3,22 @@
 All notable changes to this extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-09-02
+
+### Changed
+
+- The descriptions of automatic extraction were made precise, in the extension's
+  hints and in the README. It is switched on per account under *Download Station
+  → Settings → Auto extract*, and is off by default.
+- The archive-password hint now says that Download Station keeps the password in
+  its own Password List, and that the field applies to links added from the
+  popup.
+
+### Removed
+
+- The `SYNO.DownloadStation.Info` call and its `is_manager` check, which the new
+  wording no longer needs. It was the only use of that API.
+
 ## [1.1.0] — 2026-09-02
 
 ### Added
@@ -146,5 +162,6 @@ same licence (MPL-2.0), with its own extension ID and version numbering.
 - Adaptive polling that stops on its own, and an optional session keepalive
   that is off by default so the NAS's disks can hibernate.
 
+[1.1.1]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/releases/tag/v1.0.2

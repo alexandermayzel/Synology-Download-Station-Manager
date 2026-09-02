@@ -92,7 +92,6 @@ const deleteAllBar   = $('deleteAllConfirm');
 const btnDeleteYes   = $('btnDeleteAllYes');
 const btnDeleteNo    = $('btnDeleteAllNo');
 const totalSpeedEl   = $('totalSpeed');
-const extractHintEl  = document.querySelector('[data-i18n="extractArchivesHint"]');
 const otpField       = $('otpField');
 const otpCodeEl      = $('otpCode');
 const btnOtpSubmit   = $('btnOtpSubmit');
@@ -449,23 +448,15 @@ function syncArchiveField() {
   bulkLinksEl.classList.toggle('with-password', on);
 }
 
-/**
- * Only tell people an administrator is needed when this account actually
- * isn't one. is_manager comes from SYNO.DownloadStation.Info and, unlike the
- * auto-extract setting itself, needs no special privilege to read.
- */
-async function syncExtractHint() {
-  if (!extractHintEl) return;
-  try {
-    const r = await browser.runtime.sendMessage({ action: ACTIONS.GET_DS_INFO });
-    if (!r?.success) return; // can't tell — leave the neutral wording
-    extractHintEl.textContent = r.data?.is_manager
-      ? msg('extractArchivesHint')
-      : msg('extractArchivesHintNoAdmin');
-  } catch {
-    // Offline or not set up yet; the neutral wording still applies.
-  }
-}
+// There used to be a syncExtractHint() here, asking the NAS through
+// SYNO.DownloadStation.Info whether this account was a Download Station
+// manager, and swapping the hint for "ask an administrator" when it was not.
+// It rested on a wrong idea of how DSM works. Automatic extraction has two
+// levels: a service an administrator enables once for the whole NAS, and a
+// switch every account sets for itself — off by default, and the one that
+// actually catches people out. Since anyone can set their own, the hint now
+// says where it is instead of who has to be asked, and the API call it took
+// to decide that is gone.
 
 async function loadFilterState() {
   const s = await browser.storage.local.get({ activeFilter: 'all' });
@@ -925,7 +916,6 @@ async function attemptConnect(otpCode) {
       const v = result.info?.authVersion ?? '?';
       setStatus('connected', msg('connectedWithVersion', String(v)));
       refreshTasks();
-      syncExtractHint();
       startAutoRefresh();
       return true;
     }
@@ -2093,7 +2083,6 @@ browser.runtime.connect({ name: 'popup' });
     if (status.connected) {
       setStatus('connected', msg('connected'));
       refreshTasks();
-      syncExtractHint();
       startAutoRefresh();
       return;
     }

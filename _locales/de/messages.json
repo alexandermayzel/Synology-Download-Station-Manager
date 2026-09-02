@@ -149,8 +149,7 @@
   "settingsNotifications": { "message": "Benachrichtigungen" },
   "autoCaptureMagnets": { "message": "Magnet-Links automatisch abfangen" },
   "extractArchives": { "message": "Archive automatisch entpacken" },
-  "extractArchivesHint": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein, damit auch passwortgeschützte Archive entpackt werden können. Das automatische Entpacken selbst ist eine serverweite Einstellung in DSM unter Download Station → Einstellungen → Automatisches Entpacken." },
-  "extractArchivesHintNoAdmin": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein, damit auch passwortgeschützte Archive entpackt werden können. Das automatische Entpacken selbst ist eine serverweite Einstellung — dieses Konto ist kein Download-Station-Manager, daher kann nur ein Administrator sie aktivieren, in DSM unter Download Station → Einstellungen → Automatisches Entpacken." },
+  "extractArchivesHint": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein. Entpacken muss die NAS selbst: in DSM unter Download Station > Einstellungen > Automatisch extrahieren den Haken bei Automatisches Extrahieren für heruntergeladene Dateien aktivieren setzen. Das stellt jedes Konto für sich ein, voreingestellt ist es aus." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -159,7 +158,7 @@
     }
   },
   "archivePassword": { "message": "Archiv-Passwort (optional)" },
-  "archivePasswordHint": { "message": "Gilt nur für die Links, die du jetzt hinzufügst. Wird nicht gespeichert." },
+  "archivePasswordHint": { "message": "Gilt für die Links, die du hier im Fenster hinzufügst — nicht für das Kontextmenü. Die Erweiterung speichert es nicht, die NAS schon: DSM nimmt es in seine Kennwortliste auf und probiert es künftig bei jedem Archiv." },
   "statusExtracting": { "message": "Wird entpackt" },
   "statusSeeding": { "message": "Wird verteilt" },
   "statusFinishing": { "message": "Wird abgeschlossen" },

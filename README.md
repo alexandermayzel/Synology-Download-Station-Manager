@@ -176,7 +176,7 @@ save and stays however you leave it after that.
 |---|---|---|
 | Default destination | *(empty)* | Applied on Enter or its own save button. See [Destination folder](#destination-folder) |
 | Auto-capture magnet links | **off** | Intercepts `magnet:` clicks on every page |
-| Extract archives automatically | **off** | Shows the archive-password field. See [Automatic extraction](#automatic-extraction-is-a-server-side-setting) |
+| Extract archives automatically | **off** | Shows the archive-password field. See [Automatic extraction](#automatic-extraction-happens-on-the-nas) |
 
 ### Notifications
 
@@ -235,14 +235,29 @@ can show "Connected" the instant it opens. That traffic can stop the NAS parking
 its disks, which is why it ships **off**. With it off the extension signs in when
 needed and hands the session back when it is done.
 
-### Automatic extraction is a server-side setting
+### Automatic extraction happens on the NAS
 
 The extension's *Extract archives automatically* option only reveals the
-archive-password field. Auto-extract itself is a **server-wide** Download Station
-setting affecting all users, changeable only by a Download Station manager in
-*DSM → Download Station → Settings → Auto Extract*. The extension checks
-`is_manager` and tells you which case applies; it deliberately does not flip a
-NAS-wide setting on your behalf.
+archive-password field. The extraction is Download Station's own, and it has two
+levels — which is what makes it easy to get wrong:
+
+1. **The service**, enabled once for the whole NAS. Only an administrator can
+   switch it on.
+2. **Per account**, in *DSM → Download Station → Settings → Auto extract →
+   Enable Auto extract for downloaded files*. Every user sets this for
+   themselves, **it is off by default**, and this is the one that usually
+   explains why nothing gets extracted.
+
+Neither is reachable through the documented Web API for an ordinary account:
+`SYNO.DownloadStation.Info`'s `getconfig` and `setserverconfig` need manager
+privilege, and they cover the service, not the per-account switch. So the
+extension names the setting instead of trying to change it — reconfiguring
+someone's NAS is not what an add-on that sends links should be doing.
+
+The archive password is a different matter. It travels with the task as
+`unzip_password`, and **Download Station keeps it**: the password turns up in its
+Password List afterwards and is tried on later archives. The extension itself
+stores nothing.
 
 ### Where credentials are stored
 
