@@ -97,7 +97,7 @@ English, one field, plain text. Paste as is.
 ```
 WHAT IT DOES
 
-Sends links, magnet links and .torrent/.nzb files to the user's own Synology NAS through the official Download Station Web API, and lists and controls the resulting tasks. Address, account and password are entered by the user; no vendor server involved.
+Sends links, magnet links and .torrent/.nzb files to the user's own Synology NAS through the official Download Station Web API, and controls the resulting tasks. Address, account and password are the user's own; no vendor server involved.
 
 SOURCE CODE
 
@@ -117,7 +117,7 @@ PERMISSIONS - UNCHANGED SINCE 1.0.2
 None added, removed or widened. The two broad ones:
 
 - host_permissions "*://*/*" - the NAS address is whatever the user types in: a LAN IP, a hostname, a DDNS name, any port. It is not known at build time, so it cannot be narrowed.
-- content script on <all_urls> - content.js is 64 lines and does one thing: with magnet capture switched on, it intercepts clicks on magnet: links and forwards the URL to the background. It reads no page content and injects nothing, and is off by default; while off the handler returns on its first line.
+- content script on <all_urls> - content.js is 64 lines and does one thing: with magnet capture on, it intercepts clicks on magnet: links and forwards the URL to the background. It reads no page content and injects nothing, and is off by default; while off the handler returns on its first line.
 
 WHERE DATA CAN GO
 
@@ -135,7 +135,7 @@ The manifest diff against 1.0.2 is two lines: the version, and one added backgro
 
 TESTING
 
-I cannot offer a test instance: the NAS this is built against sits on a private LAN, deliberately unreachable from the internet. Without one you can still install it, open the popup - no request is made until connection settings are saved - and point it at an unreachable host to exercise the timeout and retry path.
+I cannot offer a test instance: the NAS this is built against sits on a private LAN, deliberately unreachable from the internet. Without one you can still install it, open the popup - no request is made until connection settings are saved - and point it at an unreachable host to exercise the retry path.
 
 LICENCE
 
