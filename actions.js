@@ -83,3 +83,43 @@ const SETTINGS_DEFAULTS = Object.freeze({
 function hasCredentials(settings) {
   return !!(settings.host && settings.username && settings.password);
 }
+
+const CONNECTION_KEYS = Object.freeze(['protocol', 'host', 'port', 'username', 'password']);
+
+function connectionSettings(settings) {
+  return Object.fromEntries(CONNECTION_KEYS.map(key => [key, settings[key]]));
+}
+
+/**
+ * Which NAS and account something belongs to: a task list, or an add the popup
+ * is sending.
+ *
+ * Task ids are only unique within one Download Station, so an id means nothing
+ * without this. The password is left out: changing it does not change whose
+ * tasks these are. Here rather than in the background because the popup has to
+ * build the same key for an add, before it knows what the background will say.
+ */
+function connectionKey(settings) {
+  return JSON.stringify([settings.protocol, settings.host, String(settings.port), settings.username]);
+}
+
+/** DSM may return numeric fields as JSON strings. */
+function nonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+/**
+ * Task statuses that mean the NAS is still working on something, so it is worth
+ * asking again. Deliberately not everything the popup files under "active":
+ * seeding shows there too but can go on forever, and waiting for it would never
+ * end. The popup's refresh and the background's watch both decide by this, and
+ * two copies of the list could drift apart without anyone noticing.
+ */
+const WORKING_STATUSES = Object.freeze([
+  'downloading', 'waiting', 'extracting', 'finishing', 'hash_checking', 'filehosting_waiting',
+]);
+
+function isWorkingTask(task) {
+  return WORKING_STATUSES.includes(task?.status?.toLowerCase());
+}

@@ -8,6 +8,20 @@
   "tabAdd": { "message": "Hinzufügen" },
   "tabsLabel": { "message": "Bereiche" },
   "taskActionFailed": { "message": "Das hat nicht geklappt." },
+  "taskActionUnconfirmed": {
+    "message": "Für $COUNT$ Aufgabe(n) hat die NAS das Ergebnis nicht bestätigt — vor einem neuen Versuch die Liste prüfen.",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "taskListStale": { "message": "Die Aufgabenliste war nicht mehr aktuell und wurde neu geladen. Bitte erneut versuchen." },
+  "addConnectionChanged": { "message": "Die Verbindungseinstellungen wurden vor dem Senden geändert, daher wurde nichts hinzugefügt." },
+  "retryLinkKept": {
+    "message": "Die fehlgeschlagene Aufgabe wurde entfernt, das erneute Hinzufügen hat aber nicht geklappt: $REASON$ Der Link steht wieder in der Linkliste.",
+    "placeholders": { "reason": { "content": "$1", "example": "Es ist kein Standardziel festgelegt." } }
+  },
+  "retryOriginalFolder": {
+    "message": "Ursprünglicher Ordner: $FOLDER$",
+    "placeholders": { "folder": { "content": "$1", "example": "downloads/serien" } }
+  },
   "addLinksSection": { "message": "Links" },
   "addFilesSection": { "message": "Dateien" },
   "addFilesHint": { "message": "Torrent- und NZB-Dateien, auch mehrere auf einmal." },
@@ -57,6 +71,7 @@
   },
   "addLinksFailed": { "message": "Links konnten nicht hinzugefügt werden." },
   "addingInProgress": { "message": "Wird hinzugefügt…" },
+  "addBusyHint": { "message": "Downloads werden hinzugefügt… Du kannst die Links kopieren. Nach dem Hinzufügen ist die Liste wieder bearbeitbar." },
   "addBusy": { "message": "Es werden bereits Links hinzugefügt. Bitte warten." },
   "linksFailed": { "message": "$COUNT$ Link(s) konnten nicht hinzugefügt werden. Sie stehen noch in der Liste.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ Link(s) konnten nicht hinzugefügt werden: $REASON$ Sie stehen noch in der Liste.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
@@ -175,7 +190,7 @@
   "resetAll": { "message": "Alle Einstellungen zurücksetzen" },
   "confirmResetAll": { "message": "Alle Einstellungen zurücksetzen? Zugangsdaten, Verbindungsdaten und sämtliche Optionen werden gelöscht. Die Downloads auf der NAS bleiben unberührt." },
   "logout": { "message": "Abmelden" },
-  "logoutHint": { "message": "Abmelden: Löscht Benutzername und Passwort und hebt die Vertrauensstellung dieses Geräts für die Zwei-Faktor-Anmeldung auf. NAS-Adresse und alle Optionen bleiben erhalten." },
+  "logoutHint": { "message": "Die aktuelle NAS-Sitzung wird abgemeldet. Benutzername, Passwort und Gerätetoken werden lokal gelöscht. Eine gespeicherte Gerätefreigabe in DSM bleibt bestehen und kann dort separat widerrufen werden. NAS-Adresse und Optionen bleiben gespeichert." },
   "saveAndTest": { "message": "Verbindung speichern und testen" },
   "save": { "message": "Speichern" },
   "saved": { "message": "Gespeichert!" },
@@ -263,7 +278,7 @@
   "errAuth400": { "message": "Benutzername oder Passwort falsch." },
   "errAuth401": { "message": "Dieses Konto ist deaktiviert." },
   "errAuth402": { "message": "Zugriff für dieses Konto verweigert." },
-  "errAuth403": { "message": "Bestätigungscode für die 2-Faktor-Authentifizierung erforderlich — diese Erweiterung unterstützt keine 2FA. Verwenden Sie ein eigenes Konto ohne 2FA." },
+  "errAuth403": { "message": "Ein Bestätigungscode für die Zwei-Faktor-Anmeldung ist erforderlich. Öffne die Einstellungen, um ihn einzugeben." },
   "errAuth404": { "message": "Der Bestätigungscode für die 2-Faktor-Authentifizierung war falsch." },
 
   "errTask400": { "message": "Die NAS konnte diese Datei oder diesen Link nicht annehmen." },

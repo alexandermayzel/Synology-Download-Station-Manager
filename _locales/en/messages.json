@@ -17,6 +17,20 @@
   "tabAdd": { "message": "Add" },
   "tabsLabel": { "message": "Sections" },
   "taskActionFailed": { "message": "That did not work." },
+  "taskActionUnconfirmed": {
+    "message": "The NAS did not confirm the result for $COUNT$ task(s) — check the list before trying again.",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "taskListStale": { "message": "The task list was out of date and has been refreshed. Try again." },
+  "addConnectionChanged": { "message": "The connection settings changed before sending, so nothing was added." },
+  "retryLinkKept": {
+    "message": "The failed task was removed, but adding it again did not work: $REASON$ The link has been put back in the Links list.",
+    "placeholders": { "reason": { "content": "$1", "example": "No default destination is set." } }
+  },
+  "retryOriginalFolder": {
+    "message": "Original folder: $FOLDER$",
+    "placeholders": { "folder": { "content": "$1", "example": "downloads/series" } }
+  },
   "addLinksSection": { "message": "Links" },
   "addFilesSection": { "message": "Files" },
   "addFilesHint": { "message": "Torrent and NZB files, several at once." },
@@ -66,6 +80,7 @@
   },
   "addLinksFailed": { "message": "Failed to add links." },
   "addingInProgress": { "message": "Adding…" },
+  "addBusyHint": { "message": "Adding downloads… You can copy the links. Editing is available when adding finishes." },
   "addBusy": { "message": "Links are already being added. Please wait." },
   "linksFailed": { "message": "$COUNT$ link(s) could not be added. They are still in the list.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ link(s) could not be added: $REASON$ They are still in the list.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
@@ -184,7 +199,7 @@
   "resetAll": { "message": "Reset all settings" },
   "confirmResetAll": { "message": "Reset all settings? Credentials, connection details and every option are deleted. Downloads on the NAS are not touched." },
   "logout": { "message": "Sign out" },
-  "logoutHint": { "message": "Sign out: clears the username and password, and revokes this device's two-factor trust. The NAS address and all options stay." },
+  "logoutHint": { "message": "Signs out the current NAS session. Deletes the username, password and device token locally. Device trust saved in DSM remains in place and can be revoked there separately. The NAS address and options remain saved." },
   "saveAndTest": { "message": "Save and test connection" },
   "save": { "message": "Save" },
   "saved": { "message": "Saved!" },
@@ -272,7 +287,7 @@
   "errAuth400": { "message": "Incorrect username or password." },
   "errAuth401": { "message": "This account is disabled." },
   "errAuth402": { "message": "Permission denied for this account." },
-  "errAuth403": { "message": "Two-step verification code required — this extension does not support 2FA. Use a dedicated account without 2FA." },
+  "errAuth403": { "message": "A two-step verification code is required. Open Settings to enter it." },
   "errAuth404": { "message": "Two-step verification code was incorrect." },
 
   "errTask400": { "message": "The NAS could not accept this file or link." },

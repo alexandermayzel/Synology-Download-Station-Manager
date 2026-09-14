@@ -439,6 +439,7 @@ summary::-webkit-details-marker{display:none}
   transition:border-color .15s;
 }
 .ta:focus{border-color:var(--accent)}
+.linkbox:read-only{background:var(--recess);border-style:dashed}
 /* Required connection field left empty — set while the setup prompt is up. */
 .ta.invalid{border-color:var(--danger);background:rgba(243,139,168,.08)}
 .ta.invalid:focus{border-color:var(--danger)}

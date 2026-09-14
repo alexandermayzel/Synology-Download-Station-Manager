@@ -131,18 +131,6 @@ for (const [bucket, statuses] of Object.entries(STATUS_BUCKETS)) {
   for (const s of statuses) BUCKET_OF.set(s, bucket);
 }
 
-/**
- * Statuses that mean the NAS is still working on something, so it is worth
- * asking again. Deliberately NOT the whole "active" bucket: seeding shows as
- * active but can go on forever, and polling it would never stop — the same
- * list the background poll alarm uses.
- */
-const WORKING_STATUSES = new Set([
-  'downloading', 'waiting', 'extracting', 'finishing', 'hash_checking', 'filehosting_waiting',
-]);
-
-const isWorking = (task) => WORKING_STATUSES.has(task.status?.toLowerCase());
-
 /** Bucket for a task; anything unrecognised counts as waiting. */
 const bucketOf = (task) => BUCKET_OF.get(task.status?.toLowerCase()) ?? 'waiting';
 
@@ -180,6 +168,27 @@ const DEFAULTS = {
 
 /** Live copy of the settings that affect rendering, so redraws stay cheap. */
 let settings = { ...DEFAULTS };
+
+/**
+ * Settings saves run one after another, each starting from what the one before
+ * it left in `settings`.
+ *
+ * They used to overlap. Saving the destination and flipping a switch straight
+ * after started two saves from the same starting point; the second still held
+ * the old destination, and because it landed last, wrote it back.
+ */
+let settingsSaves = Promise.resolve();
+
+function queueSettingsSave(fn) {
+  const run = settingsSaves.then(fn);
+  settingsSaves = run.catch(() => {});
+  return run;
+}
+
+async function persistSettingsUpdate(changes) {
+  const result = await browser.runtime.sendMessage({ action: ACTIONS.SETTINGS_UPDATED, ...changes });
+  if (!result?.ok) throw new Error(errText(result?.error, 'extensionError'));
+}
 
 /**
  * Write `settings` into the form and bring every dependent control in line.
@@ -241,21 +250,20 @@ async function loadSettings() {
  * token go; protocol, host, port and every other option stay, so signing back
  * in only means typing the credentials again.
  *
- * The background is told first, while the credentials are still stored — it
- * needs them to hand the session back and to forget the device token.
+ * The background owns the transition, including handing the session back to
+ * its original endpoint and removing the credentials and local device token.
  */
 async function logoutAccount() {
   btnLogout.disabled = true;
   try {
-    try {
-      await browser.runtime.sendMessage({ action: ACTIONS.SETTINGS_UPDATED, credentialsChanged: true });
-    } catch {
-      // Background asleep — clearing below still has to happen.
-    }
+    forgetTasks();
+    await queueSettingsSave(async () => {
+      await persistSettingsUpdate({ signOut: true });
+      settings = { ...settings, username: '', password: '' };
+    });
 
     stopAutoRefresh();
-    settings = { ...settings, username: '', password: '' };
-    await browser.storage.local.set(settings);
+    forgetTasks(); // a refresh may have started while signing out
     clearConnDraft();
 
     usernameEl.value = '';
@@ -263,14 +271,11 @@ async function logoutAccount() {
     otpCodeEl.value  = '';
     showOtpPrompt(false);
 
-    cachedTasks = [];
-    currentPage = 1;
-    totalSpeedEl.hidden = true;
-    showMessage(msg('noTasks'));
-    renderPager(0, 0, 0, 0);
-
     // Marks the now-empty credential fields and opens their section.
     promptForSetup();
+  } catch (err) {
+    connMessageEl.textContent = err.message;
+    connMessageEl.hidden = false;
   } finally {
     btnLogout.disabled = false;
   }
@@ -285,30 +290,28 @@ btnLogout.addEventListener('click', logoutAccount);
 /**
  * Wipe every stored value and return the form to its defaults.
  *
- * Order matters: the background is told first, while the credentials are
- * still readable, so it can hand the session back and drop the device token.
- * Only then is storage cleared.
+ * The background clears settings and the session together. The popup then
+ * resets its drafts and controls.
  */
 async function resetAllSettings() {
   btnResetYes.disabled = true;
   try {
-    try {
-      await browser.runtime.sendMessage({ action: ACTIONS.SETTINGS_UPDATED, credentialsChanged: true });
-    } catch {
-      // Background asleep or gone — the wipe below still has to happen.
-    }
+    forgetTasks();
+    await queueSettingsSave(async () => {
+      await persistSettingsUpdate({ reset: true, options: DEFAULTS });
+      settings = { ...DEFAULTS, statusOrder: [...DEFAULT_STATUS_ORDER] };
+      // Put the UI back the way a fresh install looks. The defaults for host,
+      // username and password are empty strings, so this covers them too.
+      // Inside the queue: a save waiting behind this one reads the form, and
+      // must find the defaults there rather than the settings just wiped.
+      applySettingsToForm();
+    });
 
     stopAutoRefresh();
-    await browser.storage.local.clear();
-    // The drafts live in session storage, which local.clear() does not touch.
-    await browser.storage.session.remove(['connDraft', 'bulkDraft']);
-
-    settings = { ...DEFAULTS, statusOrder: [...DEFAULT_STATUS_ORDER] };
-    await browser.storage.local.set(settings);
-
-    // Put the UI back the way a fresh install looks. The defaults for host,
-    // username and password are empty strings, so this covers them too.
-    applySettingsToForm();
+    clearTimeout(connDraftTimer);
+    clearTimeout(destDraftTimer);
+    clearTimeout(draftSaveTimer);
+    await browser.storage.session.remove(['connDraft', 'destDraft', 'bulkDraft', 'lastAdd', 'lastTab', 'setupRequired']);
 
     // Not settings, so not part of that: scratch fields with nothing stored
     // behind them.
@@ -318,14 +321,13 @@ async function resetAllSettings() {
 
     showOtpPrompt(false);
     setActiveFilter('all', false);
-    cachedTasks = [];
-    currentPage = 1;
-    totalSpeedEl.hidden = true;
+    forgetTasks();
     bulkStatusEl.textContent = '';
-    showMessage(msg('noTasks'));
-    renderPager(0, 0, 0, 0);
 
     promptForSetup();
+  } catch (err) {
+    connMessageEl.textContent = err.message;
+    connMessageEl.hidden = false;
   } finally {
     btnResetYes.disabled = false;
   }
@@ -357,12 +359,10 @@ const CONN_FIELDS = () => ({
   port:     portEl.value,
   username: usernameEl.value,
   password: passwordEl.value,
-  // The destination saves itself on blur, but clicking away from the field is
-  // often the very click that closes the popup — so it needs the draft too.
-  destination: destEl.value,
 });
 
 let connDraftTimer = null;
+let destDraftTimer = null;
 
 /**
  * Deliberately storage.session, not storage.local: this holds a password that
@@ -378,6 +378,19 @@ function saveConnDraft() {
 }
 
 /**
+ * The destination keeps a draft of its own. Clicking away from the field is
+ * often the very click that closes the popup, so it needs one — but it has its
+ * own save button. Sharing the connection's draft, saving the connection threw
+ * away a folder that was typed and not yet saved.
+ */
+function saveDestDraft() {
+  clearTimeout(destDraftTimer);
+  destDraftTimer = setTimeout(() => {
+    browser.storage.session.set({ destDraft: destEl.value });
+  }, 250);
+}
+
+/**
  * Overlay unsaved edits on top of the stored settings.
  *
  * Only fields that actually contain something. The draft is there to preserve
@@ -386,27 +399,33 @@ function saveConnDraft() {
  * to a "Connected" status, which is the stored one still doing its job.
  */
 async function loadConnDraft() {
-  const { connDraft } = await browser.storage.session.get({ connDraft: null });
+  const { connDraft, destDraft } = await browser.storage.session.get({ connDraft: null, destDraft: '' });
+  if (destDraft) destEl.value = destDraft;
+  // A restored destination may differ from what is stored, which is exactly
+  // what the save button's highlight is there to say.
+  syncDestSaveState();
+
   if (!connDraft) return;
   if (connDraft.protocol) protocolEl.value = connDraft.protocol;
   if (connDraft.host)     hostEl.value     = connDraft.host;
   if (connDraft.port)     portEl.value     = connDraft.port;
   if (connDraft.username) usernameEl.value = connDraft.username;
   if (connDraft.password) passwordEl.value = connDraft.password;
-  if (connDraft.destination) destEl.value = connDraft.destination;
 
   // Half-finished input usually means the credentials section was open.
   if (connDraft.username || connDraft.password) {
     credentialsEl.open = true;
   }
-  // A restored destination may differ from what is stored, which is exactly
-  // what the save button's highlight is there to say.
-  syncDestSaveState();
 }
 
 function clearConnDraft() {
   clearTimeout(connDraftTimer);
   browser.storage.session.remove('connDraft');
+}
+
+function clearDestDraft() {
+  clearTimeout(destDraftTimer);
+  browser.storage.session.remove('destDraft');
 }
 
 for (const el of [hostEl, portEl, usernameEl, passwordEl]) {
@@ -423,7 +442,7 @@ function syncDestSaveState() {
   btnSaveDest.classList.toggle('pending', destEl.value.trim() !== settings.defaultDestination);
 }
 
-destEl.addEventListener('input', () => { syncDestSaveState(); saveConnDraft(); });
+destEl.addEventListener('input', () => { syncDestSaveState(); saveDestDraft(); });
 
 /**
  * Grey out the three per-kind switches while the master one is off. They keep
@@ -490,61 +509,90 @@ async function saveSettings(options = {}) {
   if (feedbackOn) feedbackOn.disabled = true;
   try {
     await commitSettings(options);
+  } catch (err) {
+    connMessageEl.textContent = err.message;
+    connMessageEl.hidden = false;
   } finally {
     if (feedbackOn) feedbackOn.disabled = false;
   }
 }
 
+/**
+ * The settings that change how the task list looks. Only these redraw it on a
+ * save; a notification switch or the keepalive leaves the cards alone.
+ */
+const LAYOUT_KEYS = Object.freeze(['sortBy', 'sortDir', 'statusOrder', 'tasksPerPage']);
+
 async function commitSettings({
   forceTest = false, feedbackOn = null, commitDest = false, commitConn = false,
 } = {}) {
-  // A device token belongs to one NAS and one account — if either changes,
-  // the background has to throw it away. Only ever true on a deliberate save.
-  const credentialsChanged = commitConn && (
-    settings.host     !== hostEl.value.trim() ||
-    settings.username !== usernameEl.value.trim() ||
-    settings.password !== passwordEl.value ||
-    settings.protocol !== protocolEl.value ||
-    settings.port     !== (parseInt(portEl.value, 10) || 5001)
-  );
+  const { credentialsChanged, perPageBefore, layoutChanged } = await queueSettingsSave(async () => {
+    const base = settings;
 
-  const perPageBefore = settings.tasksPerPage;
+    // A device token belongs to one NAS and one account — if either changes,
+    // the background has to throw it away. Only ever true on a deliberate save.
+    const credentialsChanged = commitConn && (
+      base.host     !== hostEl.value.trim() ||
+      base.username !== usernameEl.value.trim() ||
+      base.password !== passwordEl.value ||
+      base.protocol !== protocolEl.value ||
+      base.port     !== (parseInt(portEl.value, 10) || 5001)
+    );
 
-  settings = {
-    ...settings,
-    protocol:           commitConn ? protocolEl.value                          : settings.protocol,
-    host:               commitConn ? hostEl.value.trim()                       : settings.host,
-    port:               commitConn ? (parseInt(portEl.value, 10) || 5001)      : settings.port,
-    username:           commitConn ? usernameEl.value.trim()                   : settings.username,
-    password:           commitConn ? passwordEl.value                          : settings.password,
-    autoCaptureMagnets: autoMagnetEl.checked,
-    defaultDestination: commitDest ? destEl.value.trim() : settings.defaultDestination,
-    keepaliveEnabled:   keepaliveEl.checked,
-    notificationsEnabled: notifyEl.checked,
-    notifyOnAdded:        notifyAddedEl.checked,
-    notifyOnFailed:       notifyFailedEl.checked,
-    notifyOnFinished:     notifyDoneEl.checked,
-    extractArchives:    extractEl.checked,
-    refreshInterval:    parseInt(refreshIntEl.value, 10),
-    sortBy:             sortByEl.value,
-    sortDir:            sortDirEl.value,
-    startTab:           settings.startTab,
-    statusOrder:        readStatusOrder(),
-    tasksPerPage:       parseInt(perPageEl.value, 10) || DEFAULTS.tasksPerPage,
-  };
-  await browser.storage.local.set(settings);
-  try {
-    await browser.runtime.sendMessage({ action: ACTIONS.SETTINGS_UPDATED, credentialsChanged });
-  } catch {
-    // Background asleep. It reads the settings from storage when it wakes and
-    // re-syncs its alarm on startup, so the save itself must not fail here —
-    // otherwise the button would simply do nothing.
-  }
+    const nextSettings = {
+      ...base,
+      protocol:           commitConn ? protocolEl.value                          : base.protocol,
+      host:               commitConn ? hostEl.value.trim()                       : base.host,
+      port:               commitConn ? (parseInt(portEl.value, 10) || 5001)      : base.port,
+      username:           commitConn ? usernameEl.value.trim()                   : base.username,
+      password:           commitConn ? passwordEl.value                          : base.password,
+      autoCaptureMagnets: autoMagnetEl.checked,
+      defaultDestination: commitDest ? destEl.value.trim() : base.defaultDestination,
+      keepaliveEnabled:   keepaliveEl.checked,
+      notificationsEnabled: notifyEl.checked,
+      notifyOnAdded:        notifyAddedEl.checked,
+      notifyOnFailed:       notifyFailedEl.checked,
+      notifyOnFinished:     notifyDoneEl.checked,
+      extractArchives:    extractEl.checked,
+      refreshInterval:    parseInt(refreshIntEl.value, 10),
+      sortBy:             sortByEl.value,
+      sortDir:            sortDirEl.value,
+      startTab:           base.startTab,
+      statusOrder:        readStatusOrder(),
+      tasksPerPage:       parseInt(perPageEl.value, 10) || DEFAULTS.tasksPerPage,
+    };
+    // Only what this save changed. The whole snapshot also carried every value
+    // it had merely passed along, and those are the ones another save may have
+    // changed in the meantime.
+    const changedOptions = Object.fromEntries(Object.entries(nextSettings).filter(([key, value]) =>
+      !CONNECTION_KEYS.includes(key) && JSON.stringify(value) !== JSON.stringify(base[key])));
+
+    // The old list goes before the save — logging out the old NAS can take a
+    // while — and again after it, in case a refresh slipped in meanwhile.
+    if (credentialsChanged) forgetTasks();
+    await persistSettingsUpdate({
+      connection: commitConn ? connectionSettings(nextSettings) : undefined,
+      options: changedOptions,
+    });
+    if (credentialsChanged) forgetTasks();
+    // Merged into `settings` as it is now rather than replacing it with the
+    // snapshot: the start tab is stored on its own and may have changed.
+    settings = {
+      ...settings, ...changedOptions, ...(commitConn ? connectionSettings(nextSettings) : {}),
+    };
+    return {
+      credentialsChanged,
+      perPageBefore: base.tasksPerPage,
+      layoutChanged: LAYOUT_KEYS.some(key => key in changedOptions),
+    };
+  });
   // Only when the connection details were actually written. This used to run on
   // every save, and every option toggle is a save — so flipping any switch threw
   // away a password that had been typed but not yet saved, and the field came
   // back empty on the next open. The draft exists precisely to survive that.
+  // Each draft goes with its own save only.
   if (commitConn) clearConnDraft();
+  if (commitDest) clearDestDraft();
 
   // Saving the connection is also what folds the credentials away: they are
   // done with, and the block is long. It is an ordinary fold, so the state is
@@ -560,7 +608,7 @@ async function commitSettings({
   syncArchiveField();
   syncNotifySubOptions();
   syncDestSaveState(); // the field now matches what's stored
-  renderTasks();
+  if (layoutChanged) renderTasks();
   syncRefreshTimer(); // the refresh interval may have just changed
   showSavedFeedback(feedbackOn);
 
@@ -630,14 +678,6 @@ function saveSectionStates() {
 
 for (const section of document.querySelectorAll(REMEMBERED_SECTIONS)) {
   section.addEventListener('toggle', saveSectionStates);
-}
-
-// The Tasks header carries its own buttons; clicking those must not fold the
-// panel, which is what a <summary> click would otherwise do.
-for (const head of document.querySelectorAll('.section-head')) {
-  head.addEventListener('click', (e) => {
-    if (e.target.closest('.head-btn, .btn-sm')) e.preventDefault();
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -737,10 +777,10 @@ function readStatusOrder() {
   return [...orderListEl.querySelectorAll('.order-item')].map(el => el.dataset.bucket);
 }
 
-function renderStatusOrder() {
+function renderStatusOrder(order = settings.statusOrder) {
   const frag = document.createDocumentFragment();
 
-  for (const bucket of settings.statusOrder) {
+  for (const bucket of order) {
     const item = document.createElement('div');
     item.className = 'order-item';
     item.draggable = true;
@@ -801,8 +841,9 @@ orderListEl.addEventListener('click', (e) => {
 });
 
 btnOrderReset.addEventListener('click', () => {
-  settings.statusOrder = [...DEFAULT_STATUS_ORDER];
-  renderStatusOrder();
+  // Drawn, not written into `settings` first: a save sends only what differs
+  // from `settings`, so an order already put there would never be stored.
+  renderStatusOrder(DEFAULT_STATUS_ORDER);
   saveSettings();
 });
 
@@ -893,6 +934,7 @@ function errText(error, fallbackKey) {
  */
 function showOtpPrompt(show, wrong = false) {
   otpField.hidden = !show;
+  codePending = show;
   if (!show) { otpCodeEl.value = ''; return; }
 
   activateTab('settings', { remember: false });
@@ -910,6 +952,8 @@ async function attemptConnect(otpCode) {
   setStatus('checking', msg('connecting'));
   try {
     const result = await browser.runtime.sendMessage({ action: ACTIONS.TEST_CONNECTION, otpCode });
+
+    if (result.connectionChanged) return false;
 
     if (result.success) {
       showOtpPrompt(false);
@@ -1018,6 +1062,7 @@ function badgeClass(status) {
 }
 
 function formatSpeed(bps) {
+  bps = nonNegativeNumber(bps);
   if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
   if (bps >= 1024)        return `${(bps / 1024).toFixed(1)} KB/s`;
   if (bps > 0)            return `${bps} B/s`;
@@ -1036,13 +1081,20 @@ function calcProgress(task) {
     if (typeof unzip === 'number') return Math.min(100, Math.max(0, unzip));
   }
 
-  const total      = task.size ?? 0;
-  const downloaded = task.additional?.transfer?.size_downloaded ?? 0;
+  const total      = nonNegativeNumber(task.size);
+  const downloaded = nonNegativeNumber(task.additional?.transfer?.size_downloaded);
   if (total === 0) return 0;
   return Math.min(100, Math.round((downloaded / total) * 100));
 }
 
 let cachedTasks = [];
+/**
+ * Which connection the tasks on screen came from, as the background named it.
+ * Sent back with every action on them, so an id cannot land on another NAS.
+ */
+let tasksConnection = null;
+/** Bumped whenever the list is dropped; a refresh begun before that is ignored. */
+let tasksGeneration = 0;
 let refreshTimer = null;
 /**
  * The interval the running timer was built with. Kept so the timer is only torn
@@ -1072,6 +1124,14 @@ function showMessage(text, isError = false) {
  * back would leave the list frozen until something else happened to restart it.
  */
 let refreshWanted = false;
+
+/**
+ * Set while DSM waits for a two-factor code. Nothing refreshes on its own until
+ * one is typed: each refresh signs in without it and is only asked again. That
+ * includes the close watch after an add, which outranks refreshWanted — turning
+ * that off left the three-second timer to start again on returning to Tasks.
+ */
+let codePending = false;
 
 /**
  * The half minute after an add, watched closely.
@@ -1122,9 +1182,9 @@ function startBurstRefresh(since = Date.now()) {
 /** Run the timer exactly when it is of any use, and at the right speed. */
 function syncRefreshTimer() {
   // Off the Tasks tab there is nothing on screen to refresh, whatever else
-  // is true — including during the close watch.
+  // is true — including during the close watch. The same while a code is due.
   const wantedMs =
-    activeTab !== 'tasks'                             ? 0 :
+    activeTab !== 'tasks' || codePending              ? 0 :
     isBursting()                                      ? BURST_INTERVAL_MS :
     refreshWanted && settings.refreshInterval > 0     ? settings.refreshInterval * 1000 :
     0;                                                // 0 means "Manual only"
@@ -1194,10 +1254,10 @@ function sortTasks(tasks) {
   }
 
   const keyOf = {
-    added:    t => t.additional?.detail?.create_time ?? 0,
+    added:    t => nonNegativeNumber(t.additional?.detail?.create_time),
     name:     t => (t.title ?? '').toLowerCase(),
     progress: t => calcProgress(t),
-    size:     t => t.size ?? 0,
+    size:     t => nonNegativeNumber(t.size),
   }[settings.sortBy];
 
   if (!keyOf) return tasks;
@@ -1280,22 +1340,39 @@ filtersEl.addEventListener('click', (e) => {
   taskListEl.scrollTop = 0;
 });
 
+/**
+ * The list as the cards show it, filtered and sorted, kept until the tasks, the
+ * filter or the sort order change. Turning a page used to count, filter and sort
+ * the whole unchanged list again for the ten cards it then showed.
+ */
+let preparedTasks = { source: null, key: '', sorted: [] };
+
+function prepareTasks() {
+  const key = JSON.stringify([activeFilter, settings.sortBy, settings.sortDir, settings.statusOrder]);
+  if (preparedTasks.source !== cachedTasks || preparedTasks.key !== key) {
+    const filtered = activeFilter === 'all'
+      ? cachedTasks
+      : cachedTasks.filter(t => bucketOf(t) === activeFilter);
+    preparedTasks = { source: cachedTasks, key, sorted: sortTasks(filtered) };
+  }
+  return preparedTasks.sorted;
+}
+
 function renderTasks(tasks) {
-  if (tasks) cachedTasks = tasks;
+  if (tasks) {
+    cachedTasks = tasks;
+    // The counts depend on the tasks alone, not on filter, sort or page.
+    updateFilterCounts(cachedTasks);
+  }
 
-  updateFilterCounts(cachedTasks);
+  const sorted = prepareTasks();
 
-  const filtered = activeFilter === 'all'
-    ? cachedTasks
-    : cachedTasks.filter(t => bucketOf(t) === activeFilter);
-
-  if (filtered.length === 0) {
+  if (sorted.length === 0) {
     showMessage(msg('noTasks'));
     renderPager(0, 0, 0, 0);
     return;
   }
 
-  const sorted     = sortTasks(filtered);
   const perPage    = settings.tasksPerPage;
   const totalPages = Math.max(1, Math.ceil(sorted.length / perPage));
   // A filter change or finished downloads can shrink the list under our feet.
@@ -1354,6 +1431,8 @@ function renderTasks(tasks) {
         btn.hidden = false;
         btn.dataset.taskId = task.id;
         btn.dataset.uri = uri;
+        // And its folder, so the new task lands where the old one was.
+        btn.dataset.destination = task.additional?.detail?.destination ?? '';
       }
     }
     // Every task can be removed on its own, whatever it is doing. "Clear"
@@ -1410,14 +1489,38 @@ let refreshInFlight = false;
 const REFRESH_MAX_FAILURES = 5;
 let refreshFailures = 0;
 
+/**
+ * Take the task list off screen because the connection it came from is being
+ * replaced. Its ids mean nothing on another NAS — or name a different task
+ * there — so nothing on it may stay clickable, and a refresh already on its way
+ * for the old connection must not bring it back.
+ */
+function forgetTasks() {
+  tasksGeneration++;
+  tasksConnection = null;
+  // A "Delete all" still waiting for its Yes was asked about the old list.
+  deleteAllBar.hidden = true;
+  deleteAllConnection = null;
+  // The refresh that was running is disowned; let the next one through.
+  refreshInFlight = false;
+  btnRefresh.disabled = false;
+  currentPage = 1;
+  totalSpeedEl.hidden = true;
+  renderTasks([]);
+}
+
 async function refreshTasks() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   btnRefresh.disabled = true;
+  const generation = tasksGeneration;
   try {
     const result = await browser.runtime.sendMessage({ action: ACTIONS.LIST_TASKS });
+    // Asked before the connection changed, so the answer is about the old one.
+    if (generation !== tasksGeneration) return;
     if (result.success) {
       refreshFailures = 0;
+      tasksConnection = result.connection ?? null;
       const tasks = result.data?.tasks ?? [];
       renderTasks(tasks);
       updateTotalSpeed(tasks);
@@ -1429,16 +1532,30 @@ async function refreshTasks() {
       // the list, and a NAS that had not registered the new task yet answered
       // "nothing running" — switching off the very watch the add had just
       // started. Saying both halves out loud fixes that by itself.
-      if (tasks.some(isWorking)) startAutoRefresh();
+      if (tasks.some(isWorkingTask)) startAutoRefresh();
       else stopAutoRefresh();
+    } else if (result.otpRequired || result.otpWrong) {
+      // A sign-in the background started on its own wants a code. Asked for the
+      // way a connection test asks, and nothing more is asked of the NAS until
+      // it is typed. This used to count as an ordinary failure: the code field
+      // stayed hidden and the header could go on saying "Connected". A prompt
+      // already on screen stays put, rather than pulling anyone back to
+      // Settings every time they look at the list.
+      stopAutoRefresh();
+      if (otpField.hidden) showOtpPrompt(true, result.otpWrong);
+      else setStatus('error', msg(result.otpWrong ? 'otpWrong' : 'otpRequired'));
     } else {
       refreshFailed(errText(result.error, 'connectionFailed'));
     }
   } catch {
-    refreshFailed(msg('backgroundUnreachable'));
+    if (generation === tasksGeneration) refreshFailed(msg('backgroundUnreachable'));
   } finally {
-    refreshInFlight = false;
-    btnRefresh.disabled = false;
+    // A disowned refresh leaves these alone: forgetTasks already released them,
+    // and a newer refresh may be holding them by now.
+    if (generation === tasksGeneration) {
+      refreshInFlight = false;
+      btnRefresh.disabled = false;
+    }
   }
 }
 
@@ -1491,13 +1608,6 @@ function clearDraft() {
   return browser.storage.session.remove('bulkDraft');
 }
 
-/** Replace the list wholesale — used to leave only what the NAS refused. */
-function setDraft(text) {
-  clearTimeout(draftSaveTimer);
-  bulkLinksEl.value = text;
-  return browser.storage.session.set({ bulkDraft: text });
-}
-
 /**
  * Mark the box as holding rejected links and say why.
  *
@@ -1526,6 +1636,7 @@ bulkLinksEl.addEventListener('input', () => {
 });
 
 btnClearList.addEventListener('click', () => {
+  if (bulkLinksEl.readOnly) return;
   clearDraft();
   clearLinksFailed();
   bulkStatusEl.textContent = '';
@@ -1536,14 +1647,33 @@ btnClearList.addEventListener('click', () => {
  * An add runs in the background and outlives the popup, so whether one is under
  * way is kept there rather than here. Read on open, watched while open.
  */
-function setAddBusy(busy) {
+let backgroundAddBusy = true;
+let localAddsPending = 0;
+let consumingAdd = null;
+let popupReady = false;
+
+function syncAddControls() {
+  const busy = backgroundAddBusy || localAddsPending > 0 || consumingAdd !== null;
   btnAddBulk.disabled = busy;
   btnAddTorrent.disabled = busy;
+  btnClearList.disabled = busy;
+  bulkLinksEl.readOnly = busy;
+  bulkLinksEl.setAttribute('aria-busy', String(busy));
+  $('addBusyHint').hidden = !busy;
   btnAddBulk.textContent = busy ? msg('addingInProgress') : msg('addAll');
 }
 
+function setAddBusy(busy) {
+  backgroundAddBusy = busy;
+  syncAddControls();
+}
+
 async function loadAddBusy() {
-  const { addInFlight } = await browser.storage.session.get({ addInFlight: false });
+  // Consume the result before making the controls editable. The background
+  // has already saved the updated draft together with that result.
+  await consumeLastAdd();
+  const { addInFlight, lastAdd } = await browser.storage.session.get({ addInFlight: false, lastAdd: null });
+  if (lastAdd) await consumeLastAdd();
   setAddBusy(addInFlight === true);
 }
 
@@ -1576,13 +1706,13 @@ async function applyAddOutcome(result) {
       : msg('linksAdded', String(added));
     if (!isFiles) {
       clearLinksFailed();
-      // Awaited: the popup can be closed a moment later, and an unfinished
-      // removal leaves the stored draft behind for the next open.
-      await clearDraft(); // only once the NAS has actually accepted them
+      clearTimeout(draftSaveTimer);
+      bulkLinksEl.value = '';
     }
   } else if (isFiles) {
     const names  = failed.join(', ');
-    const reason = result.errorMessage ? ` — ${result.errorMessage}` : '';
+    const reason = result.deliveryUnknown ? ` — ${msg('notifyUncertain')}`
+      : result.errorMessage ? ` — ${result.errorMessage}` : '';
     bulkStatusEl.textContent =
       msg('linksPartial', String(added), String(result.failed ?? 0)) +
       reason + (names ? ` (${names})` : '');
@@ -1591,7 +1721,8 @@ async function applyAddOutcome(result) {
     // retries exactly those instead of adding the accepted ones twice.
     showLinksFailed(failed.length, result.errorMessage, result.deliveryUnknown);
     bulkStatusEl.textContent = added > 0 ? msg('linksAdded', String(added)) : '';
-    await setDraft(failed.join('\n'));
+    clearTimeout(draftSaveTimer);
+    bulkLinksEl.value = failed.join('\n');
   } else {
     bulkStatusEl.textContent = errText(result.error, 'addLinksFailed');
   }
@@ -1614,53 +1745,63 @@ async function applyAddOutcome(result) {
 /**
  * Take the last add's result and clear it, so it is acted on exactly once.
  */
-async function consumeLastAdd() {
-  const { lastAdd } = await browser.storage.session.get({ lastAdd: null });
-  if (!lastAdd) return;
-  await browser.storage.session.remove('lastAdd');
-  await applyAddOutcome(lastAdd);
+function consumeLastAdd() {
+  if (consumingAdd) return consumingAdd;
+  consumingAdd = (async () => {
+    const { lastAdd } = await browser.storage.session.get({ lastAdd: null });
+    if (!lastAdd) return;
+    await applyAddOutcome(lastAdd);
+    await browser.storage.session.remove('lastAdd');
+  })().finally(() => {
+    consumingAdd = null;
+    syncAddControls();
+  });
+  syncAddControls();
+  return consumingAdd;
 }
 
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session') return;
-  if ('addInFlight' in changes) setAddBusy(changes.addInFlight.newValue === true);
+  if ('addInFlight' in changes) {
+    if (changes.addInFlight.newValue === true) setAddBusy(true);
+    else if (popupReady) loadAddBusy();
+  }
+  // The background can put a link back into the list: a retry that removed the
+  // original task and then could not add it again. That happens during an add,
+  // while the field is read-only, so nothing typed here can be overwritten —
+  // outside that window a change is only the echo of our own draft save.
+  if ('bulkDraft' in changes && bulkLinksEl.readOnly) {
+    const value = changes.bulkDraft.newValue ?? '';
+    if (value !== bulkLinksEl.value) {
+      clearTimeout(draftSaveTimer);
+      bulkLinksEl.value = value;
+    }
+  }
   // Written by the background the moment an add finishes. The removal in
   // consumeLastAdd arrives here as the same key with no new value; ignore it.
-  if ('lastAdd' in changes && changes.lastAdd.newValue) consumeLastAdd();
+  if (popupReady && 'lastAdd' in changes && changes.lastAdd.newValue) consumeLastAdd();
 });
 
-async function addBulkLinks() {
-  // Nothing can be added before the NAS is configured — send the user there
-  // instead of firing off a request that is bound to fail.
-  if (!isConfigured()) {
-    bulkStatusEl.textContent = msg('setupRequired');
-    promptForSetup();
-    return;
-  }
-
-  const urls = bulkLinksEl.value
-    .split('\n')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
-
-  if (urls.length === 0) {
-    bulkStatusEl.textContent = msg('noLinksEntered');
-    return;
-  }
-
-  setAddBusy(true);
-  clearLinksFailed();
-  bulkStatusEl.textContent = msg('addingLinks', String(urls.length));
+/**
+ * Hand an add to the background and deal with the answers that mean nothing was
+ * attempted. The outcome itself comes back through applyAddOutcome — the one
+ * path that also works when this popup did not live long enough to see it.
+ *
+ * Shared by links and files, which each carried a copy. `prepare` builds the
+ * message and may take a while: reading files does. The connection is fixed
+ * before it runs, and the background refuses the add if another has been
+ * configured since. Taken when the message went out instead, a torrent file
+ * read while a new connection was saved was uploaded to the new NAS.
+ */
+async function sendAdd(status, prepare) {
+  localAddsPending++;
+  syncAddControls();
+  bulkStatusEl.textContent = status;
   try {
-    const result = await browser.runtime.sendMessage({
-      action: ACTIONS.ADD_TASKS_BULK,
-      urls,
-      unzipPassword: extractEl.checked ? unzipPassEl.value : '',
-    });
-    // Only the two answers that mean nothing was attempted are handled here.
-    // Everything else is the outcome of an actual add, and that goes through
-    // applyAddOutcome — the one path that also works when this popup did not
-    // live long enough to reach this line.
+    // A save that was already under way decides where this goes.
+    await settingsSaves;
+    const connection = connectionKey(settings);
+    const result = await browser.runtime.sendMessage({ ...await prepare(), connection });
     if (result.setupRequired) {
       bulkStatusEl.textContent = msg('setupRequired');
       promptForSetup();
@@ -1681,8 +1822,41 @@ async function addBulkLinks() {
     // The background owns the flag, so read it back rather than assume this
     // call was the one holding it — a refused add leaves someone else's still
     // running, and clearing it here would free the button against them.
+    localAddsPending--;
     await loadAddBusy();
   }
+}
+
+async function addBulkLinks() {
+  if (btnAddBulk.disabled) return;
+  // Nothing can be added before the NAS is configured — send the user there
+  // instead of firing off a request that is bound to fail.
+  if (!isConfigured()) {
+    bulkStatusEl.textContent = msg('setupRequired');
+    promptForSetup();
+    return;
+  }
+
+  const urls = bulkLinksEl.value
+    .split('\n')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  if (urls.length === 0) {
+    bulkStatusEl.textContent = msg('noLinksEntered');
+    return;
+  }
+
+  clearLinksFailed();
+  await sendAdd(msg('addingLinks', String(urls.length)), async () => {
+    clearTimeout(draftSaveTimer);
+    await browser.storage.session.set({ bulkDraft: bulkLinksEl.value });
+    return {
+      action: ACTIONS.ADD_TASKS_BULK,
+      urls,
+      unzipPassword: extractEl.checked ? unzipPassEl.value : '',
+    };
+  });
 }
 
 btnAddBulk.addEventListener('click', addBulkLinks);
@@ -1704,36 +1878,15 @@ torrentInput.addEventListener('change', async () => {
     return;
   }
 
-  setAddBusy(true);
-  bulkStatusEl.textContent = msg('addingFiles', String(chosen.length));
-  try {
+  await sendAdd(msg('addingFiles', String(chosen.length)), async () => ({
+    action: ACTIONS.ADD_TASK_FILES,
     // File objects don't survive runtime messaging, so send the bytes.
-    const files = await Promise.all(chosen.map(async (f) => ({
+    files: await Promise.all(chosen.map(async (f) => ({
       name: f.name,
       buffer: await f.arrayBuffer(),
-    })));
-
-    const result = await browser.runtime.sendMessage({
-      action: ACTIONS.ADD_TASK_FILES,
-      files,
-      unzipPassword: extractEl.checked ? unzipPassEl.value : '',
-    });
-
-    // As with the links: only "nothing was attempted" is answered here, the
-    // outcome itself comes back through applyAddOutcome.
-    if (result.setupRequired) {
-      bulkStatusEl.textContent = msg('setupRequired');
-      promptForSetup();
-    } else if (result.busy) {
-      bulkStatusEl.textContent = msg('addBusy');
-    } else {
-      await consumeLastAdd();
-    }
-  } catch (err) {
-    bulkStatusEl.textContent = err.message || msg('addLinksFailed');
-  } finally {
-    await loadAddBusy();
-  }
+    }))),
+    unzipPassword: extractEl.checked ? unzipPassEl.value : '',
+  }));
 });
 
 // ---------------------------------------------------------------------------
@@ -1754,13 +1907,24 @@ function reportActionResult(result) {
   return !failed;
 }
 
-async function runBulkAction(action, button) {
+/**
+ * Whether the action may have taken effect after all. An unconfirmed task is
+ * not a refused one, and the same goes for a create whose delivery is unknown —
+ * keeping the watch running is what shows the user which of the two it was.
+ */
+function mayHaveTakenEffect(result) {
+  return (result?.unconfirmed?.length ?? 0) > 0 || result?.deliveryUnknown === true;
+}
+
+async function runBulkAction(action, button, connection = tasksConnection) {
   button.disabled = true;
   try {
-    const result = await browser.runtime.sendMessage({ action });
+    // The list's origin travels along: "Delete all" confirmed while looking at
+    // the old NAS must not clear out a newly configured one.
+    const result = await browser.runtime.sendMessage({ action, connection });
     const ok = reportActionResult(result);
     await refreshTasks();
-    if (ok && action === ACTIONS.RESUME_ALL) startAutoRefresh();
+    if ((ok || mayHaveTakenEffect(result)) && action === ACTIONS.RESUME_ALL) startAutoRefresh();
   } catch (err) {
     taskStatusEl.hidden = false;
     taskStatusEl.textContent = err.message || msg('taskActionFailed');
@@ -1772,15 +1936,23 @@ async function runBulkAction(action, button) {
 btnPauseAll.addEventListener('click', () => runBulkAction(ACTIONS.PAUSE_ALL, btnPauseAll));
 btnResumeAll.addEventListener('click', () => runBulkAction(ACTIONS.RESUME_ALL, btnResumeAll));
 
+/**
+ * The list "Delete all" is being confirmed against. Taken when the question is
+ * asked, not when Yes is pressed: in between, the connection can change and a
+ * new list arrive, and Yes would then empty a NAS nobody was asked about.
+ */
+let deleteAllConnection = null;
+
 // Deleting everything is irreversible, so it takes a second, deliberate click.
 btnDeleteAll.addEventListener('click', () => {
+  deleteAllConnection = tasksConnection;
   deleteAllBar.hidden = false;
   btnDeleteNo.focus();
 });
 btnDeleteNo.addEventListener('click', () => { deleteAllBar.hidden = true; });
 btnDeleteYes.addEventListener('click', async () => {
   deleteAllBar.hidden = true;
-  await runBulkAction(ACTIONS.DELETE_ALL, btnDeleteYes);
+  await runBulkAction(ACTIONS.DELETE_ALL, btnDeleteYes, deleteAllConnection);
 });
 
 // ---------------------------------------------------------------------------
@@ -1802,8 +1974,8 @@ function updateTotalSpeed(tasks) {
   let down = 0;
   let up   = 0;
   for (const task of tasks) {
-    down += task.additional?.transfer?.speed_download ?? 0;
-    up   += task.additional?.transfer?.speed_upload   ?? 0;
+    down += nonNegativeNumber(task.additional?.transfer?.speed_download);
+    up   += nonNegativeNumber(task.additional?.transfer?.speed_upload);
   }
 
   const downText = formatSpeed(down);
@@ -1821,18 +1993,22 @@ function updateTotalSpeed(tasks) {
 taskListEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
-  const { action, taskId, uri } = btn.dataset;
+  const { action, taskId, uri, destination } = btn.dataset;
   btn.disabled = true;
   try {
     const result = await browser.runtime.sendMessage({
-      action, id: taskId, uri,
+      action, id: taskId, uri, destination,
+      // Task ids are only unique on one NAS; the background refuses the action
+      // unless this still names the configured connection.
+      connection: tasksConnection,
       // A retried archive needs the same password the original add used.
       unzipPassword: extractEl.checked ? unzipPassEl.value : '',
     });
     const ok = reportActionResult(result);
     await refreshTasks();
     // Resuming or retrying makes a task active again — re-arm the timer.
-    if (ok && (action === ACTIONS.RESUME_TASK || action === ACTIONS.RETRY_TASK)) startAutoRefresh();
+    if ((ok || mayHaveTakenEffect(result))
+      && (action === ACTIONS.RESUME_TASK || action === ACTIONS.RETRY_TASK)) startAutoRefresh();
   } catch (err) {
     taskStatusEl.hidden = false;
     taskStatusEl.textContent = err.message || msg('taskActionFailed');
@@ -1874,7 +2050,7 @@ btnRefresh.addEventListener('click', async () => {
 btnClear.addEventListener('click', async () => {
   btnClear.disabled = true;
   try {
-    const result = await browser.runtime.sendMessage({ action: ACTIONS.CLEAR_COMPLETED });
+    const result = await browser.runtime.sendMessage({ action: ACTIONS.CLEAR_COMPLETED, connection: tasksConnection });
     reportActionResult(result);
     await refreshTasks();
   } catch (err) {
@@ -2017,16 +2193,12 @@ browser.runtime.connect({ name: 'popup' });
 (async function init() {
   const overlay = document.getElementById('loadingOverlay');
   try {
+    syncAddControls();
     applyStaticLocalization();
-
-    // Earlier versions kept both drafts in storage.local, where an unsaved
-    // password outlived the browser indefinitely. They live in session storage
-    // now; this clears out whatever the old ones left behind.
-    browser.storage.local.remove(['connDraft', 'bulkDraft']);
 
     // Load all persisted state before touching the UI
     await Promise.all([
-      loadSettings(), loadFilterState(), loadDraft(), loadSectionStates(), loadAddBusy(),
+      loadSettings(), loadFilterState(), loadDraft(), loadSectionStates(),
     ]);
     // After loadSettings, so unsaved edits win over the last saved values.
     await loadConnDraft();
@@ -2046,7 +2218,8 @@ browser.runtime.connect({ name: 'popup' });
     // An add that finished while the popup was closed left its result behind.
     // After the tab is chosen, so a fresh one may override it; after loadDraft,
     // so the box it prunes is the restored one.
-    await consumeLastAdd();
+    popupReady = true;
+    await loadAddBusy();
 
     // A download attempted before setup flags the popup to land on Settings.
     let cameFromFailedDownload = false;

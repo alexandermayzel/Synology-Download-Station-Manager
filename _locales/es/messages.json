@@ -8,6 +8,20 @@
   "tabAdd": { "message": "Añadir" },
   "tabsLabel": { "message": "Secciones" },
   "taskActionFailed": { "message": "No ha funcionado." },
+  "taskActionUnconfirmed": {
+    "message": "El NAS no confirmó el resultado de $COUNT$ tarea(s): revisa la lista antes de volver a intentarlo.",
+    "placeholders": { "count": { "content": "$1", "example": "3" } }
+  },
+  "taskListStale": { "message": "La lista de tareas estaba desactualizada y se ha actualizado. Inténtalo de nuevo." },
+  "addConnectionChanged": { "message": "La configuración de conexión cambió antes del envío, así que no se añadió nada." },
+  "retryLinkKept": {
+    "message": "La tarea fallida se eliminó, pero no se pudo volver a añadir: $REASON$ El enlace se ha vuelto a poner en la lista de enlaces.",
+    "placeholders": { "reason": { "content": "$1", "example": "No hay un destino predeterminado." } }
+  },
+  "retryOriginalFolder": {
+    "message": "Carpeta original: $FOLDER$",
+    "placeholders": { "folder": { "content": "$1", "example": "downloads/series" } }
+  },
   "addLinksSection": { "message": "Enlaces" },
   "addFilesSection": { "message": "Archivos" },
   "addFilesHint": { "message": "Archivos torrent y NZB, varios a la vez." },
@@ -57,6 +71,7 @@
   },
   "addLinksFailed": { "message": "No se pudieron añadir los enlaces." },
   "addingInProgress": { "message": "Añadiendo…" },
+  "addBusyHint": { "message": "Añadiendo descargas… Puedes copiar los enlaces. La lista se podrá editar cuando termine el envío." },
   "addBusy": { "message": "Ya se están añadiendo enlaces. Espera un momento." },
   "linksFailed": { "message": "No se han podido añadir $COUNT$ enlace(s). Siguen en la lista.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "No se han podido añadir $COUNT$ enlace(s): $REASON$ Siguen en la lista.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
@@ -175,7 +190,7 @@
   "resetAll": { "message": "Restablecer todos los ajustes" },
   "confirmResetAll": { "message": "¿Restablecer todos los ajustes? Se eliminan las credenciales, los datos de conexión y todas las opciones. Las descargas en el NAS no se tocan." },
   "logout": { "message": "Cerrar sesión" },
-  "logoutHint": { "message": "Cerrar sesión: borra el usuario y la contraseña y revoca la confianza de este dispositivo para la verificación en dos pasos. La dirección del NAS y todas las opciones se mantienen." },
+  "logoutHint": { "message": "Cierra la sesión actual del NAS. El nombre de usuario, la contraseña y el token del dispositivo se borran localmente. La confianza del dispositivo guardada en DSM se mantiene y puede revocarse allí por separado. La dirección del NAS y las opciones siguen guardadas." },
   "saveAndTest": { "message": "Guardar y probar la conexión" },
   "save": { "message": "Guardar" },
   "saved": { "message": "¡Guardado!" },
@@ -263,7 +278,7 @@
   "errAuth400": { "message": "Usuario o contraseña incorrectos." },
   "errAuth401": { "message": "Esta cuenta está deshabilitada." },
   "errAuth402": { "message": "Permiso denegado para esta cuenta." },
-  "errAuth403": { "message": "Se requiere código de verificación en dos pasos: esta extensión no admite 2FA. Usa una cuenta específica sin 2FA." },
+  "errAuth403": { "message": "Se necesita un código de verificación en dos pasos. Abre Ajustes para introducirlo." },
   "errAuth404": { "message": "El código de verificación en dos pasos era incorrecto." },
 
   "errTask400": { "message": "El NAS no pudo aceptar este archivo o enlace." },

@@ -37,6 +37,10 @@ document.addEventListener(
     // Cheapest test first: with the option off this listener does nothing at
     // all, and it is attached to every page on the web.
     if (!autoCaptureMagnets) return;
+    // A page can call link.click() or dispatch a click event of its own, and
+    // both reach this listener just like a real one. Only a click the user
+    // actually made may send anything to their NAS.
+    if (!e.isTrusted) return;
     // Not every click target is an Element — guard rather than throw on
     // somebody else's page.
     const link = e.target instanceof Element

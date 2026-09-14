@@ -3,6 +3,59 @@
 All notable changes to this extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] — 2026-09-14
+
+### Security
+
+- Magnet capture only reacts to clicks made by the user. A web page can no
+  longer send a download to the NAS by clicking a magnet link from a script.
+- A delayed login, including two-factor authentication, cannot restore a
+  session or device token after sign-out, reset or a connection change.
+
+### Fixed
+
+- Adding downloads: a create is never repeated automatically after a network
+  error, and uncertain outcomes are reported as such, including file uploads.
+  A NAS that could not be woken, or a sign-in that got no answer, is reported
+  as a plain failure, since nothing was sent.
+- Task actions: pause, resume and delete check the result per task, and tasks
+  the NAS did not confirm are no longer shown as failed. Retry re-adds a task in
+  its original folder only once the original is confirmed deleted; if that
+  fails, the link goes back into the Links list.
+- Connection changes: the old NAS is signed out with its own session, and the
+  old task list disappears at once. Task actions, "Delete all", queued links,
+  files still being read and remaining batches cannot reach the new NAS.
+- Background monitoring: it restarts after a resume and when the task list
+  shows running downloads. Polls run one at a time and their failure count
+  survives the background page being unloaded, so the failure limit works
+  again, also when signing in again fails; a refused sign-in ends the watch at
+  once. A newer task list outranks an older answer, and the completion
+  notification counts downloads seen running in either. An unanswered
+  keepalive or a logout in progress no longer takes the session away, and DSM
+  code 119 leads to a new sign-in.
+- Two-factor: a code needed while the task list refreshes is asked for instead
+  of being reported as an ordinary error, and nothing refreshes on its own
+  until it is entered.
+- Settings saved in quick succession no longer overwrite each other, and saving
+  the connection keeps a destination folder that was typed but not saved.
+- Sizes, dates and transfer rates returned as text are handled numerically.
+- Closing the popup while an add result is shown cannot restore accepted links.
+
+### Changed
+
+- While downloads are being added, the link list is read-only and the add and
+  clear-list buttons are disabled until the result is shown. Links can still
+  be copied.
+- Sign-out and two-factor messages were clarified.
+- The keepalive skips its request when the same session reached the NAS within
+  the last three minutes, also after the background page was unloaded.
+- Internal clean-up: unused code was removed and the active task statuses are
+  defined once. The task list is no longer redrawn or re-sorted when nothing it
+  shows has changed, drafts left by older versions are cleared once on update
+  instead of on every popup open, and links and files share one way of handing
+  an add to the background.
+- Added regression tests.
+
 ## [1.1.1] — 2026-09-02
 
 ### Changed
@@ -162,6 +215,7 @@ same licence (MPL-2.0), with its own extension ID and version numbering.
 - Adaptive polling that stops on its own, and an optional session keepalive
   that is off by default so the NAS's disks can hibernate.
 
+[1.1.2]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/releases/tag/v1.0.2

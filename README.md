@@ -73,6 +73,10 @@ cannot; the setting exists there but is ignored.
 - **The list survives** a closed popup, so links can be collected across several
   visits. Cleared after a successful add, by *Clear list*, or when Firefox
   closes.
+- **While adding**, the list is read-only and the add and clear-list buttons
+  are disabled. Links can still be selected and copied. Editing is available
+  again after the result is displayed, even if the popup was closed and
+  reopened in the meantime; the downloads themselves can keep running.
 - **Archive password** — optional field, sent as `unzip_password` with each task.
 
 ### Watching and managing
@@ -149,6 +153,9 @@ second factor for this extension — anyone who can read the Firefox profile can
 use it. Same exposure as the stored password, but worth knowing. DSM lists the
 device under *Control Panel → Security → Account*, where the trust can be
 revoked.
+
+Signing out of the extension removes its stored credentials and device token.
+To revoke the trusted device on the NAS as well, remove it in DSM.
 
 </details>
 
@@ -231,8 +238,10 @@ what the switches are for.
 ### HDD hibernation
 
 *Keep session alive in background* pings the NAS every three minutes so the popup
-can show "Connected" the instant it opens. That traffic can stop the NAS parking
-its disks, which is why it ships **off**. With it off the extension signs in when
+can show "Connected" the instant it opens. The ping is skipped when the same
+session reached the NAS within that time anyway, as the download watch and an
+open popup do. That traffic can stop the NAS parking its disks, which is why it
+ships **off**. With it off the extension signs in when
 needed and hands the session back when it is done.
 
 ### Automatic extraction happens on the NAS
@@ -297,13 +306,11 @@ times out after 8 seconds and is quietly repeated up to four times, ten seconds
 apart, showing nothing beyond "Connecting…" in the header. An answer that says
 *no* — wrong password, missing folder — is never repeated and appears at once.
 
-Requests that change something are treated more carefully. Reading a task list
-twice costs nothing; creating a task twice creates it twice. A refused
-connection proves nothing was sent, so those are still repeated — but once a
-request has gone out and only the answer is missing, it is reported rather than
-sent again, because the NAS may well have acted on it. If that happens while
-links are being added, the message says so and asks you to check Tasks before
-trying again.
+Creating a download gets one attempt. A browser network error cannot tell us
+whether the request reached the NAS, and a missing or unreadable response does
+not mean the download was refused. These outcomes are reported as uncertain;
+check Tasks before trying again. This also applies to torrent and NZB uploads.
+Reads and repeatable task actions still retry temporary network failures.
 
 Because such a request gets a single attempt, adding a download starts by
 knocking: a plain read with no session behind it, repeated for up to 30 seconds
@@ -365,15 +372,27 @@ popup/
   popup.css            Styles (CSS custom properties, Firefox panel look)
 icons/                 Extension icons
 fonts/                 Outfit (bundled, no external requests)
+tests/                 Regression tests (development only)
 ```
 
-No build step: the files in this repository are exactly what ships. To package
-for AMO, zip the directory contents with `manifest.json` at the root.
+No build step: extension scripts ship as written. For AMO, package
+`manifest.json`, `actions.js`, `background.js`, `content.js`, `LICENSE`, and the
+`popup`, `_locales`, `icons` and `fonts` directories, with `manifest.json` at the
+archive root. Tests and submission notes are not part of the extension.
+
+Run the regression tests with Node.js 18 or newer:
+
+```sh
+node --test tests/regression.test.cjs
+```
+
+They use simulated browser storage, popup controls and NAS responses. No NAS
+credentials or network access are required. Test the packaged extension in
+Firefox with a NAS as well before publishing a release.
 
 **APIs used:** `SYNO.API.Info` (discovery) · `SYNO.API.Auth` (login incl.
 `otp_code` and device token, logout) · `SYNO.DownloadStation.Task` (list, create,
-pause, resume, delete) · `SYNO.DownloadStation.Info` (`getinfo` for
-`is_manager`). Total throughput is added up from the task list rather than asked
+pause, resume, delete). Total throughput is added up from the task list rather than asked
 for separately, which is one fewer request per refresh.
 
 Reference: [Synology Download Station Web API guide](https://global.download.synology.com/download/Document/Software/DeveloperGuide/Package/DownloadStation/All/enu/Synology_Download_Station_Web_API.pdf)
