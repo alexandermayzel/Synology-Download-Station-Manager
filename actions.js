@@ -30,9 +30,9 @@ const ACTIONS = Object.freeze({
   // and says so — change it here and it has to change there too.
   MAGNET_CLICKED:     'magnetClicked',
 
-  // Adding
+  // Adding. Files have no entry: a .torrent is added by its link, through the
+  // context menu — see the hint in the popup's Files section.
   ADD_TASKS_BULK:     'addTasksBulk',
-  ADD_TASK_FILES:     'addTaskFiles',
 
   // Reading
   LIST_TASKS:         'listTasks',
@@ -84,6 +84,31 @@ function hasCredentials(settings) {
   return !!(settings.host && settings.username && settings.password);
 }
 
+/**
+ * Fill every [data-i18n] element of `root` from _locales.
+ *
+ * `translate` is passed in rather than taken from the page: the popup declares
+ * its own `msg`, and a second one here would be a redeclaration in the
+ * background's global scope, where this file also loads.
+ *
+ * Templates are localized too — document.querySelectorAll does not descend into
+ * <template> content, so their DocumentFragments are passed explicitly.
+ */
+function localizeTree(root, translate) {
+  for (const el of root.querySelectorAll('[data-i18n]')) {
+    el.textContent = translate(el.dataset.i18n);
+  }
+  for (const el of root.querySelectorAll('[data-i18n-placeholder]')) {
+    el.placeholder = translate(el.dataset.i18nPlaceholder);
+  }
+  for (const el of root.querySelectorAll('[data-i18n-title]')) {
+    el.title = translate(el.dataset.i18nTitle);
+  }
+  for (const el of root.querySelectorAll('[data-i18n-aria-label]')) {
+    el.setAttribute('aria-label', translate(el.dataset.i18nAriaLabel));
+  }
+}
+
 const CONNECTION_KEYS = Object.freeze(['protocol', 'host', 'port', 'username', 'password']);
 
 function connectionSettings(settings) {
@@ -119,6 +144,25 @@ function nonNegativeNumber(value) {
 const WORKING_STATUSES = Object.freeze([
   'downloading', 'waiting', 'extracting', 'finishing', 'hash_checking', 'filehosting_waiting',
 ]);
+
+/**
+ * Which statuses a pause or a resume may be offered for.
+ *
+ * Shared for the same reason as the list above: the popup decides whether a
+ * card gets the button, the background decides which tasks "Pause all" covers,
+ * and the two had drifted apart — a task waiting on a file host was picked up
+ * by the bulk action but had no button of its own.
+ */
+const PAUSABLE  = Object.freeze(['downloading', 'waiting', 'filehosting_waiting']);
+const RESUMABLE = Object.freeze(['paused', 'stopped']);
+
+function canPauseTask(status) {
+  return PAUSABLE.includes(String(status ?? '').toLowerCase());
+}
+
+function canResumeTask(status) {
+  return RESUMABLE.includes(String(status ?? '').toLowerCase());
+}
 
 function isWorkingTask(task) {
   return WORKING_STATUSES.includes(task?.status?.toLowerCase());

@@ -1,6 +1,9 @@
 {
+  "htmlLang": { "message": "ru" },
+  "portInvalid": { "message": "Порт должен быть целым числом от 1 до 65535." },
+  "protocolInsecure": { "message": "HTTP передаёт пароль и идентификатор сессии в открытом виде. Рекомендуется использовать HTTPS, чтобы данные передавались в зашифрованном виде." },
   "extensionName": { "message": "Synology - Download Station Manager" },
-  "extensionDescription": { "message": "Отправляйте ссылки, magnet-ссылки и torrent-файлы в Download Station вашего NAS Synology и управляйте загрузками, не открывая DSM." },
+  "extensionDescription": { "message": "Отправляйте ссылки, magnet- и torrent-ссылки в Synology Download Station и управляйте загрузками прямо в Firefox — без DSM." },
   "contextMenuTitle": { "message": "Скачать через Download Station" },
 
   "loading": { "message": "Загрузка…" },
@@ -18,13 +21,16 @@
     "message": "Задача с ошибкой удалена, но добавить её снова не удалось: $REASON$ Ссылка возвращена в список ссылок.",
     "placeholders": { "reason": { "content": "$1", "example": "Папка назначения по умолчанию не задана." } }
   },
+  "retryLinkKeptUnsent": { "message": "NAS не подтвердил удаление, поэтому ничего не добавлялось заново. Ссылка возвращена в список ссылок — проверьте задачи на NAS, прежде чем добавлять её." },
+  "retryLinkKeptUnknown": { "message": "Исходная задача удалена. Была ли создана новая, неизвестно — проверьте список задач, прежде чем добавлять снова. Ссылка возвращена в список ссылок." },
+  "actionResultUnknown": { "message": "NAS не подтвердил результат — проверьте список задач, прежде чем пробовать снова." },
   "retryOriginalFolder": {
     "message": "Исходная папка: $FOLDER$",
     "placeholders": { "folder": { "content": "$1", "example": "downloads/series" } }
   },
   "addLinksSection": { "message": "Ссылки" },
-  "addFilesSection": { "message": "Файлы" },
-  "addFilesHint": { "message": "Torrent- и NZB-файлы, можно несколько сразу." },
+  "addFilesSection": { "message": "Файл torrent или NZB" },
+  "addFilesHint": { "message": "Файл torrent или NZB: правый клик по ссылке и «Скачать через Download Station». NAS скачает его сам." },
   "setAsHome": { "message": "Открывать окно на этой вкладке" },
 
   "connecting": { "message": "Подключение…" },
@@ -44,15 +50,6 @@
   "oneLinkPerLine": { "message": "По одной ссылке в строке…" },
   "addAll": { "message": "Добавить все ссылки" },
   "clearList": { "message": "Очистить список" },
-  "addTorrent": { "message": "Добавить torrent-файл…" },
-  "addingFiles": {
-    "message": "Добавление файлов: $COUNT$…",
-    "placeholders": { "count": { "content": "$1", "example": "3" } }
-  },
-  "filesAdded": {
-    "message": "Добавлено файлов: $COUNT$.",
-    "placeholders": { "count": { "content": "$1", "example": "3" } }
-  },
   "noLinksEntered": { "message": "Ссылки не введены." },
   "addingLinks": {
     "message": "Добавление ссылок: $COUNT$…",
@@ -62,19 +59,13 @@
     "message": "Добавлено ссылок: $COUNT$.",
     "placeholders": { "count": { "content": "$1", "example": "12" } }
   },
-  "linksPartial": {
-    "message": "Добавлено: $ADDED$, с ошибкой: $FAILED$",
-    "placeholders": {
-      "added":  { "content": "$1", "example": "8" },
-      "failed": { "content": "$2", "example": "4" }
-    }
-  },
   "addLinksFailed": { "message": "Не удалось добавить ссылки." },
   "addingInProgress": { "message": "Добавление…" },
   "addBusyHint": { "message": "Добавление загрузок… Ссылки можно копировать. Список снова можно будет редактировать после завершения добавления." },
   "addBusy": { "message": "Ссылки уже добавляются. Подождите." },
   "linksFailed": { "message": "Не удалось добавить ссылок: $COUNT$. Они остались в списке.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "Не удалось добавить ссылок: $COUNT$ — $REASON$ Они остались в списке.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
+  "linkHasComma": { "message": "Ссылку с запятой отправить нельзя: NAS воспринимает запятые как разделитель между ссылками." },
   "linksUncertain": { "message": "NAS не ответил, поэтому неизвестно, дошли ли эти ссылки ($COUNT$). Проверьте задачи, прежде чем пробовать снова.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Завершённые" },
@@ -119,8 +110,8 @@
   "prevPage": { "message": "Предыдущая страница" },
   "nextPage": { "message": "Следующая страница" },
 
-  "taskRefreshInterval": { "message": "Интервал фонового обновления задач" },
-  "refreshIntervalHint": { "message": "Работает только при наличии активных задач — когда всё завершено или приостановлено, обновление прекращается само. В течение полуминуты после добавления список обновляется каждые 3 секунды независимо от этой настройки, затем она снова вступает в силу." },
+  "taskRefreshInterval": { "message": "Обновление списка задач в окне расширения" },
+  "refreshIntervalHint": { "message": "Как часто открытая вкладка «Задачи» перезагружает список, пока есть активные задачи — когда всё завершено или приостановлено, обновление прекращается само. В течение полуминуты после добавления список перезагружается каждые 3 секунды независимо от этой настройки. Фоновое наблюдение работает отдельно: оно опрашивает NAS раз в минуту, пока отслеживаемые загрузки не завершатся, в том числе при «Только вручную»." },
   "interval3": { "message": "3 секунды" },
   "interval10": { "message": "10 секунд" },
   "interval30": { "message": "30 секунд" },
@@ -150,7 +141,7 @@
   "otpLabel": { "message": "Код подтверждения" },
   "otpSubmit": { "message": "Войти" },
   "otpWrong": { "message": "Код подтверждения неверен." },
-  "otpHint": { "message": "Шесть цифр из приложения-аутентификатора. После этого устройство запоминается, поэтому код понадобится только один раз." },
+  "otpHint": { "message": "Шесть цифр из приложения-аутентификатора. Последующие входы не требуют кода, пока DSM считает это устройство доверенным." },
   "connection": { "message": "Подключение" },
   "protocol": { "message": "Протокол" },
   "host": { "message": "Хост" },
@@ -185,9 +176,12 @@
   },
   "defaultDestination": { "message": "Папка назначения по умолчанию (необязательно)" },
   "destinationHint": {
-    "message": "Имя папки относительно общей папки, без ведущей косой черты (например, «downloads», а не «/downloads» или «/volume1/downloads»). Оставьте пустым, чтобы использовать папку назначения, уже настроенную на самом NAS (DSM → Download Station → Настройки → Общие)."
+    "message": "Путь, начинающийся с имени общей папки, без ведущей косой черты (например, «downloads/series», а не «/downloads/series» или «/volume1/downloads/series»). Оставьте пустым, чтобы использовать папку назначения, уже настроенную на самом NAS (DSM → Download Station → Настройки → Общие)."
   },
+  "addNotListed": { "message": "NAS ответил, но не показывает загрузку — она не добавлена." },
+  "addNasUnreachable": { "message": "NAS недоступен, поэтому не удалось проверить, дошла ли загрузка." },
   "resetAll": { "message": "Сбросить все настройки" },
+  "appVersion": { "message": "Версия $VERSION$", "placeholders": { "VERSION": { "content": "$1" } } },
   "confirmResetAll": { "message": "Сбросить все настройки? Учётные данные, параметры подключения и все опции будут удалены. Загрузки на NAS не затрагиваются." },
   "logout": { "message": "Выйти" },
   "logoutHint": { "message": "Завершает текущий сеанс на NAS. Имя пользователя, пароль и токен устройства удаляются локально. Сохранённое в DSM доверие к устройству остаётся в силе и может быть отозвано там отдельно. Адрес NAS и параметры остаются сохранёнными." },
@@ -202,14 +196,16 @@
   "notifyOnFailedLabel": { "message": "Загрузки с ошибкой" },
   "notifyOnFinishedLabel": { "message": "Загрузки завершены" },
   "notifyAllDone": { "message": "Все загрузки завершены" },
+  "notifyWatchResult": { "message": "Итог загрузок" },
   "notifyDoneCount":   { "message": "завершено: $COUNT$",  "placeholders": { "count": { "content": "$1", "example": "12" } } },
   "notifyFailedCount": { "message": "с ошибкой: $COUNT$",  "placeholders": { "count": { "content": "$1", "example": "2" } } },
   "notifyPausedCount": { "message": "на паузе: $COUNT$",   "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Ошибка" },
   "notifyError": { "message": "Download Station — Ошибка" },
   "notifyPartial": { "message": "Download Station — Частичная ошибка" },
-  "notifyWaking": { "message": "NAS спит. Ожидание ответа, после чего загрузка будет добавлена." },
+  "notifyWaking": { "message": "Подключиться к NAS пока не удалось. Будет ещё одна попытка." },
   "notifyUncertain": { "message": "NAS не ответил. Дошла ли загрузка, неизвестно — проверьте «Задачи», прежде чем добавлять её снова." },
+  "notifyBulkUncertainCount": { "message": "$COUNT$ с неясным результатом — проверьте «Задачи», прежде чем добавлять снова.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "Добавлено ссылок: $COUNT$",
     "placeholders": { "count": { "content": "$1", "example": "12" } }

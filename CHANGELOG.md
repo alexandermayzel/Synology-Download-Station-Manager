@@ -3,6 +3,74 @@
 All notable changes to this extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.3] — 2026-09-20
+
+### Security
+
+- NAS requests no longer follow redirects, preventing credentials and session
+  IDs from being forwarded to another address.
+- Archive passwords and two-factor codes are cleared on sign-out and connection
+  changes.
+
+### Added
+
+- Extension version displayed in Settings.
+- Warning that HTTP transmits passwords and session IDs unencrypted.
+
+### Fixed
+
+- Fixed unintended HTTP-to-HTTPS upgrades.
+- Unanswered add requests are checked against the task list. Confirmed downloads
+  are removed from the input; failed and unverified results are reported
+  separately in both notifications and the popup.
+- Links containing commas are rejected with an explanation to prevent the NAS
+  from splitting them into separate downloads.
+- *Retry* only creates a replacement after confirmed deletion. Messages
+  distinguish failures before sending, unconfirmed deletion and unconfirmed
+  replacement, preserving the link when needed.
+- Two-factor verification blocks additional sign-ins to the same connection.
+  Code submissions are not repeated after a lost response, and stale replies
+  no longer reopen the code prompt.
+- Popup login failures are retained across popup closure and trigger
+  notifications. They block further automatic sign-ins while existing sessions
+  remain usable.
+- Rejected sign-ins stop bulk adds and confirmation checks. Authentication
+  failures during confirmation also stop automatic popup refreshes.
+- Connection, destination and link drafts survive immediate popup closure.
+  Saving connection details preserves edits made while the save is pending.
+- Invalid ports are rejected, cleared destinations remain empty, and resetting
+  settings also clears previous error messages.
+- Stale task lists no longer stop refreshes after resuming a download.
+  Individual pause buttons now cover all tasks supported by *Pause all*.
+- Fixed premature monitoring stops caused by overlapping resume, keepalive
+  and login operations.
+- Task actions distinguish connection failures before sending from unconfirmed
+  results after sending.
+- Connection status follows refresh results without overwriting newer login
+  results. Full error messages appear below the header and in its tooltip.
+- Folder errors describe the destination actually used, distinguishing an
+  explicit path from the NAS default.
+- Completion notification titles now match the completed, failed and paused
+  task counts.
+
+### Changed
+
+- Improved screen-reader feedback for filters and pagination, and corrected
+  the popup's document language.
+- Magnet capture supports uppercase protocol names and links in open shadow DOM.
+- Increased the NAS wake-up wait to 60 seconds and the base add timeout to
+  25 seconds, with additional time per link.
+- Clarified that the refresh interval controls the popup task list;
+  background monitoring runs independently.
+- Reworded the texts for the destination folder, the two-factor code, the NAS
+  connection and the extension's own description.
+
+### Removed
+
+- Removed local `.torrent` and `.nzb` uploads: the file picker could close the
+  popup, and the tested DSM endpoint required the session ID in the URL.
+  Torrent links remain supported through the context menu.
+
 ## [1.1.2] — 2026-09-14
 
 ### Security
@@ -97,10 +165,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
-- Every request that carries a password or a session id goes out as POST, so
-  neither is written to the NAS's web server log. The task list was the one that
-  mattered: it is fetched every few seconds and used to put a working session id
-  in that log each time.
+- Every request that carries a password or a session id goes out as POST, with
+  those values in the body instead of the URL. The task list was the one that
+  mattered: it is fetched every few seconds, and each fetch used to carry a
+  working session id in its address.
 - Unsaved connection details no longer outlive the browser. A password typed
   but never saved was held in permanent storage; drafts live in session storage
   now and are discarded when Firefox closes.
@@ -215,6 +283,7 @@ same licence (MPL-2.0), with its own extension ID and version numbering.
 - Adaptive polling that stops on its own, and an optional session keepalive
   that is off by default so the NAS's disks can hibernate.
 
+[1.1.3]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.0.2...v1.1.0

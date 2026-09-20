@@ -311,10 +311,6 @@ summary::-webkit-details-marker{display:none}
 }
 .btn-secondary:hover{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .btn-secondary:disabled{cursor:not-allowed;opacity:.6}
-/* Extra breathing room in front, for an action that belongs to a different
-   input than the buttons next to it. */
-/* Full width, for a button that is the only thing in its section. */
-.btn-secondary.wide{width:100%}
 
 /* 24×24 is the minimum WCAG 2.2 sets for a pointer target (2.5.8), and it puts
    these on the same footing as the buttons in the section headers, which were
@@ -479,6 +475,9 @@ textarea.ta{resize:none;min-height:56px}
 .hint{font-size:11px;color:var(--muted);line-height:1.5;margin:0}
 .hint.center{text-align:center;padding:8px 0}
 .hint.error{color:var(--danger-text)}
+/* Something to weigh, not something done wrong — so the warning hue, not the
+   error one. Same colour the waiting badge and the code prompt already use. */
+.hint.warn{color:var(--warn)}
 /* A status line with nothing to report shouldn't reserve padding and a flex
    gap — that leaves a dead strip under the buttons above it. */
 .hint.center:empty{display:none}

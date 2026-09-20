@@ -1,6 +1,6 @@
 # Synology - Download Station Manager
 
-A Firefox extension that sends links, magnet links and torrent files to your
+A Firefox extension that sends links, magnet links and torrent links to your
 **Synology NAS** through the official Download Station Web API — and lets you
 watch and manage the resulting tasks without opening DSM.
 
@@ -34,8 +34,9 @@ same. Firefox installs only signed extensions, so a ZIP built straight from this
 source will be refused.
 
 **From source** — `about:debugging#/runtime/this-firefox` → *Load Temporary
-Add-on…* → pick `manifest.json`. Survives until Firefox closes, needs no
-signing, and reloads after every edit.
+Add-on…* → pick `manifest.json`. Survives until Firefox closes and needs no
+signing. After an edit press *Reload* on that same page; automatic reloading is
+what `web-ext run` is for.
 
 <details>
 <summary>Signing your own build (maintainers)</summary>
@@ -61,13 +62,16 @@ cannot; the setting exists there but is ignored.
 ### Adding downloads
 
 - **Paste a list of links**, one per line. Lists longer than 50 are split
-  automatically — Download Station rejects more than 50 URIs per call. If some
-  are refused, only those stay in the box, marked and with the reason, so trying
-  again cannot add the accepted ones twice.
+  automatically — Download Station rejects more than 50 URIs per call. Links the
+  NAS confirmed are removed from the box; refused ones stay, marked and with the
+  reason. A link whose outcome could not be established stays as well, so check
+  the task list before sending that one again.
 - **Right-click any link** → *Download with Download Station*. Works on selected
   text as well, for sites that fake links with JavaScript, and picks out
   **every** link in a multi-line selection rather than just the first.
-- **Torrent and NZB files**, several at once.
+- **Torrent and NZB files** by their link — right-click it and the NAS fetches
+  the file itself. Uploading one from the disk is not offered; see *No file
+  upload* below for why.
 - **Magnet links** can be intercepted automatically, so a click goes to the NAS
   instead of prompting for a torrent client. Off by default.
 - **The list survives** a closed popup, so links can be collected across several
@@ -78,6 +82,10 @@ cannot; the setting exists there but is ignored.
   again after the result is displayed, even if the popup was closed and
   reopened in the meantime; the downloads themselves can keep running.
 - **Archive password** — optional field, sent as `unzip_password` with each task.
+- **Links containing a comma** are turned down with a reason rather than sent.
+  The API separates links with commas, so one address would arrive as two. This
+  holds for every route in: the list, a right-click, a magnet link and *Retry* —
+  and the retry checks before it deletes the task it is replacing.
 
 ### Watching and managing
 
@@ -105,7 +113,8 @@ cannot; the setting exists there but is ignored.
 - **Adaptive polling.** A background check follows an added download to
   completion once a minute, then stops by itself.
 - **Two-factor authentication** — enter the code once; the browser is registered
-  as a trusted device and background work never prompts again.
+  as a trusted device, and background work reuses that token for as long as DSM
+  accepts it.
 - **Six languages** — English, German, Spanish, French, Brazilian Portuguese,
   Russian; follows the browser language.
 - **Contrast measured, not eyeballed** — every colour checked against WCAG 2.1
@@ -145,7 +154,8 @@ Station access, write permission on exactly one folder, no admin rights.
 
 When DSM asks for a code, the popup shows a field for it. That login also
 registers this browser as a trusted device, and the returned token is reused from
-then on, so background work never prompts again. Changing the host, account or
+then on, so background work does not prompt while DSM still accepts it. Revoke
+the device in DSM and a code is asked for again. Changing the host, account or
 password discards the token.
 
 **Trade-off:** a stored device token is, by design, a standing bypass of the
@@ -217,9 +227,9 @@ again once Firefox has been closed.
 ### Destination folder
 
 Leave it empty to use the folder configured on the NAS itself (*DSM → Download
-Station → Settings → General*). Filled in, the value is a folder name **relative
-to a shared folder, without a leading slash** — `downloads`, not `/downloads`
-and not `/volume1/downloads`.
+Station → Settings → General*). Filled in, the value is a path that **starts with
+the name of the shared folder and carries no leading slash** —
+`downloads/series`, not `/downloads/series` and not `/volume1/downloads/series`.
 
 Unlike the other options it is not applied as you type: it takes effect on Enter
 or its save button, which stays highlighted while the field differs from what is
@@ -243,6 +253,10 @@ session reached the NAS within that time anyway, as the download watch and an
 open popup do. That traffic can stop the NAS parking its disks, which is why it
 ships **off**. With it off the extension signs in when
 needed and hands the session back when it is done.
+
+After a failed popup connection test, new automatic sign-ins are blocked,
+including those needed to add downloads. Use **Test** or **Save and test connection**
+to retry; an existing session can still be used.
 
 ### Automatic extraction happens on the NAS
 
@@ -293,37 +307,75 @@ Four things deliberately do **not** persist:
 The drafts exist because Firefox closes the popup the moment you click anything
 outside it — reaching for a password manager's toolbar button included.
 
-Nothing secret travels in a URL. The password and the session id go to the NAS
-in the body of a POST request, so neither is written to its web server log — the
-task list included, which is fetched every few seconds and would otherwise leave
-a usable session id in that log all day.
+Nothing secret travels in a URL. The password and the session id go to the NAS in
+the body of a POST request rather than in the query string — the task list
+included, which is fetched every few seconds and would otherwise put a usable
+session id into every one of those request lines. What the NAS's web server
+writes down is its own configuration; keeping the values out of the URL is the
+part this extension controls.
 
 ### A sleeping NAS
 
-With the disks parked the first request is refused outright, and it can be half a
-minute before the NAS answers. Rather than report that as a failure, a request
-times out after 8 seconds and is quietly repeated up to four times, ten seconds
-apart, showing nothing beyond "Connecting…" in the header. An answer that says
-*no* — wrong password, missing folder — is never repeated and appears at once.
+Four mechanisms, at different points and for different reasons.
 
-Creating a download gets one attempt. A browser network error cannot tell us
-whether the request reached the NAS, and a missing or unreadable response does
-not mean the download was refused. These outcomes are reported as uncertain;
-check Tasks before trying again. This also applies to torrent and NZB uploads.
+**Ordinary requests.** With the disks parked the first request is refused
+outright, and it can be half a minute before the NAS answers. Rather than report
+that as a failure, a request times out after 8 seconds and is quietly repeated up
+to four times, ten seconds apart, showing nothing beyond "Connecting…" in the
+header. An answer that says *no* — wrong password, missing folder — is never
+repeated and appears at once.
+
+A sign-in carrying a two-factor code is the exception: one attempt, 25 seconds,
+and never repeated. A code is good for one use, and the NAS may have accepted it
+with only the reply going missing — asking again would spend it a second time,
+which DSM answers with "wrong code".
+
+**Before an add, a wake check.** A create gets a single attempt, so adding starts
+by knocking: a plain read with no session behind it, repeated in three-second
+gaps for up to a minute until the NAS answers, then a couple of seconds for
+Download Station to finish starting. Each knock costs almost nothing, because a
+sleeping NAS refuses at once rather than leaving the connection hanging, so the
+download starts within a few seconds of the NAS becoming reachable. One that
+never answers is reported as unreachable after about a minute, with every link
+left in the box.
+
+**Then the add itself.** One attempt, and by now the NAS is awake. The create
+gets 25 seconds plus a little more for each link in the batch — long enough for a
+Download Station that is busy rather than asleep.
+
+**Afterwards, if the add went unanswered.** A browser network error cannot tell
+us whether the request reached the NAS, and a missing or unreadable response does
+not mean the download was refused. The task list is then asked what became of the
+link: every task carries the URI it was created from, so one that is there counts
+as added and leaves the link list. The NAS does not list a task the instant it
+takes it, so the question is repeated every three seconds and dropped as soon as
+every link is accounted for. The lookup uses a 15-second budget. Waiting for an
+already-running sign-in or API discovery can extend the overall duration. A link
+that never appears is reported for what those answers show: the NAS answered and
+does not have it, so adding it failed and it can be sent again — or the NAS never
+answered, so nothing could be established. Either way it waits in the list.
+
+### No file upload
+
+A `.torrent` on your disk cannot be sent from here, and the button for it is
+gone. Two things stand in the way, and the second one decides it.
+
+The file dialog takes the focus, so Firefox closes the popup — and the script
+that was to read the chosen file closes with it. Pressing the button did
+nothing at all: no upload, no message, nothing on the NAS. A window of its own
+survives that.
+
+What it then runs into is the NAS. On the DSM 7 installation this was tested
+against, the documented upload — `SYNO.DownloadStation.Task` create with a file —
+answered with error 101, "invalid parameter", in every shape that was tried.
+DSM's own interface uses `SYNO.DownloadStation2.Task` instead, and that endpoint
+checks the session before it parses the upload: the session id has to travel in
+the URL, where the NAS can record it in its web server log. Keeping session ids
+out of URLs is why every other request here is a POST, and one upload is not
+worth undoing it.
+
+The link route has neither problem, so that is the one the popup points at.
 Reads and repeatable task actions still retry temporary network failures.
-
-Because such a request gets a single attempt, adding a download starts by
-knocking: a plain read with no session behind it, repeated for up to 30 seconds
-until the NAS answers, then a couple of seconds for Download Station to finish
-starting. Only then is anything created, and by that point the NAS is awake and
-answers quickly.
-
-A sleeping NAS refuses the connection outright rather than leaving it hanging,
-so each knock costs almost nothing and the waiting happens in three-second gaps
-between them — the download starts within a few seconds of the NAS becoming
-reachable. A NAS that is already awake adds well under a second. One that never
-answers is reported as unreachable after about 45 seconds, with every link left
-in the box.
 
 ### Contrast
 
@@ -344,15 +396,21 @@ progress bar ends is printed as a percentage beside it anyway.
 ### Sessions on browser close
 
 Sessions are released when the connection details change, and when polling
-finishes with keepalive off. A Manifest V3 extension cannot reliably run code as
-the browser shuts down, so a session still open at that moment stays open until
-DSM times it out.
+finishes with keepalive off — but not while the popup is open, and not while an
+add or a resume is still running. The session those hold on to is kept, and
+closing the popup afterwards does not release it either: nothing goes looking
+for it again. A Manifest V3 extension cannot reliably run code as the browser
+shuts down, so a session still open at that moment — for any of these reasons —
+stays open until DSM times it out.
 
 ### Why the broad permissions
 
-`<all_urls>` is needed because the NAS address is whatever you type into the
-settings and cannot be narrowed at build time. The content script runs on all
-pages but only listens for clicks on `magnet:` links.
+Two separate entries, for two different reasons. `host_permissions` is `*://*/*`
+because the NAS address is whatever you type into the settings and cannot be
+narrowed at build time. The content script's `matches` is `<all_urls>`: it is
+loaded on every page, where it watches for clicks on `magnet:` links. With magnet
+capture off — the default — its listener returns immediately and nothing is
+intercepted.
 
 ---
 

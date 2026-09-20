@@ -146,17 +146,20 @@
 
     <details class="section collapsible" id="addFilesSection" open>
       <summary class="section-head">
-        <span class="section-title" data-i18n="addFilesSection">Files</span>
+        <span class="section-title" data-i18n="addFilesSection">Torrent or NZB file</span>
         <svg class="chev" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </summary>
       <div class="section-body">
-        <button id="btnAddTorrent" class="btn-secondary wide" data-i18n="addTorrent" disabled>Add torrent file…</button>
-        <input type="file" id="torrentInput" accept=".torrent,.nzb" multiple hidden />
+        <!-- No button here on purpose. A file dialog closes this popup before
+             the file can be read, and the upload the NAS would accept instead
+             needs the session id in the URL, where its web server log keeps it.
+             The link route has neither problem. -->
         <span class="hint" data-i18n="addFilesHint">
-          Torrent and NZB files, several at once.
+          Torrent or NZB file: right-click its link and choose "Download with Download
+          Station". The NAS fetches it.
         </span>
       </div>
     </details>
@@ -217,22 +220,22 @@
       </div>
 
       <div class="filters" id="filters">
-        <button type="button" class="fbtn on" data-filter="all">
+        <button type="button" class="fbtn on" data-filter="all" aria-pressed="true">
           <span data-i18n="filterAll">All</span><span class="n" data-count="all">0</span>
         </button>
-        <button type="button" class="fbtn" data-filter="active">
+        <button type="button" class="fbtn" data-filter="active" aria-pressed="false">
           <span data-i18n="filterActive">Active</span><span class="n" data-count="active">0</span>
         </button>
-        <button type="button" class="fbtn" data-filter="waiting">
+        <button type="button" class="fbtn" data-filter="waiting" aria-pressed="false">
           <span data-i18n="filterWaiting">Waiting</span><span class="n" data-count="waiting">0</span>
         </button>
-        <button type="button" class="fbtn" data-filter="failed">
+        <button type="button" class="fbtn" data-filter="failed" aria-pressed="false">
           <span data-i18n="filterFailed">Failed</span><span class="n" data-count="failed">0</span>
         </button>
-        <button type="button" class="fbtn" data-filter="paused">
+        <button type="button" class="fbtn" data-filter="paused" aria-pressed="false">
           <span data-i18n="filterPaused">Paused</span><span class="n" data-count="paused">0</span>
         </button>
-        <button type="button" class="fbtn" data-filter="finished">
+        <button type="button" class="fbtn" data-filter="finished" aria-pressed="false">
           <span data-i18n="filterFinished">Finished</span><span class="n" data-count="finished">0</span>
         </button>
       </div>
@@ -283,6 +286,10 @@
           <input type="number" id="port" placeholder="5001" min="1" max="65535" class="ta" />
         </div>
       </div>
+      <!-- Shown only while HTTP is chosen. A warning, not a refusal. -->
+      <p id="protocolWarning" class="hint warn" data-i18n="protocolInsecure" hidden>
+        HTTP sends your password and session id unencrypted. Using HTTPS is recommended, so the data travels encrypted.
+      </p>
 
       <!-- Credentials (nested collapsible) -->
       <details class="credentials" id="credentialsSection">
@@ -535,6 +542,9 @@
       <button type="button" id="btnResetAllNo" class="btn-sm" data-i18n="cancel">Cancel</button>
     </div>
     <button id="btnResetAll" class="btn-link-danger" data-i18n="resetAll">Reset all settings</button>
+    <!-- Filled from the manifest on open, so it cannot fall behind a release.
+         Empty until then, and .hint.center:empty keeps it out of the layout. -->
+    <p id="appVersion" class="hint center"></p>
   </section>
 
 </div>

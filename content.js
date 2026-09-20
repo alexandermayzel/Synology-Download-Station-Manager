@@ -30,6 +30,30 @@ browser.storage.onChanged.addListener((changes, area) => {
   }
 });
 
+/**
+ * Whether an anchor points at a magnet link.
+ *
+ * Read from the anchor's own parsed protocol rather than matched against the
+ * attribute text: "MAGNET:?xt=…" is the same link to the browser, and an
+ * attribute selector for "magnet:" walks straight past it. The attribute is
+ * the fallback for anything that never got parsed.
+ */
+function isMagnetLink(anchor) {
+  const protocol = typeof anchor.protocol === 'string' ? anchor.protocol : '';
+  if (protocol) return protocol.toLowerCase() === 'magnet:';
+  return /^\s*magnet:/i.test(anchor.getAttribute?.('href') ?? '');
+}
+
+/** The magnet link a click landed on, anywhere along its path, or null. */
+function findMagnetLink(nodes) {
+  for (const node of nodes) {
+    if (!(node instanceof Element) || typeof node.closest !== 'function') continue;
+    const anchor = node.closest('a[href]');
+    if (anchor && isMagnetLink(anchor)) return anchor;
+  }
+  return null;
+}
+
 // Use capture phase so we see the event before any page handler.
 document.addEventListener(
   'click',
@@ -41,11 +65,11 @@ document.addEventListener(
     // both reach this listener just like a real one. Only a click the user
     // actually made may send anything to their NAS.
     if (!e.isTrusted) return;
-    // Not every click target is an Element — guard rather than throw on
-    // somebody else's page.
-    const link = e.target instanceof Element
-      ? e.target.closest('a[href^="magnet:"]')
-      : null;
+    // A link inside an open shadow tree cannot be reached from e.target with
+    // closest() — the composed path passes through the hosts, so it can. Not
+    // every click target is an Element either, which findMagnetLink guards.
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    const link = findMagnetLink(path.length ? path : [e.target]);
     if (!link) return;
 
     e.preventDefault();

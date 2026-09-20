@@ -1,6 +1,9 @@
 {
+  "htmlLang": { "message": "de" },
+  "portInvalid": { "message": "Der Port muss eine ganze Zahl zwischen 1 und 65535 sein." },
+  "protocolInsecure": { "message": "HTTP überträgt Passwort und Sitzungs-ID unverschlüsselt. Es wird empfohlen HTTPS zu nutzen, um die Daten verschlüsselt zu übertragen." },
   "extensionName": { "message": "Synology - Download Station Manager" },
-  "extensionDescription": { "message": "Sendet Links, Magnet-Links und Torrent-Dateien an die Download Station deiner Synology NAS – und verwaltet die Downloads direkt im Browser, ohne DSM zu öffnen." },
+  "extensionDescription": { "message": "Sende Links, Magnet- und Torrent-Links an Synology Download Station und verwalte Downloads direkt in Firefox – ohne DSM." },
   "contextMenuTitle": { "message": "Mit Download Station herunterladen" },
 
   "loading": { "message": "Wird geladen…" },
@@ -18,13 +21,16 @@
     "message": "Die fehlgeschlagene Aufgabe wurde entfernt, das erneute Hinzufügen hat aber nicht geklappt: $REASON$ Der Link steht wieder in der Linkliste.",
     "placeholders": { "reason": { "content": "$1", "example": "Es ist kein Standardziel festgelegt." } }
   },
+  "retryLinkKeptUnsent": { "message": "Die NAS hat die Löschung nicht bestätigt, daher wurde nichts neu hinzugefügt. Der Link steht wieder in der Linkliste — prüfe vor erneutem Hinzufügen die Aufgaben auf der NAS." },
+  "retryLinkKeptUnknown": { "message": "Die ursprüngliche Aufgabe wurde entfernt. Ob die neue Aufgabe angelegt wurde, ist unklar — prüfe vor erneutem Hinzufügen die Aufgabenliste. Der Link steht wieder in der Linkliste." },
+  "actionResultUnknown": { "message": "Die NAS hat das Ergebnis nicht bestätigt — prüfe die Aufgabenliste, bevor du es erneut versuchst." },
   "retryOriginalFolder": {
     "message": "Ursprünglicher Ordner: $FOLDER$",
     "placeholders": { "folder": { "content": "$1", "example": "downloads/serien" } }
   },
   "addLinksSection": { "message": "Links" },
-  "addFilesSection": { "message": "Dateien" },
-  "addFilesHint": { "message": "Torrent- und NZB-Dateien, auch mehrere auf einmal." },
+  "addFilesSection": { "message": "Torrent- oder NZB-Datei" },
+  "addFilesHint": { "message": "Torrent- oder NZB-Datei: Rechtsklick auf den Link, „Mit Download Station herunterladen“. Die NAS lädt sie selbst." },
   "setAsHome": { "message": "Popup mit diesem Tab öffnen" },
 
   "connecting": { "message": "Verbinde…" },
@@ -44,15 +50,6 @@
   "oneLinkPerLine": { "message": "Ein Link pro Zeile…" },
   "addAll": { "message": "Alle Links hinzufügen" },
   "clearList": { "message": "Liste leeren" },
-  "addTorrent": { "message": "Torrent-Datei hinzufügen…" },
-  "addingFiles": {
-    "message": "$COUNT$ Datei(en) werden hinzugefügt…",
-    "placeholders": { "count": { "content": "$1", "example": "3" } }
-  },
-  "filesAdded": {
-    "message": "$COUNT$ Datei(en) hinzugefügt.",
-    "placeholders": { "count": { "content": "$1", "example": "3" } }
-  },
   "noLinksEntered": { "message": "Keine Links eingegeben." },
   "addingLinks": {
     "message": "$COUNT$ Link(s) werden hinzugefügt…",
@@ -62,19 +59,13 @@
     "message": "$COUNT$ Link(s) hinzugefügt.",
     "placeholders": { "count": { "content": "$1", "example": "12" } }
   },
-  "linksPartial": {
-    "message": "$ADDED$ hinzugefügt, $FAILED$ fehlgeschlagen",
-    "placeholders": {
-      "added":  { "content": "$1", "example": "8" },
-      "failed": { "content": "$2", "example": "4" }
-    }
-  },
   "addLinksFailed": { "message": "Links konnten nicht hinzugefügt werden." },
   "addingInProgress": { "message": "Wird hinzugefügt…" },
   "addBusyHint": { "message": "Downloads werden hinzugefügt… Du kannst die Links kopieren. Nach dem Hinzufügen ist die Liste wieder bearbeitbar." },
   "addBusy": { "message": "Es werden bereits Links hinzugefügt. Bitte warten." },
   "linksFailed": { "message": "$COUNT$ Link(s) konnten nicht hinzugefügt werden. Sie stehen noch in der Liste.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ Link(s) konnten nicht hinzugefügt werden: $REASON$ Sie stehen noch in der Liste.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
+  "linkHasComma": { "message": "Ein Link mit Komma kann nicht gesendet werden: Die NAS liest Kommas als Trennzeichen zwischen Links." },
   "linksUncertain": { "message": "Die NAS hat nicht geantwortet. Ob diese $COUNT$ Link(s) angekommen sind, ist unklar. Bitte in den Aufgaben nachsehen, bevor du es erneut versuchst.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Fertig" },
@@ -119,8 +110,8 @@
   "prevPage": { "message": "Vorherige Seite" },
   "nextPage": { "message": "Nächste Seite" },
 
-  "taskRefreshInterval": { "message": "Aktualisierungsintervall im Hintergrund" },
-  "refreshIntervalHint": { "message": "Läuft nur, solange es aktive Aufgaben gibt — sobald alles fertig oder pausiert ist, stoppt die Aktualisierung von selbst. Eine halbe Minute nach dem Hinzufügen wird unabhängig davon alle 3 Sekunden aktualisiert, danach gilt wieder diese Einstellung." },
+  "taskRefreshInterval": { "message": "Aktualisierung der Aufgabenliste im Popup" },
+  "refreshIntervalHint": { "message": "Wie oft der geöffnete Aufgaben-Reiter die Liste neu lädt, solange es aktive Aufgaben gibt — sobald alles fertig oder pausiert ist, stoppt die Aktualisierung von selbst. Eine halbe Minute nach dem Hinzufügen wird unabhängig davon alle 3 Sekunden geladen. Die Hintergrundüberwachung läuft getrennt davon: sie sieht im Minutentakt nach, bis die beobachteten Downloads fertig sind — auch bei „Nur manuell“." },
   "interval3": { "message": "3 Sekunden" },
   "interval10": { "message": "10 Sekunden" },
   "interval30": { "message": "30 Sekunden" },
@@ -150,7 +141,7 @@
   "otpLabel": { "message": "Bestätigungscode" },
   "otpSubmit": { "message": "Anmelden" },
   "otpWrong": { "message": "Der Bestätigungscode war falsch." },
-  "otpHint": { "message": "Sechsstelliger Code aus deiner Authenticator-App. Dieses Gerät wird danach gemerkt, du brauchst ihn also nur einmal." },
+  "otpHint": { "message": "Sechsstelliger Code aus deiner Authenticator-App. Weitere Anmeldungen benötigen keinen Code, solange DSM dieses Gerät als vertrauenswürdig akzeptiert." },
   "connection": { "message": "Verbindung" },
   "protocol": { "message": "Protokoll" },
   "host": { "message": "Host" },
@@ -185,9 +176,12 @@
   },
   "defaultDestination": { "message": "Standard-Zielordner (optional)" },
   "destinationHint": {
-    "message": "Ordnername relativ zu einem freigegebenen Ordner, ohne führenden Schrägstrich (z. B. „downloads“, nicht „/downloads“ oder „/volume1/downloads“). Leer lassen, um den bereits auf der NAS eingestellten Standardordner zu verwenden (DSM → Download Station → Einstellungen → Allgemein)."
+    "message": "Pfad einschließlich Freigabenamen, ohne führenden Schrägstrich (z. B. „downloads/series“, nicht „/downloads/series“ oder „/volume1/downloads/series“). Leer lassen, um den bereits auf der NAS eingestellten Standardordner zu verwenden (DSM → Download Station → Einstellungen → Allgemein)."
   },
+  "addNotListed": { "message": "Die NAS antwortet, führt den Download aber nicht — er ist nicht angekommen." },
+  "addNasUnreachable": { "message": "Die NAS ist nicht erreichbar, daher ließ sich nicht prüfen, ob der Download angekommen ist." },
   "resetAll": { "message": "Alle Einstellungen zurücksetzen" },
+  "appVersion": { "message": "Version $VERSION$", "placeholders": { "VERSION": { "content": "$1" } } },
   "confirmResetAll": { "message": "Alle Einstellungen zurücksetzen? Zugangsdaten, Verbindungsdaten und sämtliche Optionen werden gelöscht. Die Downloads auf der NAS bleiben unberührt." },
   "logout": { "message": "Abmelden" },
   "logoutHint": { "message": "Die aktuelle NAS-Sitzung wird abgemeldet. Benutzername, Passwort und Gerätetoken werden lokal gelöscht. Eine gespeicherte Gerätefreigabe in DSM bleibt bestehen und kann dort separat widerrufen werden. NAS-Adresse und Optionen bleiben gespeichert." },
@@ -202,14 +196,16 @@
   "notifyOnFailedLabel": { "message": "Downloads fehlgeschlagen" },
   "notifyOnFinishedLabel": { "message": "Downloads abgeschlossen" },
   "notifyAllDone": { "message": "Alle Downloads abgeschlossen" },
+  "notifyWatchResult": { "message": "Download-Ergebnis" },
   "notifyDoneCount":   { "message": "$COUNT$ abgeschlossen",  "placeholders": { "count": { "content": "$1", "example": "12" } } },
   "notifyFailedCount": { "message": "$COUNT$ fehlgeschlagen", "placeholders": { "count": { "content": "$1", "example": "2" } } },
   "notifyPausedCount": { "message": "$COUNT$ pausiert",       "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Fehlgeschlagen" },
   "notifyError": { "message": "Download Station — Fehler" },
   "notifyPartial": { "message": "Download Station — Teilweise fehlgeschlagen" },
-  "notifyWaking": { "message": "Die NAS schläft. Es wird gewartet, bis sie antwortet, dann wird der Download hinzugefügt." },
+  "notifyWaking": { "message": "Die Verbindung zur NAS konnte noch nicht hergestellt werden. Ein weiterer Versuch folgt." },
   "notifyUncertain": { "message": "Die NAS hat nicht geantwortet. Ob der Download angekommen ist, ist unbekannt — vor einem neuen Versuch unter Aufgaben nachsehen." },
+  "notifyBulkUncertainCount": { "message": "$COUNT$ ungewiss — vor einem neuen Versuch unter Aufgaben nachsehen.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "$COUNT$ Link(s) hinzugefügt",
     "placeholders": { "count": { "content": "$1", "example": "12" } }

@@ -1,10 +1,10 @@
-# AMO submission — version 1.1.2
+# AMO submission — version 1.1.3
 
 Working document for the upload at
 [addons.mozilla.org](https://addons.mozilla.org/developers/addon/synology-download-manager/versions/submit/).
 Not part of the extension package.
 
-Upload `synology-download-station-manager-1.1.2.zip`.
+Upload `synology-download-station-manager-1.1.3.zip`.
 
 **Before uploading:** leave the **support email empty**; AMO exposes it through
 the public, unauthenticated API.
@@ -19,28 +19,42 @@ languages; the extension interface remains available in all six languages.
 ```
 Security
 
-• Magnet capture only reacts to clicks you make. Web pages can no longer trigger downloads by script.
-• Signing out or changing the connection cannot be undone by a delayed two-factor login response. Changing the NAS signs out the original NAS.
+• NAS requests no longer follow redirects, so credentials cannot reach another address.
+• Archive passwords and two-factor codes are cleared on sign-out and on a connection change.
+
+Added
+
+• The extension version is shown in Settings.
+• Choosing HTTP warns that the transfer is unencrypted.
 
 Fixed
 
-• Network errors and unreadable responses no longer cause download creation to be repeated automatically. Uncertain results ask you to check Tasks before trying again.
-• Pause, resume and delete report the result of each task. A task the NAS does not confirm is no longer shown as failed. Retry stops unless the original task was confirmed deleted.
-• Resuming one download restarts background monitoring, including when the NAS does not confirm the result.
-• File sizes and dates returned as text sort correctly. Zero sizes no longer show an invalid progress percentage.
-• After a connection change, the old task list disappears and its actions can no longer affect the new NAS. Queued context-menu links and files still being read are not sent to the new connection.
-• Settings saved in quick succession no longer overwrite each other. Saving the connection keeps an unsaved destination folder.
-• Background monitoring no longer stops because of a delayed response, a single unanswered request or a failed new sign-in, and resumes when the task list shows running downloads. The completion notification counts every download seen running.
-• A two-factor code needed while refreshing the task list is now requested, and refreshing pauses until it is entered.
-• Retry uses the original folder. If adding fails after the original task was removed, the link is put back into the link list.
-• A NAS that could not be woken, or a sign-in without an answer, is reported as a failure, not as an uncertain result.
+• Unintended HTTP-to-HTTPS upgrades.
+• Unanswered adds are checked against the task list; uncertain results are reported separately.
+• Links containing commas are rejected, so the NAS cannot split them into two.
+• Retry creates a replacement only after a confirmed deletion, and names unconfirmed outcomes as such.
+• A running code check blocks further sign-ins to the same connection; stale replies no longer reopen the prompt.
+• Popup sign-in failures survive the popup closing, are notified, and block further automatic sign-ins.
+• Refused sign-ins stop bulk adds and confirmation checks, and stop the popup refreshing.
+• Connection, destination and link drafts survive an immediate close and a pending save.
+• Invalid ports are rejected, a cleared destination stays empty, and a reset clears earlier messages.
+• A stale task list no longer stops the refresh, and the pause button covers every task Pause all does.
+• Premature monitoring stops caused by overlapping resume, keepalive and sign-in.
+• Task actions tell a connection failure before sending from an uncertain result after it.
+• The connection status no longer overwrites newer sign-in results; the full text is in the tooltip.
+• Folder errors name the destination used and tell it from the NAS default.
+• The closing notification matches the completed, failed and paused counts.
 
 Changed
 
-• While adding downloads, the link list is read-only and the add and clear-list buttons are disabled. Links can still be copied. The controls become available once the result is displayed, including after reopening the popup.
-• The updated list is saved with the result in the background, so closing the popup cannot bring back accepted links.
-• Keepalive requests are skipped while the NAS was reached recently.
-• Two-factor and sign-out hints have been clarified.
+• Screen-reader feedback for filters and pagination, and the popup's document language.
+• Magnet capture handles uppercase protocol names and links in open shadow DOM.
+• The wake-up wait is 60 seconds and the base add timeout 25, with extra time per link.
+• The refresh interval controls the popup task list; background monitoring runs independently.
+
+Removed
+
+• Local .torrent and .nzb uploads. Torrent links can still be added through the context menu.
 ```
 
 ### Deutsch
@@ -48,28 +62,42 @@ Changed
 ```
 Sicherheit
 
-• Die automatische Magnetübernahme reagiert nur noch auf eigene Klicks. Webseiten können keine Downloads mehr per Skript auslösen.
-• Eine verspätete Zwei-Faktor-Anmeldeantwort kann das Abmelden oder einen Verbindungswechsel nicht rückgängig machen. Beim NAS-Wechsel wird die ursprüngliche NAS abgemeldet.
+• Anfragen an die NAS folgen keinen Weiterleitungen mehr; Zugangsdaten gelangen so nicht an fremde Adressen.
+• Archivpasswort und Zwei-Faktor-Code werden beim Abmelden und beim Verbindungswechsel gelöscht.
+
+Neu
+
+• Die Version der Erweiterung steht in den Einstellungen.
+• Die Wahl von HTTP warnt vor unverschlüsselter Übertragung.
 
 Behoben
 
-• Netzwerkfehler und unlesbare Antworten führen nicht mehr zum automatischen erneuten Anlegen von Downloads. Bei unklarem Ergebnis bitte vor einem weiteren Versuch die Aufgaben prüfen.
-• Pausieren, Fortsetzen und Löschen melden das Ergebnis jeder einzelnen Aufgabe. Eine Aufgabe, die die NAS nicht bestätigt, gilt nicht mehr als fehlgeschlagen. Wiederholen wird abgebrochen, solange das Löschen der ursprünglichen Aufgabe nicht bestätigt ist.
-• Das Fortsetzen eines einzelnen Downloads startet die Hintergrundüberwachung wieder, auch wenn die NAS das Ergebnis nicht bestätigt.
-• Als Text gelieferte Dateigrößen und Zeitangaben werden korrekt sortiert. Bei Dateigröße null wird kein ungültiger Fortschritt mehr angezeigt.
-• Nach einem Verbindungswechsel verschwindet die alte Aufgabenliste, und ihre Aktionen können die neue NAS nicht mehr treffen. Eingereihte Kontextmenü-Links und noch eingelesene Dateien werden nicht an die neue Verbindung gesendet.
-• Kurz nacheinander gespeicherte Einstellungen überschreiben sich nicht mehr. Das Speichern der Verbindung behält einen ungespeicherten Zielordner.
-• Die Hintergrundüberwachung endet nicht mehr wegen einer verspäteten Antwort, einer einzelnen unbeantworteten Anfrage oder einer gescheiterten Neuanmeldung und startet wieder, wenn die Aufgabenliste laufende Downloads zeigt. Die Abschlussmeldung zählt jeden als laufend gesehenen Download.
-• Ein beim Aktualisieren der Aufgabenliste benötigter Zwei-Faktor-Code wird jetzt abgefragt; bis zur Eingabe pausiert die Aktualisierung.
-• Wiederholen verwendet den ursprünglichen Ordner. Scheitert das Hinzufügen, nachdem die ursprüngliche Aufgabe entfernt wurde, steht der Link wieder in der Linkliste.
-• Eine NAS, die nicht geweckt werden konnte, oder eine unbeantwortete Anmeldung wird als Fehler gemeldet statt als ungewisses Ergebnis.
+• Unbeabsichtigte Umstellung von HTTP auf HTTPS.
+• Unbeantwortetes Hinzufügen wird gegen die Aufgabenliste geprüft; ungewisse Ergebnisse werden getrennt gemeldet.
+• Links mit Komma werden abgelehnt, damit die NAS sie nicht in zwei teilt.
+• Wiederholen legt erst nach bestätigter Löschung neu an und benennt unbestätigte Ergebnisse als solche.
+• Eine laufende Codeprüfung sperrt weitere Anmeldungen derselben Verbindung; veraltete Antworten öffnen die Abfrage nicht wieder.
+• Im Popup gescheiterte Anmeldungen überdauern das Schließen, werden gemeldet und sperren weitere automatische Anmeldungen.
+• Abgelehnte Anmeldungen beenden Sammel-Adds und Nachprüfungen und stoppen die Aktualisierung im Popup.
+• Entwürfe für Verbindung, Zielordner und Linkliste überstehen sofortiges Schließen und ein laufendes Speichern.
+• Ungültige Portnummern werden abgewiesen, ein geleerter Zielordner bleibt leer, und das Zurücksetzen räumt alte Meldungen weg.
+• Eine veraltete Aufgabenliste stoppt die Aktualisierung nicht mehr; der Pause-Knopf deckt alle Aufgaben von Alle anhalten ab.
+• Vorzeitiges Ende der Überwachung durch überlappendes Fortsetzen, Keepalive und Anmelden.
+• Aufgabenaktionen unterscheiden Verbindungsfehler vor dem Senden von ungewissem Ergebnis danach.
+• Der Verbindungsstatus überschreibt neuere Anmeldeergebnisse nicht mehr; der volle Text steht im Tooltip.
+• Ordnerfehler nennen den verwendeten Zielordner und unterscheiden ihn vom NAS-Standard.
+• Die Abschlussmeldung passt zu den Zahlen für abgeschlossen, fehlgeschlagen und pausiert.
 
 Geändert
 
-• Während des Hinzufügens sind die Linkliste schreibgeschützt und die Schaltflächen zum Hinzufügen und Leeren gesperrt. Links können weiter kopiert werden. Nach Anzeige des Ergebnisses werden die Bedienelemente wieder freigegeben, auch nach erneutem Öffnen des Popups.
-• Die bereinigte Liste wird zusammen mit dem Ergebnis im Hintergrund gespeichert. Das Schließen des Popups bringt bereits akzeptierte Links nicht zurück.
-• Keepalive-Anfragen entfallen, solange die NAS kürzlich erreicht wurde.
-• Die Hinweise zur Zwei-Faktor-Anmeldung und zum Abmelden wurden präzisiert.
+• Screenreader-Ansagen für Filter und Seiten sowie die Dokumentsprache des Popups.
+• Die Magnet-Übernahme erkennt großgeschriebene Protokollnamen und Links im offenen Shadow DOM.
+• Die Wartezeit für eine schlafende NAS beträgt 60 Sekunden, die Grundzeit fürs Hinzufügen 25, mit Zuschlag je Link.
+• Die Intervall-Einstellung steuert die Aufgabenliste im Popup; die Hintergrundüberwachung läuft unabhängig davon.
+
+Entfernt
+
+• Das Hochladen lokaler .torrent- und .nzb-Dateien. Torrent-Links gehen weiterhin über das Kontextmenü.
 ```
 
 ## Notes to reviewer
@@ -79,49 +107,52 @@ English, one field, plain text.
 ```
 WHAT IT DOES
 
-Sends links, magnet links and .torrent/.nzb files to the user's own Synology NAS through the official Download Station Web API, and controls the resulting tasks. Address, account and password are the user's own; no vendor server involved.
+Sends links and magnet links to the user's own Synology NAS through the official Download Station Web API and controls the resulting tasks. Torrent and NZB files are added by their link, which the NAS fetches. No vendor server is involved.
 
 SOURCE CODE
 
-No build step. The extension files in the ZIP are the unmodified source: nothing minified, transpiled or bundled. Development tests and these submission notes are excluded.
-github.com/alexandermayzel/Synology-Download-Station-Manager
+No build step. The files in the ZIP are the unmodified source: nothing minified, transpiled or bundled. Tests and these notes are excluded. MPL-2.0, continuing the original Download Station add-on under the same licence, with its own extension ID.
+github.com/alexandermayzel/Synology-Download-Station-Manager, tag v1.1.3
 
 NO REMOTE CODE, NO THIRD PARTIES
 
-The packaged extension uses no eval(), new Function(), innerHTML, remotely hosted script, CDN, analytics, telemetry or third-party library. The Outfit webfont is bundled in fonts/.
+No eval(), new Function(), innerHTML, remotely hosted script, CDN, analytics, telemetry or third-party library. The Outfit webfont is bundled in fonts/.
+
+CONTENT SECURITY POLICY
+
+This version declares extension_pages as script-src 'self'; object-src 'self'. For scripts and objects that is the Manifest V3 default: only packaged code runs, no inline script, no eval, no remote script. The declaration exists to drop one other part of the default, upgrade-insecure-requests, which rewrote http:// to https:// for this extension's own requests. Download Station is reachable over plain HTTP, which the settings offer, so the rewrite broke a documented option. Nothing about script execution is relaxed.
 
 DATA COLLECTION AND PERMISSIONS
 
-data_collection_permissions.required remains ["none"]. No permissions were added or widened. API requests go to the user's configured NAS. Credentials are stored in browser.storage.local; temporary session state is held in browser.storage.session.
+data_collection_permissions.required remains ["none"]. No permissions were added or widened. Credentials are in browser.storage.local, session state in browser.storage.session.
 
-host_permissions "*://*/*" permits the user-configured NAS address. The content script runs on <all_urls> to intercept magnet clicks only when that option is enabled, and only for clicks the user makes (event.isTrusted). It is off by default.
+host_permissions "*://*/*" permits the user-configured NAS address. The content script's matches is <all_urls>: it loads on every page regardless of the magnet option. With the option off its click listener returns at once; with it on, it acts only on clicks the user made (event.isTrusted). Off by default.
 
 WHERE REQUESTS ARE MADE
 
-background.js has three fetch() call sites: fetchOnce() for API requests and wake-up probes, discoverApiPaths() for API discovery, and logoutSession() for signing out. Popup and content scripts make no network requests themselves.
+background.js has a single fetch() call site, background.js:256 in fetchOnce(). API discovery and sign-out previously called fetch() directly and now go through it too. That call sets redirect: 'error', so nothing carrying a password, a two-factor code or a session ID can be redirected to another address. Popup and content scripts make no network requests.
 
-CHANGED IN 1.1.2
+CHANGED IN 1.1.3
 
-This release fixes unsafe retries of download creation, per-task result handling for pause/resume/delete including results the NAS does not confirm, late login responses after sign-out or connection changes, task actions, queued links and file uploads reaching a newly configured NAS, overlapping settings saves and polls, logout endpoint selection, resume polling, retry recovery, and numeric task fields returned as strings. The link field is read-only during an add and its result is saved with the updated draft. The keepalive skips its request after recent API contact. No new API endpoints or permissions are used.
+See the release notes. No new API endpoints or permissions are used; the only manifest change is the content_security_policy described above.
 
 TESTING
 
-Regression tests use simulated browser storage, popup controls and NAS responses, without connecting to a real NAS. They cover network and response failures, partial task actions, delayed authentication, connection changes, reopening the popup during an add, and numeric fields.
-No public NAS test instance is provided. The extension can be loaded temporarily in Firefox through about:debugging and configured with a test NAS.
-
-LICENCE
-
-MPL-2.0, continuing the original Download Station add-on under the same licence, with its own extension ID and versioning. LICENSE is in the package.
+144 regression tests use simulated browser storage, popup controls and NAS responses, without connecting to a real NAS. They cover network and response failures, partial task actions, delayed authentication, connection changes, redirect refusal, and two-factor sign-ins answering out of order.
+No public NAS instance is provided; load it through about:debugging and point it at a test NAS.
 ```
 
-## Checklist
+## Checklist — 1.1.3 (not yet released)
 
-- [x] `manifest.json` version is `1.1.2`
-- [x] `CHANGELOG.md` release date is 2026-09-14
+Release notes and notes to reviewer above are written for 1.1.3.
+
+- [x] `manifest.json` version is `1.1.3`
+- [x] `CHANGELOG.md` release date set (2026-09-20)
+- [x] Title, upload file name, release notes (en + de) and notes to reviewer written for 1.1.3
 - [x] Regression tests pass
 - [x] Package rebuilt and verified after the last extension edit
 - [x] Tested in Firefox with a NAS
-- [x] Committed, tagged `v1.1.2` and pushed
+- [ ] Committed, tagged `v1.1.3` and pushed
 - [ ] Release notes pasted for English and German
 - [ ] Notes to reviewer pasted
 - [ ] Support email still empty

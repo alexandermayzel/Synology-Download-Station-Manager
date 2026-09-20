@@ -1,10 +1,13 @@
 {
+  "htmlLang": { "message": "en", "description": "BCP 47 tag of this file's own language, used for the document's lang attribute. Not a translation: set it to this locale's own code." },
+  "portInvalid": { "message": "The port has to be a whole number between 1 and 65535." },
+  "protocolInsecure": { "message": "HTTP sends your password and session id unencrypted. Using HTTPS is recommended, so the data travels encrypted.", "description": "Shown under the protocol selector while HTTP is chosen." },
   "extensionName": {
     "message": "Synology - Download Station Manager",
     "description": "Name of the extension."
   },
   "extensionDescription": {
-    "message": "Send links, magnet links and torrent files to your Synology NAS's Download Station – and manage the downloads right in your browser, without opening DSM.",
+    "message": "Send links, magnet links and torrent links to Synology Download Station and manage your downloads right in Firefox – without DSM.",
     "description": "Short description shown in the add-ons manager."
   },
   "contextMenuTitle": {
@@ -27,13 +30,16 @@
     "message": "The failed task was removed, but adding it again did not work: $REASON$ The link has been put back in the Links list.",
     "placeholders": { "reason": { "content": "$1", "example": "No default destination is set." } }
   },
+  "retryLinkKeptUnsent": { "message": "The NAS did not confirm the deletion, so nothing was added again. The link has been put back in the Links list — check the tasks on the NAS before adding it.", "description": "Retry where the delete went unconfirmed, so no replacement was created." },
+  "retryLinkKeptUnknown": { "message": "The original task was removed. Whether the new one was created is unknown — check the task list before adding it again. The link has been put back in the Links list.", "description": "Retry where the delete succeeded but the answer to the new create never arrived." },
+  "actionResultUnknown": { "message": "The NAS did not confirm the result — check the task list before trying again.", "description": "A pause, resume or delete whose answer never arrived." },
   "retryOriginalFolder": {
     "message": "Original folder: $FOLDER$",
     "placeholders": { "folder": { "content": "$1", "example": "downloads/series" } }
   },
   "addLinksSection": { "message": "Links" },
-  "addFilesSection": { "message": "Files" },
-  "addFilesHint": { "message": "Torrent and NZB files, several at once." },
+  "addFilesSection": { "message": "Torrent or NZB file" },
+  "addFilesHint": { "message": "Torrent or NZB file: right-click its link and choose \"Download with Download Station\". The NAS fetches it." },
   "setAsHome": { "message": "Open the popup on this tab" },
 
   "connecting": { "message": "Connecting…" },
@@ -53,15 +59,6 @@
   "oneLinkPerLine": { "message": "One link per line…" },
   "addAll": { "message": "Add all links" },
   "clearList": { "message": "Clear list" },
-  "addTorrent": { "message": "Add torrent file…" },
-  "addingFiles": {
-    "message": "Adding $COUNT$ file(s)…",
-    "placeholders": { "count": { "content": "$1", "example": "3" } }
-  },
-  "filesAdded": {
-    "message": "$COUNT$ file(s) added.",
-    "placeholders": { "count": { "content": "$1", "example": "3" } }
-  },
   "noLinksEntered": { "message": "No links entered." },
   "addingLinks": {
     "message": "Adding $COUNT$ link(s)…",
@@ -71,19 +68,13 @@
     "message": "$COUNT$ link(s) added.",
     "placeholders": { "count": { "content": "$1", "example": "12" } }
   },
-  "linksPartial": {
-    "message": "$ADDED$ added, $FAILED$ failed",
-    "placeholders": {
-      "added":  { "content": "$1", "example": "8" },
-      "failed": { "content": "$2", "example": "4" }
-    }
-  },
   "addLinksFailed": { "message": "Failed to add links." },
   "addingInProgress": { "message": "Adding…" },
   "addBusyHint": { "message": "Adding downloads… You can copy the links. Editing is available when adding finishes." },
   "addBusy": { "message": "Links are already being added. Please wait." },
   "linksFailed": { "message": "$COUNT$ link(s) could not be added. They are still in the list.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ link(s) could not be added: $REASON$ They are still in the list.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
+  "linkHasComma": { "message": "A link containing a comma cannot be sent: the NAS reads commas as the separator between links.", "description": "Shown for a link turned down before anything was sent, because the Download Station API would split it into two." },
   "linksUncertain": { "message": "The NAS did not answer, so whether these $COUNT$ link(s) arrived is unknown. Check Tasks before trying again.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Finished" },
@@ -128,8 +119,8 @@
   "prevPage": { "message": "Previous page" },
   "nextPage": { "message": "Next page" },
 
-  "taskRefreshInterval": { "message": "Background task refresh interval" },
-  "refreshIntervalHint": { "message": "Only runs while there are active tasks — once everything is finished or paused, refreshing stops on its own. For half a minute after an add the list refreshes every 3 seconds regardless, then returns to this setting." },
+  "taskRefreshInterval": { "message": "Task list refresh in the popup" },
+  "refreshIntervalHint": { "message": "How often the open Tasks tab reloads the list, while there are active tasks — once everything is finished or paused, refreshing stops on its own. For half a minute after an add it reloads every 3 seconds regardless. Background monitoring is separate: it checks once a minute until the downloads it is watching are done, including on \"Manual only\"." },
   "interval3": { "message": "3 seconds" },
   "interval10": { "message": "10 seconds" },
   "interval30": { "message": "30 seconds" },
@@ -159,7 +150,7 @@
   "otpLabel": { "message": "Verification code" },
   "otpSubmit": { "message": "Sign in" },
   "otpWrong": { "message": "The verification code was incorrect." },
-  "otpHint": { "message": "Six digits from your authenticator app. This device is remembered afterwards, so you should only need it once." },
+  "otpHint": { "message": "Six digits from your authenticator app. Later sign-ins need no code for as long as DSM keeps trusting this device." },
   "connection": { "message": "Connection" },
   "protocol": { "message": "Protocol" },
   "host": { "message": "Host" },
@@ -194,9 +185,12 @@
   },
   "defaultDestination": { "message": "Default destination (optional)" },
   "destinationHint": {
-    "message": "Folder name relative to a shared folder, no leading slash (e.g. \"downloads\", not \"/downloads\" or \"/volume1/downloads\"). Leave empty to use the default destination already configured on the NAS itself (DSM → Download Station → Settings → General)."
+    "message": "Path starting with the shared folder's name, no leading slash (e.g. \"downloads/series\", not \"/downloads/series\" or \"/volume1/downloads/series\"). Leave empty to use the default destination already configured on the NAS itself (DSM → Download Station → Settings → General)."
   },
+  "addNotListed": { "message": "The NAS answered but does not list the download, so it did not arrive.", "description": "Shown after a create went unanswered and the task list does not have the link. Files are matched by name and stay uncertain instead." },
+  "addNasUnreachable": { "message": "The NAS is not reachable, so whether the download arrived could not be checked." },
   "resetAll": { "message": "Reset all settings" },
+  "appVersion": { "message": "Version $VERSION$", "description": "Extension version at the foot of the Settings tab.", "placeholders": { "VERSION": { "content": "$1", "example": "1.1.2" } } },
   "confirmResetAll": { "message": "Reset all settings? Credentials, connection details and every option are deleted. Downloads on the NAS are not touched." },
   "logout": { "message": "Sign out" },
   "logoutHint": { "message": "Signs out the current NAS session. Deletes the username, password and device token locally. Device trust saved in DSM remains in place and can be revoked there separately. The NAS address and options remain saved." },
@@ -211,14 +205,16 @@
   "notifyOnFailedLabel": { "message": "Downloads failed" },
   "notifyOnFinishedLabel": { "message": "Downloads finished" },
   "notifyAllDone": { "message": "All downloads finished" },
+  "notifyWatchResult": { "message": "Download result", "description": "Heading for a finished watch that ended with paused tasks but no failures, where \"all downloads finished\" would contradict the tally below it." },
   "notifyDoneCount":   { "message": "$COUNT$ completed", "placeholders": { "count": { "content": "$1", "example": "12" } } },
   "notifyFailedCount": { "message": "$COUNT$ failed",    "placeholders": { "count": { "content": "$1", "example": "2" } } },
   "notifyPausedCount": { "message": "$COUNT$ paused",    "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Failed" },
   "notifyError": { "message": "Download Station — Error" },
   "notifyPartial": { "message": "Download Station — Partial failure" },
-  "notifyWaking": { "message": "The NAS is asleep. Waiting for it to answer, then adding the download." },
+  "notifyWaking": { "message": "The connection to the NAS could not be made yet. Another attempt follows.", "description": "Shown while the NAS is being woken. Deliberately names no cause: a parked disk, a DNS failure and a 503 all end up here." },
   "notifyUncertain": { "message": "The NAS did not answer. Whether the download arrived is unknown — check Tasks before adding it again." },
+  "notifyBulkUncertainCount": { "message": "$COUNT$ uncertain — check Tasks before adding them again.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "$COUNT$ link(s) added",
     "placeholders": { "count": { "content": "$1", "example": "12" } }

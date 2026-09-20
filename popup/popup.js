@@ -13,37 +13,28 @@
 /** Localized string by key, with optional $1/$2 substitutions. */
 const msg = (key, ...subs) => browser.i18n.getMessage(key, subs) || key;
 
-/**
- * Fill every [data-i18n] element from _locales. Templates are localized too —
- * document.querySelectorAll does not descend into <template> content, so their
- * DocumentFragments are passed explicitly. Doing it once here means every card
- * cloned from a template later already carries the translated text.
- */
-function localizeTree(root) {
-  for (const el of root.querySelectorAll('[data-i18n]')) {
-    el.textContent = msg(el.dataset.i18n);
-  }
-  for (const el of root.querySelectorAll('[data-i18n-placeholder]')) {
-    el.placeholder = msg(el.dataset.i18nPlaceholder);
-  }
-  for (const el of root.querySelectorAll('[data-i18n-title]')) {
-    el.title = msg(el.dataset.i18nTitle);
-  }
-  for (const el of root.querySelectorAll('[data-i18n-aria-label]')) {
-    el.setAttribute('aria-label', msg(el.dataset.i18nAriaLabel));
-  }
-}
-
 function applyStaticLocalization() {
   // The markup ships as lang="en", but the text that goes into it is whatever
   // the browser asked for. Left unchanged, a screen reader reads German and
   // Russian with English pronunciation rules.
-  document.documentElement.lang = browser.i18n.getUILanguage();
+  // The language these texts actually came from, not the one the browser runs
+  // in. With no translation for, say, Italian, the page shows English while
+  // lang="it" had the screen reader pronounce it as Italian. Each messages.json
+  // names its own tag; the fallback is for a build that forgot to.
+  const tag = msg('htmlLang');
+  document.documentElement.lang = tag === 'htmlLang' ? browser.i18n.getUILanguage() : tag;
 
-  localizeTree(document);
+  // Templates too — see localizeTree in actions.js. Doing it once here means
+  // every card cloned later is already translated.
+  localizeTree(document, msg);
   for (const tpl of document.querySelectorAll('template')) {
-    localizeTree(tpl.content);
+    localizeTree(tpl.content, msg);
   }
+
+  // At the foot of Settings. Read from the manifest rather than written into
+  // the markup, where it would have to be remembered on every release.
+  document.getElementById('appVersion').textContent =
+    msg('appVersion', browser.runtime.getManifest().version);
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +60,7 @@ const unzipPassEl  = $('unzipPassword');
 const archivePwField = $('archivePasswordField');
 const btnSaveConn    = $('btnSaveConnection');
 const connMessageEl  = $('connMessage');
+const protocolWarnEl = $('protocolWarning');
 const credentialsEl  = $('credentialsSection');
 const btnSaveDest    = $('btnSaveDest');
 const btnLogout      = $('btnLogout');
@@ -82,8 +74,6 @@ const btnRefresh     = $('btnRefresh');
 const bulkLinksEl    = $('bulkLinks');
 const btnAddBulk     = $('btnAddBulk');
 const btnClearList   = $('btnClearList');
-const btnAddTorrent  = $('btnAddTorrent');
-const torrentInput   = $('torrentInput');
 const bulkStatusEl   = $('bulkStatus');
 const btnPauseAll    = $('btnPauseAll');
 const btnResumeAll   = $('btnResumeAll');
@@ -224,6 +214,7 @@ function applySettingsToForm() {
   syncNotifySubOptions();
   syncHomeButtons();
   syncDestSaveState();
+  syncProtocolWarning();
 }
 
 async function loadSettings() {
@@ -257,6 +248,10 @@ async function logoutAccount() {
   btnLogout.disabled = true;
   try {
     forgetTasks();
+    // Typed for the account being left. Nothing stores it, but the field
+    // outlives the sign-out, and the next add would hand it to whoever signs
+    // in after — another account, or another NAS entirely.
+    unzipPassEl.value = '';
     await queueSettingsSave(async () => {
       await persistSettingsUpdate({ signOut: true });
       settings = { ...settings, username: '', password: '' };
@@ -308,9 +303,6 @@ async function resetAllSettings() {
     });
 
     stopAutoRefresh();
-    clearTimeout(connDraftTimer);
-    clearTimeout(destDraftTimer);
-    clearTimeout(draftSaveTimer);
     await browser.storage.session.remove(['connDraft', 'destDraft', 'bulkDraft', 'lastAdd', 'lastTab', 'setupRequired']);
 
     // Not settings, so not part of that: scratch fields with nothing stored
@@ -323,6 +315,11 @@ async function resetAllSettings() {
     setActiveFilter('all', false);
     forgetTasks();
     bulkStatusEl.textContent = '';
+    // Complaints about what was there before it was all wiped: the link list's
+    // own red marking, and the line that names a pause or a delete the NAS
+    // turned down. Both outlive the thing they were about.
+    clearLinksFailed();
+    clearActionResult();
 
     promptForSetup();
   } catch (err) {
@@ -353,6 +350,8 @@ btnResetYes.addEventListener('click', async () => {
  * connection details would be gone on reopen. They are kept as a draft until
  * they are actually saved.
  */
+const CONN_FIELD_KEYS = Object.freeze(['protocol', 'host', 'port', 'username', 'password']);
+
 const CONN_FIELDS = () => ({
   protocol: protocolEl.value,
   host:     hostEl.value,
@@ -361,20 +360,25 @@ const CONN_FIELDS = () => ({
   password: passwordEl.value,
 });
 
-let connDraftTimer = null;
-let destDraftTimer = null;
+/** Whether two draft snapshots hold the same thing. */
+function sameConnFields(a, b) {
+  return CONN_FIELD_KEYS.every(key => (a?.[key] ?? '') === (b?.[key] ?? ''));
+}
 
 /**
  * Deliberately storage.session, not storage.local: this holds a password that
  * was typed but never saved, and it has no business outliving the browser.
  * Session storage keeps it for as long as the window is open — which is all
  * the popup closing and reopening needs — and is thrown away on shutdown.
+ *
+ * Written on the spot rather than a fraction of a second later. Firefox tears
+ * the popup down the moment anything outside it is clicked — the password
+ * manager's own button included — and a write still waiting out its delay goes
+ * with it. The last thing typed was exactly the thing most likely to be lost,
+ * which is the one case this draft exists for.
  */
 function saveConnDraft() {
-  clearTimeout(connDraftTimer);
-  connDraftTimer = setTimeout(() => {
-    browser.storage.session.set({ connDraft: CONN_FIELDS() });
-  }, 250);
+  return browser.storage.session.set({ connDraft: CONN_FIELDS() });
 }
 
 /**
@@ -384,29 +388,39 @@ function saveConnDraft() {
  * away a folder that was typed and not yet saved.
  */
 function saveDestDraft() {
-  clearTimeout(destDraftTimer);
-  destDraftTimer = setTimeout(() => {
-    browser.storage.session.set({ destDraft: destEl.value });
-  }, 250);
+  return browser.storage.session.set({ destDraft: destEl.value });
 }
 
 /**
  * Overlay unsaved edits on top of the stored settings.
  *
- * Only fields that actually contain something. The draft is there to preserve
- * what was typed, not what was deleted: an emptied field was never saved, so
- * nothing was removed — restoring the blank would show an empty password next
- * to a "Connected" status, which is the stored one still doing its job.
+ * Only fields that actually contain something — with one exception. The draft
+ * is there to preserve what was typed, not what was deleted: an emptied field
+ * was never saved, so nothing was removed — restoring the blank would show an
+ * empty password next to a "Connected" status, which is the stored one still
+ * doing its job.
+ *
+ * The destination is that exception. Empty is a choice there — "wherever the
+ * NAS puts things" — so clearing the field and coming back used to hand the
+ * old folder straight back, with the save button no longer marked. Only the
+ * absence of a draft leaves the field alone, which is what null says.
  */
 async function loadConnDraft() {
-  const { connDraft, destDraft } = await browser.storage.session.get({ connDraft: null, destDraft: '' });
-  if (destDraft) destEl.value = destDraft;
+  const { connDraft, destDraft } = await browser.storage.session.get({ connDraft: null, destDraft: null });
+  if (destDraft !== null) destEl.value = destDraft;
   // A restored destination may differ from what is stored, which is exactly
   // what the save button's highlight is there to say.
   syncDestSaveState();
 
   if (!connDraft) return;
-  if (connDraft.protocol) protocolEl.value = connDraft.protocol;
+  // A restored protocol brings its warning with it. applySettingsToForm has
+  // already been past, but it went by the *saved* protocol — so HTTP chosen and
+  // not yet saved came back in the dropdown with nothing beside it, which is
+  // the one case where the warning matters most.
+  if (connDraft.protocol) {
+    protocolEl.value = connDraft.protocol;
+    syncProtocolWarning();
+  }
   if (connDraft.host)     hostEl.value     = connDraft.host;
   if (connDraft.port)     portEl.value     = connDraft.port;
   if (connDraft.username) usernameEl.value = connDraft.username;
@@ -418,20 +432,59 @@ async function loadConnDraft() {
   }
 }
 
-function clearConnDraft() {
-  clearTimeout(connDraftTimer);
-  browser.storage.session.remove('connDraft');
+/**
+ * Drop the draft — but only while it is still the one that was saved.
+ *
+ * "Save and test connection" waits on the NAS, and the fields stay editable
+ * the whole time. Dropping it unconditionally threw away whatever was typed in
+ * the meantime, and the next open came back without it. `saved` is the snapshot
+ * the save took before it began.
+ *
+ * Measured against the fields as they stand at this instant, not against the
+ * stored copy. Reading storage took a turn of its own, and a keystroke landing
+ * inside that turn wrote a newer draft that the older answer still matched —
+ * the remove below then took it. The fields need no reading and cannot be out
+ * of date: anything newly typed is already in them.
+ */
+function clearConnDraft(saved = null) {
+  if (saved && !sameConnFields(CONN_FIELDS(), saved)) return Promise.resolve();
+  return browser.storage.session.remove('connDraft');
 }
 
-function clearDestDraft() {
-  clearTimeout(destDraftTimer);
-  browser.storage.session.remove('destDraft');
+function clearDestDraft(saved = null) {
+  if (saved !== null && destEl.value !== saved) return Promise.resolve();
+  return browser.storage.session.remove('destDraft');
 }
 
 for (const el of [hostEl, portEl, usernameEl, passwordEl]) {
-  el.addEventListener('input', saveConnDraft);
+  el.addEventListener('input', () => {
+    saveConnDraft();
+    // Retyping the port answers the complaint about it.
+    if (el === portEl && readPort() !== null) {
+      portEl.classList.remove('invalid');
+      connMessageEl.hidden = true;
+    }
+  });
 }
-protocolEl.addEventListener('change', saveConnDraft);
+/**
+ * Say what HTTP costs, at the moment it is chosen.
+ *
+ * A warning rather than a refusal: a NAS with no certificate of its own is a
+ * real case, and this has always been allowed. But the password and the session
+ * id then travel in the clear, and that belongs next to the choice rather than
+ * in the README where nobody is looking while they set it up.
+ *
+ * Folded into the draft handler instead of being a second listener on the same
+ * element — see the input loop above, which does the same for the port.
+ */
+function syncProtocolWarning() {
+  protocolWarnEl.hidden = protocolEl.value !== 'http';
+}
+
+protocolEl.addEventListener('change', () => {
+  saveConnDraft();
+  syncProtocolWarning();
+});
 
 /**
  * Highlight the destination's save button while the field differs from what
@@ -526,8 +579,15 @@ const LAYOUT_KEYS = Object.freeze(['sortBy', 'sortDir', 'statusOrder', 'tasksPer
 async function commitSettings({
   forceTest = false, feedbackOn = null, commitDest = false, commitConn = false,
 } = {}) {
-  const { credentialsChanged, perPageBefore, layoutChanged } = await queueSettingsSave(async () => {
+  const {
+    credentialsChanged, perPageBefore, layoutChanged, savedConn, savedDest,
+  } = await queueSettingsSave(async () => {
     const base = settings;
+    // The drafts as they stand at this instant, before anything is awaited.
+    // Checked again when they are dropped, so typing that happened while this
+    // save was still waiting on the NAS is not thrown away with them.
+    const savedConn = commitConn ? CONN_FIELDS() : null;
+    const savedDest = commitDest ? destEl.value : null;
 
     // A device token belongs to one NAS and one account — if either changes,
     // the background has to throw it away. Only ever true on a deliberate save.
@@ -536,14 +596,15 @@ async function commitSettings({
       base.username !== usernameEl.value.trim() ||
       base.password !== passwordEl.value ||
       base.protocol !== protocolEl.value ||
-      base.port     !== (parseInt(portEl.value, 10) || 5001)
+      base.port     !== (readPort() ?? base.port)
     );
 
     const nextSettings = {
       ...base,
       protocol:           commitConn ? protocolEl.value                          : base.protocol,
       host:               commitConn ? hostEl.value.trim()                       : base.host,
-      port:               commitConn ? (parseInt(portEl.value, 10) || 5001)      : base.port,
+      // A port that is not a port leaves the stored one alone — see readPort.
+      port:               commitConn ? (readPort() ?? base.port)                 : base.port,
       username:           commitConn ? usernameEl.value.trim()                   : base.username,
       password:           commitConn ? passwordEl.value                          : base.password,
       autoCaptureMagnets: autoMagnetEl.checked,
@@ -568,8 +629,20 @@ async function commitSettings({
       !CONNECTION_KEYS.includes(key) && JSON.stringify(value) !== JSON.stringify(base[key])));
 
     // The old list goes before the save — logging out the old NAS can take a
-    // while — and again after it, in case a refresh slipped in meanwhile.
-    if (credentialsChanged) forgetTasks();
+    // while — and again after it, in case a refresh slipped in meanwhile. The
+    // archive password goes with it: it was typed for the account being
+    // replaced, and the next download would have carried it to the new one.
+    if (credentialsChanged) {
+      // Changed credentials supersede the pending code check, including password-only edits.
+      otpPendingFor = null;
+      forgetTasks();
+      unzipPassEl.value = '';
+      // The code prompt belonged to the connection being replaced, and the test
+      // further down sends whatever the field still holds. So a code typed for
+      // one NAS went to the next one the moment "Save and test" changed the
+      // host or the account. A connection that wants a code asks for its own.
+      showOtpPrompt(false);
+    }
     await persistSettingsUpdate({
       connection: commitConn ? connectionSettings(nextSettings) : undefined,
       options: changedOptions,
@@ -584,6 +657,8 @@ async function commitSettings({
       credentialsChanged,
       perPageBefore: base.tasksPerPage,
       layoutChanged: LAYOUT_KEYS.some(key => key in changedOptions),
+      savedConn,
+      savedDest,
     };
   });
   // Only when the connection details were actually written. This used to run on
@@ -591,8 +666,8 @@ async function commitSettings({
   // away a password that had been typed but not yet saved, and the field came
   // back empty on the next open. The draft exists precisely to survive that.
   // Each draft goes with its own save only.
-  if (commitConn) clearConnDraft();
-  if (commitDest) clearDestDraft();
+  if (commitConn) await clearConnDraft(savedConn);
+  if (commitDest) await clearDestDraft(savedDest);
 
   // Saving the connection is also what folds the credentials away: they are
   // done with, and the block is long. It is an ordinary fold, so the state is
@@ -703,6 +778,22 @@ const REQUIRED_FIELDS = [...REQUIRED_FIELDS_BY_LABEL.keys()];
  */
 function isConfigured() {
   return hasCredentials(settings);
+}
+
+/**
+ * The port as a whole number, or null when the field does not hold one.
+ *
+ * parseInt is far too forgiving for the field that decides where every request
+ * goes: it reads "1e3" as 1, and hands back 70000 or -1 unchanged. Any of those
+ * replacing a stored, working port takes the NAS out of reach until someone
+ * notices the number. The input's own min/max only bind the arrows, not what
+ * can be typed or pasted into it.
+ */
+function readPort() {
+  const typed = portEl.value.trim();
+  if (!/^\d+$/.test(typed)) return null;
+  const port = Number(typed);
+  return port >= 1 && port <= 65535 ? port : null;
 }
 
 /** Are the fields filled in right now? The question the save button asks. */
@@ -908,11 +999,27 @@ const DOT_STATE = {
   checking:  'dot-checking',
 };
 
-function setStatus(state, message) {
+/**
+ * What the header says right now. Kept here rather than read back off the
+ * element: this is the question "is it already saying connected?", and the
+ * answer belongs where the answer is decided, not in a class name.
+ */
+let statusState = null;
+
+/**
+ * The header's status line, and the whole story behind it.
+ *
+ * The header shares its row with the extension's name, so there is room for a
+ * label and not for a sentence: a reason in the NAS's own wording, or a network
+ * error, was simply cut off mid-word. `full` is what the tooltip carries, and
+ * every caller that has a long reason also puts it in the list area below,
+ * which has the width for it.
+ */
+function setStatus(state, message, full = message) {
+  statusState = state;
   statusDot.className = `dot ${DOT_STATE[state] ?? 'dot-idle'}`;
   statusText.textContent = message;
-  // The header clips long text, so keep the whole message on the tooltip.
-  statusText.title = message;
+  statusText.title = full;
 }
 
 /**
@@ -948,12 +1055,103 @@ function showOtpPrompt(show, wrong = false) {
  * Run a connection attempt, optionally carrying a freshly typed code.
  * Returns true once connected.
  */
+/**
+ * The pending code check and its connection, or null while none is.
+ *
+ * Every sign-in that carries a code passes through one gate, because there are
+ * two ways in. The code field's own button disables itself, but Enter does not
+ * go through the button, and "Save and test" calls straight in here — pressing
+ * either while a check was running spent the same code twice, and DSM answered
+ * the later one with "wrong code". The popup then put the prompt back up and
+ * stopped refreshing, over a session that was connected by then.
+ *
+ * The gate names its connection rather than being a plain flag. A code is spent
+ * on one NAS, so a check running against another one is no reason to turn this
+ * one away. As a flag it was: saving a different NAS while a code was still in
+ * flight was refused here and never tested at all, leaving the header on
+ * "Connecting…" for an attempt that was never made.
+ */
+let otpPendingFor = null;
+
+/**
+ * Sign-in attempts in the order they were started, and the newest one to have
+ * answered. The gate above only holds in one direction: a check with a code
+ * turns others away, but a plain *Test* takes no gate at all — it has no code
+ * to spend — so it can still be in flight when a code succeeds. Its answer
+ * then arrives last, says "code required" about a session that no longer
+ * needs one, and puts the prompt back up over a working connection.
+ *
+ * So the order answers arrive in is not trusted. Whoever started last has the
+ * say, and anything older is dropped where it lands. The task list settles the
+ * same argument the same way — see listSeq in the background.
+ */
+let connectSeq = 0;
+let newestConnectAnswered = 0;
+
+/** Whether a sign-in started later has already had its say. */
+function outdatedConnect(seq) {
+  if (seq <= newestConnectAnswered) return true;
+  newestConnectAnswered = seq;
+  return false;
+}
+
 async function attemptConnect(otpCode) {
+  // Nothing signs in to a NAS while a code for that same NAS is being checked:
+  // that spends the same code twice, and DSM refuses whichever arrives second.
+  const connection = connectionKey(settings);
+  if (otpPendingFor?.connection === connection) return false;
+  // A distinct owner also protects a newer check after switching back to this NAS.
+  const claimed = otpCode ? { connection } : null;
+  if (claimed !== null) otpPendingFor = claimed;
+  const seq = ++connectSeq;
+  try {
+    return await runConnect(otpCode, seq);
+  } finally {
+    // Only while it is still ours. A check for another NAS started meanwhile
+    // holds the gate now, and opening that one would let a second code go out
+    // against it — exactly what the gate is here to prevent.
+    if (claimed !== null && otpPendingFor === claimed) otpPendingFor = null;
+  }
+}
+
+/**
+ * Show a sign-in that did not get through.
+ *
+ * One rendering for both ways it can reach us — the answer to an attempt this
+ * popup is waiting on, and the one the background left behind for a popup that
+ * had already closed. Two of them would drift apart.
+ */
+function showConnectFailure(result) {
+  // However it reached us, the NAS is not to be talked to until this is dealt
+  // with — otherwise the close watch rearms itself straight over the top.
+  connectBlocked = true;
+  if (result.otpRequired || result.otpWrong) {
+    showOtpPrompt(true, result.otpWrong);
+  } else {
+    // A label in the header, which has room for one; the whole reason below it
+    // and on the tooltip.
+    const why = errText(result.error, 'connectionFailed');
+    setStatus('error', msg('connectionFailed'), why);
+    showMessage(why, true);
+  }
+  stopAutoRefresh();
+  return false;
+}
+
+async function runConnect(otpCode, seq) {
+  // Asked for deliberately, so the bar comes down: this is the one thing that
+  // is meant to try the NAS again after a kept failure.
+  connectBlocked = false;
+  keptConnect = null;
   setStatus('checking', msg('connecting'));
   try {
     const result = await browser.runtime.sendMessage({ action: ACTIONS.TEST_CONNECTION, otpCode });
+    // Overtaken while it was away; whatever it has to say is out of date.
+    if (outdatedConnect(seq)) return false;
 
-    if (result.connectionChanged) return false;
+    // Overtaken in the background rather than here: the connection changed, or
+    // a newer test has already answered. Our own counter cannot see either.
+    if (result.connectionChanged || result.outdated) return false;
 
     if (result.success) {
       showOtpPrompt(false);
@@ -963,20 +1161,13 @@ async function attemptConnect(otpCode) {
       startAutoRefresh();
       return true;
     }
-    if (result.otpRequired || result.otpWrong) {
-      showOtpPrompt(true, result.otpWrong);
-      stopAutoRefresh();
-      return false;
-    }
-    // The header clips; the list area has room for the whole reason.
-    const why = errText(result.error, 'connectionFailed');
-    setStatus('error', why);
-    showMessage(why, true);
-    stopAutoRefresh();
-    return false;
+    return showConnectFailure(result);
   } catch (err) {
+    // A failure from an overtaken attempt is as out of date as its success
+    // would have been, and would stop the refresh a newer one just started.
+    if (outdatedConnect(seq)) return false;
     const why = err.message || msg('extensionError');
-    setStatus('error', why);
+    setStatus('error', msg('connectionFailed'), why);
     showMessage(why, true);
     stopAutoRefresh();
     return false;
@@ -997,6 +1188,7 @@ async function submitOtp() {
   if (!code) { otpCodeEl.focus(); return; }
   btnOtpSubmit.disabled = true;
   try {
+    // attemptConnect holds the gate — see otpPendingFor.
     await attemptConnect(code);
   } finally {
     btnOtpSubmit.disabled = false;
@@ -1185,6 +1377,9 @@ function syncRefreshTimer() {
   // is true — including during the close watch. The same while a code is due.
   const wantedMs =
     activeTab !== 'tasks' || codePending              ? 0 :
+    // A kept sign-in failure bars the NAS until it is dealt with: every tick
+    // here would be another login against a password already refused.
+    connectBlocked                                    ? 0 :
     isBursting()                                      ? BURST_INTERVAL_MS :
     refreshWanted && settings.refreshInterval > 0     ? settings.refreshInterval * 1000 :
     0;                                                // 0 means "Manual only"
@@ -1227,7 +1422,11 @@ let currentPage  = 1;
 function setActiveFilter(filter, persist = true) {
   activeFilter = filter;
   for (const btn of filtersEl.querySelectorAll('.fbtn')) {
-    btn.classList.toggle('on', btn.dataset.filter === filter);
+    const on = btn.dataset.filter === filter;
+    btn.classList.toggle('on', on);
+    // Colour was the only thing saying which one is active, which says nothing
+    // at all to a screen reader.
+    btn.setAttribute('aria-pressed', String(on));
   }
   currentPage = 1;
   if (persist) saveFilterState();
@@ -1310,6 +1509,7 @@ function renderPager(totalPages, total, from, to) {
     b.className = `pbtn${p === currentPage ? ' on' : ''}`;
     b.textContent = String(p);
     b.dataset.page = String(p);
+    if (p === currentPage) b.setAttribute('aria-current', 'page');
     frag.appendChild(b);
     previous = p;
   }
@@ -1410,8 +1610,11 @@ function renderTasks(tasks) {
 
     const s = task.status?.toLowerCase();
     const bucket    = bucketOf(task);
-    const canPause  = s === 'downloading' || s === 'waiting';
-    const canResume = s === 'paused'      || s === 'stopped';
+    // The same lists the background's "Pause all" and "Resume all" work from —
+    // see actions.js. Kept separately here, a task waiting on a file host was
+    // swept up by the bulk action but never offered a button of its own.
+    const canPause  = canPauseTask(s);
+    const canResume = canResumeTask(s);
 
     if (canPause) {
       const btn = card.querySelector('[data-field="pauseBtn"]');
@@ -1479,6 +1682,16 @@ function renderTasks(tasks) {
  * request while nothing is answering.
  */
 let refreshInFlight = false;
+/**
+ * One more list to fetch as soon as the one running comes back.
+ *
+ * A list already on its way was asked before the action that has just taken
+ * effect, so its answer cannot show the result — and dropping the refresh that
+ * followed the action left a resumed task sitting there as "paused" until
+ * something else asked. Worse, that stale answer saw nothing running and
+ * switched the timer off, so nothing else did.
+ */
+let refreshAgain = false;
 
 /**
  * Consecutive failures before the popup stops asking, mirroring the background
@@ -1501,25 +1714,53 @@ function forgetTasks() {
   // A "Delete all" still waiting for its Yes was asked about the old list.
   deleteAllBar.hidden = true;
   deleteAllConnection = null;
-  // The refresh that was running is disowned; let the next one through.
+  // The refresh that was running is disowned; let the next one through. Any
+  // list held back behind it was about the old NAS and goes with it.
   refreshInFlight = false;
+  refreshAgain = false;
   btnRefresh.disabled = false;
   currentPage = 1;
   totalSpeedEl.hidden = true;
   renderTasks([]);
 }
 
-async function refreshTasks() {
-  if (refreshInFlight) return;
+async function refreshTasks({ queue = false } = {}) {
+  // Barred by a kept sign-in failure. The timer is already off for it, but a
+  // stored add result asks for one list straight away, and that one request
+  // signs in just as readily as a timer tick would.
+  if (connectBlocked) return;
+  // `queue` marks a refresh that has something new to show — one that follows
+  // an action. Those cannot simply be dropped; see refreshAgain.
+  if (refreshInFlight) {
+    if (queue) refreshAgain = true;
+    return;
+  }
   refreshInFlight = true;
   btnRefresh.disabled = true;
   const generation = tasksGeneration;
+  // A sign-in that begins while this list is away knows better than it does.
+  // Without this, a list answering after a test had asked for a two-factor code
+  // put the header back to green over a code field that was still waiting, and
+  // an older failure could bury a sign-in that had succeeded in the meantime.
+  //
+  // One already running counts too, and the counter alone cannot see it: both
+  // carry the same number, so a sign-in started just before this list shared
+  // its claim on the header. It answers later either way. A sign-in is in
+  // flight exactly while the newest one started has yet to have its say.
+  const signIns = connectSeq;
+  const signInRunning = connectSeq > newestConnectAnswered;
   try {
     const result = await browser.runtime.sendMessage({ action: ACTIONS.LIST_TASKS });
     // Asked before the connection changed, so the answer is about the old one.
     if (generation !== tasksGeneration) return;
+    const ownsStatus = connectSeq === signIns && !signInRunning;
     if (result.success) {
       refreshFailures = 0;
+      // The header outlived what it described: after a failed refresh it went
+      // on saying "not reachable" while downloads were visibly running again.
+      // Left alone once it already reads connected, so a sign-in that reported
+      // the auth version keeps it.
+      if (ownsStatus && statusState !== 'connected') setStatus('connected', msg('connected'));
       tasksConnection = result.connection ?? null;
       const tasks = result.data?.tasks ?? [];
       renderTasks(tasks);
@@ -1534,6 +1775,8 @@ async function refreshTasks() {
       // started. Saying both halves out loud fixes that by itself.
       if (tasks.some(isWorkingTask)) startAutoRefresh();
       else stopAutoRefresh();
+    } else if (result.connectBlocked) {
+      if (ownsStatus) showConnectFailure(result);
     } else if (result.otpRequired || result.otpWrong) {
       // A sign-in the background started on its own wants a code. Asked for the
       // way a connection test asks, and nothing more is asked of the NAS until
@@ -1543,24 +1786,35 @@ async function refreshTasks() {
       // Settings every time they look at the list.
       stopAutoRefresh();
       if (otpField.hidden) showOtpPrompt(true, result.otpWrong);
-      else setStatus('error', msg(result.otpWrong ? 'otpWrong' : 'otpRequired'));
+      else if (ownsStatus) setStatus('error', msg(result.otpWrong ? 'otpWrong' : 'otpRequired'));
     } else {
-      refreshFailed(errText(result.error, 'connectionFailed'));
+      refreshFailed(errText(result.error, 'connectionFailed'), ownsStatus);
     }
   } catch {
-    if (generation === tasksGeneration) refreshFailed(msg('backgroundUnreachable'));
+    if (generation === tasksGeneration) {
+      refreshFailed(msg('backgroundUnreachable'), connectSeq === signIns && !signInRunning);
+    }
   } finally {
     // A disowned refresh leaves these alone: forgetTasks already released them,
     // and a newer refresh may be holding them by now.
     if (generation === tasksGeneration) {
       refreshInFlight = false;
       btnRefresh.disabled = false;
+      if (refreshAgain) {
+        refreshAgain = false;
+        await refreshTasks();
+      }
     }
   }
 }
 
-function refreshFailed(why) {
+function refreshFailed(why, ownsStatus = true) {
   showMessage(why, true);
+  // And in the header, which otherwise kept saying "Connected" while every
+  // refresh behind it was failing — unless a newer sign-in has begun since this
+  // list was asked for, in which case its answer is the one worth showing. A
+  // label there, because the row is shared with the extension's name.
+  if (ownsStatus) setStatus('error', msg('connectionFailed'), why);
   // Whatever the header last said is now a stale figure from a NAS we could
   // not reach. Better nothing than "↓ 87 MB/s" beside an error.
   totalSpeedEl.hidden = true;
@@ -1581,13 +1835,11 @@ function refreshFailed(why) {
 // storage.session, like the connection draft: collecting links across a
 // browsing session is the point, but a list left over from last week is not
 // something to hand back to someone weeks later.
-let draftSaveTimer = null;
-
+// Written on the spot, for the same reason as the connection draft: the click
+// that closes this popup is often the one that ends the typing, and a write
+// still waiting out a delay never happens.
 function saveDraft() {
-  clearTimeout(draftSaveTimer);
-  draftSaveTimer = setTimeout(() => {
-    browser.storage.session.set({ bulkDraft: bulkLinksEl.value });
-  }, 250);
+  return browser.storage.session.set({ bulkDraft: bulkLinksEl.value });
 }
 
 async function loadDraft() {
@@ -1603,25 +1855,47 @@ async function loadDraft() {
  * popup reads — leave that write in flight and the links come back.
  */
 function clearDraft() {
-  clearTimeout(draftSaveTimer);
   bulkLinksEl.value = '';
   return browser.storage.session.remove('bulkDraft');
 }
 
 /**
- * Mark the box as holding rejected links and say why.
+ * Mark the box as holding links that did not get through, and say why.
  *
- * The links left in it are the failures — everything the NAS took has been
- * removed, so pressing the button again retries exactly what did not work and
- * cannot add the rest a second time.
+ * The links left in it are the ones that did not arrive — everything the NAS
+ * took has been removed, so pressing the button again retries exactly what did
+ * not work and cannot add the rest a second time.
+ *
+ * Two kinds sit there together. Some the NAS turned down, and those have a
+ * reason worth reading; the rest went unanswered and may be downloading right
+ * now. `uncertain` says how many of the count are the second kind.
+ *
+ * `namedReason` marks a reason that stands on its own — a sign-in refused while
+ * the outcome was being checked. It rides on no refusal, so without this it was
+ * simply dropped and the box said only "outcome unclear".
+ *
+ * Options rather than a third and fourth number: the count and the flag are
+ * easy to swap by mistake, and a boolean in the count's place reads as zero and
+ * says nothing at all.
  */
-function showLinksFailed(count, reason, unknown) {
+function showLinksFailed(count, reason, { uncertain = 0, namedReason = false } = {}) {
   bulkLinksEl.classList.add('invalid');
+  // Two groups, not one. A link the NAS turned down and a download that may be
+  // running are both back in the box, but only the first has an explanation —
+  // counted together, a refused link was announced as uncertain and its reason
+  // went unsaid, which is the one thing that could have been acted on.
+  const refused = Math.max(count - uncertain, 0);
+  const parts = [];
+  if (refused > 0) {
+    parts.push(reason ? msg('linksFailedReason', String(refused), reason)
+                      : msg('linksFailed', String(refused)));
+  }
+  if (uncertain > 0) parts.push(msg('linksUncertain', String(uncertain)));
+  // The same rule the notification follows: a reason that travelled with no
+  // refusal is said here rather than lost. See reportAddOutcome.
+  if (refused === 0 && namedReason && reason) parts.push(reason);
   linksMessageEl.hidden = false;
-  linksMessageEl.textContent = unknown
-    ? msg('linksUncertain', String(count))
-    : (reason ? msg('linksFailedReason', String(count), reason)
-              : msg('linksFailed', String(count)));
+  linksMessageEl.textContent = parts.join(' ');
 }
 
 function clearLinksFailed() {
@@ -1655,7 +1929,6 @@ let popupReady = false;
 function syncAddControls() {
   const busy = backgroundAddBusy || localAddsPending > 0 || consumingAdd !== null;
   btnAddBulk.disabled = busy;
-  btnAddTorrent.disabled = busy;
   btnClearList.disabled = busy;
   bulkLinksEl.readOnly = busy;
   bulkLinksEl.setAttribute('aria-busy', String(busy));
@@ -1694,35 +1967,32 @@ async function loadAddBusy() {
 async function applyAddOutcome(result) {
   if (!result) return;
 
-  // Files are named rather than put back: a file picker cannot be handed its
-  // selection again, so a failed one has to be chosen once more by hand.
-  const isFiles = Array.isArray(result.failedNames);
-  const failed  = isFiles ? result.failedNames : (result.failedUrls ?? []);
-  const added   = result.added ?? 0;
+  const failed = result.failedUrls ?? [];
+  const added  = result.added ?? 0;
 
   if (result.success) {
-    bulkStatusEl.textContent = isFiles
-      ? msg('filesAdded', String(added))
-      : msg('linksAdded', String(added));
-    if (!isFiles) {
-      clearLinksFailed();
-      clearTimeout(draftSaveTimer);
-      bulkLinksEl.value = '';
-    }
-  } else if (isFiles) {
-    const names  = failed.join(', ');
-    const reason = result.deliveryUnknown ? ` — ${msg('notifyUncertain')}`
-      : result.errorMessage ? ` — ${result.errorMessage}` : '';
-    bulkStatusEl.textContent =
-      msg('linksPartial', String(added), String(result.failed ?? 0)) +
-      reason + (names ? ` (${names})` : '');
+    bulkStatusEl.textContent = msg('linksAdded', String(added));
+    clearLinksFailed();
+    bulkLinksEl.value = '';
   } else if (failed.length) {
     // Keep only what did not get through. Pressing the button again then
     // retries exactly those instead of adding the accepted ones twice.
-    showLinksFailed(failed.length, result.errorMessage, result.deliveryUnknown);
+    // The count the background kept apart, not a plain "something was unknown".
+    showLinksFailed(failed.length, result.errorMessage, {
+      uncertain: result.uncertain ?? 0, namedReason: result.namedReason === true,
+    });
     bulkStatusEl.textContent = added > 0 ? msg('linksAdded', String(added)) : '';
-    clearTimeout(draftSaveTimer);
     bulkLinksEl.value = failed.join('\n');
+    // A sign-in refused while the outcome was being checked says something about
+    // the connection, not just about these links — and the same thing a refused
+    // test says, so it goes through the same door. Saying it in the header alone
+    // left the NAS open to talk to: switching to Tasks started the timer again
+    // and spent five more attempts on a password that had just been turned down.
+    // There is no kept record behind this one, so the way back is the Test
+    // button, as it is for any other refusal shown here.
+    if (result.namedReason === true) {
+      showConnectFailure({ error: { message: result.errorMessage } });
+    }
   } else {
     bulkStatusEl.textContent = errText(result.error, 'addLinksFailed');
   }
@@ -1760,6 +2030,98 @@ function consumeLastAdd() {
   return consumingAdd;
 }
 
+/** Whether this popup has already put the kept failure on screen. */
+let keptConnectShown = false;
+/** The kept failure, read once at startup before anything else can sign in. */
+let keptConnect = null;
+/**
+ * Whether a kept sign-in failure bars us from talking to the NAS.
+ *
+ * Reading the record is not enough on its own: a stored add result starts the
+ * task refresh and the close watch from applyAddOutcome, which happens before
+ * the failure is ever shown. Those signed in regardless — one login on opening
+ * and another every three seconds — which is exactly the spending spree keeping
+ * the failure was meant to stop. So the refresh machinery asks this too, the
+ * way it already asks whether a code is due.
+ */
+let connectBlocked = false;
+
+/**
+ * Read the kept failure before anything else in the popup can reach the NAS.
+ *
+ * Split from showing it on purpose: the add result is displayed first, and it
+ * must not be able to start a sign-in behind this one's back.
+ */
+async function loadKeptConnectFailure() {
+  const { lastConnect } = await browser.storage.session.get({ lastConnect: null });
+  keptConnect = lastConnect;
+  if (lastConnect) connectBlocked = true;
+  return !!lastConnect;
+}
+
+/**
+ * Show the sign-in failure the background kept, if there is one.
+ *
+ * Unlike an add's result, this is not news to be consumed once: it is a state.
+ * The password is still wrong, or DSM still wants a code, until something
+ * actually changes that. Clearing it on first display meant the second open
+ * signed in again and spent another of DSM's attempts — the very thing keeping
+ * it was meant to prevent.
+ *
+ * So it stays until the background retires it: a sign-in that succeeds, or a
+ * connection that is changed, signed out of, or reset. "Already shown" is a
+ * different question, and a popup only ever asks it of itself.
+ */
+async function showKeptConnectFailure() {
+  if (keptConnectShown) return false;
+  if (!keptConnect) await loadKeptConnectFailure();
+  if (!keptConnect) return false;
+  keptConnectShown = true;
+  showConnectFailure(keptConnect);
+  return true;
+}
+
+/**
+ * Let the local bar down: something has answered the failure that raised it.
+ *
+ * The bar is this popup's copy of a background state, and a copy goes stale.
+ * The background retires the kept failure on any accepted sign-in — including
+ * one it made on its own for a keepalive or a download — and on a connection
+ * that is changed or signed out of. An open popup heard none of that: it stayed
+ * barred against a NAS that was working again, "Refresh" sent nothing, and with
+ * a session already in hand the header could even read "Connected" over a task
+ * list that never loaded.
+ *
+ * Only the local bar is dropped. The record itself belongs to the background;
+ * the popup has never written it and does not start here.
+ */
+function releaseConnectBar() {
+  if (!connectBlocked && !keptConnect) return false;
+  connectBlocked = false;
+  keptConnect = null;
+  syncRefreshTimer();
+  return true;
+}
+
+/**
+ * The background has cleared the kept failure. Drop the bar, and pick the
+ * connection back up if there is anything to pick up.
+ *
+ * The removal alone does not prove the NAS is reachable: signing out and
+ * changing the connection clear it too, and there is no session behind either.
+ * So the bar goes either way — its reason is gone — but only a session in hand
+ * starts the list up again.
+ */
+async function resumeAfterKeptFailure() {
+  if (!releaseConnectBar()) return;
+  const { sid } = await browser.storage.session.get({ sid: null });
+  if (!sid) return;
+  showOtpPrompt(false);
+  setStatus('connected', msg('connected'));
+  refreshTasks();
+  startAutoRefresh();
+}
+
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session') return;
   if ('addInFlight' in changes) {
@@ -1773,13 +2135,19 @@ browser.storage.onChanged.addListener((changes, area) => {
   if ('bulkDraft' in changes && bulkLinksEl.readOnly) {
     const value = changes.bulkDraft.newValue ?? '';
     if (value !== bulkLinksEl.value) {
-      clearTimeout(draftSaveTimer);
       bulkLinksEl.value = value;
     }
   }
   // Written by the background the moment an add finishes. The removal in
   // consumeLastAdd arrives here as the same key with no new value; ignore it.
   if (popupReady && 'lastAdd' in changes && changes.lastAdd.newValue) consumeLastAdd();
+  // The kept sign-in failure has been retired: a sign-in got through, or the
+  // connection it was about is gone. Either way the bar this popup put up on
+  // opening is out of date, and nothing else would ever tell it so. Here the
+  // removal is the news — the key arrives with no new value.
+  if (popupReady && 'lastConnect' in changes && !changes.lastConnect.newValue) {
+    resumeAfterKeptFailure();
+  }
 });
 
 /**
@@ -1787,11 +2155,10 @@ browser.storage.onChanged.addListener((changes, area) => {
  * attempted. The outcome itself comes back through applyAddOutcome — the one
  * path that also works when this popup did not live long enough to see it.
  *
- * Shared by links and files, which each carried a copy. `prepare` builds the
- * message and may take a while: reading files does. The connection is fixed
+ * `prepare` builds the message and may take a while. The connection is fixed
  * before it runs, and the background refuses the add if another has been
- * configured since. Taken when the message went out instead, a torrent file
- * read while a new connection was saved was uploaded to the new NAS.
+ * configured since — taken when the message went out instead, an add prepared
+ * while a new connection was saved went to the new NAS.
  */
 async function sendAdd(status, prepare) {
   localAddsPending++;
@@ -1849,7 +2216,6 @@ async function addBulkLinks() {
 
   clearLinksFailed();
   await sendAdd(msg('addingLinks', String(urls.length)), async () => {
-    clearTimeout(draftSaveTimer);
     await browser.storage.session.set({ bulkDraft: bulkLinksEl.value });
     return {
       action: ACTIONS.ADD_TASKS_BULK,
@@ -1865,29 +2231,11 @@ btnAddBulk.addEventListener('click', addBulkLinks);
 // Torrent / NZB file upload
 // ---------------------------------------------------------------------------
 
-btnAddTorrent.addEventListener('click', () => torrentInput.click());
-
-torrentInput.addEventListener('change', async () => {
-  const chosen = [...torrentInput.files];
-  torrentInput.value = ''; // so picking the same file twice fires again
-  if (chosen.length === 0) return;
-
-  if (!isConfigured()) {
-    bulkStatusEl.textContent = msg('setupRequired');
-    promptForSetup();
-    return;
-  }
-
-  await sendAdd(msg('addingFiles', String(chosen.length)), async () => ({
-    action: ACTIONS.ADD_TASK_FILES,
-    // File objects don't survive runtime messaging, so send the bytes.
-    files: await Promise.all(chosen.map(async (f) => ({
-      name: f.name,
-      buffer: await f.arrayBuffer(),
-    }))),
-    unzipPassword: extractEl.checked ? unzipPassEl.value : '',
-  }));
-});
+// Nothing here for files any more. Two walls stood in the way: a file dialog
+// closes this popup before the chosen file can be read, and the upload DSM 7
+// accepts wants the session id in the URL, which is exactly what this extension
+// keeps out of the NAS's web server log. A torrent's link goes through the
+// context menu without either problem, so that is what the hint points at.
 
 // ---------------------------------------------------------------------------
 // Bulk task actions
@@ -1900,11 +2248,17 @@ torrentInput.addEventListener('change', async () => {
  * pause, a delete or a retry and the only visible result was a list that
  * redrew unchanged — indistinguishable from a button that does nothing.
  */
+function clearActionResult() {
+  taskStatusEl.hidden = true;
+  taskStatusEl.textContent = '';
+}
+
 function reportActionResult(result) {
   const failed = !result || result.success === false;
-  taskStatusEl.hidden = !failed;
-  taskStatusEl.textContent = failed ? errText(result?.error, 'taskActionFailed') : '';
-  return !failed;
+  if (!failed) { clearActionResult(); return true; }
+  taskStatusEl.hidden = false;
+  taskStatusEl.textContent = errText(result?.error, 'taskActionFailed');
+  return false;
 }
 
 /**
@@ -1923,7 +2277,7 @@ async function runBulkAction(action, button, connection = tasksConnection) {
     // the old NAS must not clear out a newly configured one.
     const result = await browser.runtime.sendMessage({ action, connection });
     const ok = reportActionResult(result);
-    await refreshTasks();
+    await refreshTasks({ queue: true });
     if ((ok || mayHaveTakenEffect(result)) && action === ACTIONS.RESUME_ALL) startAutoRefresh();
   } catch (err) {
     taskStatusEl.hidden = false;
@@ -2005,7 +2359,7 @@ taskListEl.addEventListener('click', async (e) => {
       unzipPassword: extractEl.checked ? unzipPassEl.value : '',
     });
     const ok = reportActionResult(result);
-    await refreshTasks();
+    await refreshTasks({ queue: true });
     // Resuming or retrying makes a task active again — re-arm the timer.
     if ((ok || mayHaveTakenEffect(result))
       && (action === ACTIONS.RESUME_TASK || action === ACTIONS.RETRY_TASK)) startAutoRefresh();
@@ -2030,6 +2384,15 @@ btnSaveConn.addEventListener('click', () => {
     promptForSetup();
     return;
   }
+  // Said out loud rather than quietly ignored: the number on screen would
+  // otherwise stay there, looking saved, while the NAS is reached on another.
+  if (readPort() === null) {
+    portEl.classList.add('invalid');
+    connMessageEl.textContent = msg('portInvalid');
+    connMessageEl.hidden = false;
+    portEl.focus();
+    return;
+  }
   saveSettings({ forceTest: true, feedbackOn: btnSaveConn, commitConn: true });
 });
 // The destination is the one option that is not applied while you type it:
@@ -2047,19 +2410,9 @@ btnRefresh.addEventListener('click', async () => {
   await refreshTasks();
   startAutoRefresh();
 });
-btnClear.addEventListener('click', async () => {
-  btnClear.disabled = true;
-  try {
-    const result = await browser.runtime.sendMessage({ action: ACTIONS.CLEAR_COMPLETED, connection: tasksConnection });
-    reportActionResult(result);
-    await refreshTasks();
-  } catch (err) {
-    taskStatusEl.hidden = false;
-    taskStatusEl.textContent = err.message || msg('taskActionFailed');
-  } finally {
-    btnClear.disabled = false;
-  }
-});
+// The same shape as "Pause all" and the rest, so the error handling and the
+// refresh that follows an action are maintained in one place.
+btnClear.addEventListener('click', () => runBulkAction(ACTIONS.CLEAR_COMPLETED, btnClear));
 // Every option applies the moment it changes — no save button for this block.
 // The destination is deliberately not in this list: it is a path the NAS has to
 // accept, and applying it halfway through typing would send downloads to a
@@ -2218,6 +2571,10 @@ browser.runtime.connect({ name: 'popup' });
     // An add that finished while the popup was closed left its result behind.
     // After the tab is chosen, so a fresh one may override it; after loadDraft,
     // so the box it prunes is the restored one.
+    // Before the add result: applying that one starts the refresh and the close
+    // watch, and both sign in. Read here, shown further down.
+    await loadKeptConnectFailure();
+
     popupReady = true;
     await loadAddBusy();
 
@@ -2254,14 +2611,26 @@ browser.runtime.connect({ name: 'popup' });
     }
 
     if (status.connected) {
+      // A live session answers a failure kept from before it, so the bar that
+      // reading it just raised has to come down here too. Left standing, it
+      // barred the very list this branch asks for: the header read "Connected"
+      // over a task list that never loaded, and Refresh sent nothing.
+      releaseConnectBar();
       setStatus('connected', msg('connected'));
       refreshTasks();
       startAutoRefresh();
       return;
     }
 
-    // No session yet. attemptConnect logs in and puts its own reason in the
-    // list area on failure — including a two-step prompt if DSM asks for one.
+    // No session yet — but a sign-in may have failed while this popup was
+    // closed, and its reason is worth more than another attempt. Shown instead
+    // of signing in again: with a wrong password every reopen would spend one
+    // more of DSM's attempts, and DSM locks the account out on enough of them.
+    // The Test button is right there once the reason has been read.
+    if (await showKeptConnectFailure()) return;
+
+    // attemptConnect logs in and puts its own reason in the list area on
+    // failure — including a two-step prompt if DSM asks for one.
     await attemptConnect();
   } finally {
     overlay.style.display = 'none';
