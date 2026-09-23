@@ -61,6 +61,13 @@ const archivePwField = $('archivePasswordField');
 const btnSaveConn    = $('btnSaveConnection');
 const connMessageEl  = $('connMessage');
 const protocolWarnEl = $('protocolWarning');
+const certWarnEl     = $('certWarning');
+const connProblemEl       = $('connectionProblem');
+const connProblemTitleEl  = $('connProblemTitle');
+const connProblemAddrEl   = $('connProblemAddress');
+const connProblemLastEl   = $('connProblemLast');
+const connProblemReasonEl = $('connProblemReason');
+const connProblemAdviceEl = $('connProblemAdvice');
 const credentialsEl  = $('credentialsSection');
 const btnSaveDest    = $('btnSaveDest');
 const btnLogout      = $('btnLogout');
@@ -413,18 +420,19 @@ async function loadConnDraft() {
   syncDestSaveState();
 
   if (!connDraft) return;
-  // A restored protocol brings its warning with it. applySettingsToForm has
-  // already been past, but it went by the *saved* protocol — so HTTP chosen and
-  // not yet saved came back in the dropdown with nothing beside it, which is
-  // the one case where the warning matters most.
-  if (connDraft.protocol) {
-    protocolEl.value = connDraft.protocol;
-    syncProtocolWarning();
-  }
+  if (connDraft.protocol) protocolEl.value = connDraft.protocol;
   if (connDraft.host)     hostEl.value     = connDraft.host;
   if (connDraft.port)     portEl.value     = connDraft.port;
   if (connDraft.username) usernameEl.value = connDraft.username;
   if (connDraft.password) passwordEl.value = connDraft.password;
+
+  // Both warnings read protocol and address together, so they are asked once
+  // the whole draft has landed — never between two of its fields, where the
+  // answer would describe a connection that exists nowhere. applySettingsToForm
+  // has already been past, but it went by the *saved* values: HTTP chosen and
+  // not yet saved came back in the dropdown with nothing beside it, which is
+  // the one case where the warning matters most.
+  syncProtocolWarning();
 
   // Half-finished input usually means the credentials section was open.
   if (connDraft.username || connDraft.password) {
@@ -459,6 +467,9 @@ function clearDestDraft(saved = null) {
 for (const el of [hostEl, portEl, usernameEl, passwordEl]) {
   el.addEventListener('input', () => {
     saveConnDraft();
+    // The certificate hint follows the address as it is typed — see
+    // syncProtocolWarning. Switching to a name has to take it away again.
+    if (el === hostEl) syncProtocolWarning();
     // Retyping the port answers the complaint about it.
     if (el === portEl && readPort() !== null) {
       portEl.classList.remove('invalid');
@@ -479,6 +490,107 @@ for (const el of [hostEl, portEl, usernameEl, passwordEl]) {
  */
 function syncProtocolWarning() {
   protocolWarnEl.hidden = protocolEl.value !== 'http';
+  // The other half of the same question. A certificate may well cover an IP
+  // address (RFC 9525), but the usual NAS certificate covers a name only —
+  // and then the browser refuses the connection before the NAS is ever asked,
+  // in a way that looks exactly like a NAS that is not there. So the hint says
+  // what has to match and leaves the verdict open, here while the address is
+  // being typed, rather than as "not reachable" four sign-in attempts later.
+  certWarnEl.hidden = !(protocolEl.value === 'https' && isIpLiteral(hostEl.value));
+}
+
+/**
+ * The configured address, in the spelling both sides file a failure under.
+ *
+ * Built from the saved settings rather than from the fields: the failure
+ * happened against the connection that is configured, and a half-typed host
+ * would make the reason for it vanish mid-keystroke. `origin` drops a scheme's
+ * default port exactly as it does in the background, so "https://nas:443" and
+ * "https://nas" are one address on both sides instead of two that never meet.
+ */
+function currentOrigin() {
+  try {
+    return new URL(buildConnectionUrl(settings.protocol, settings.host, settings.port)).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The last connection failure at this address, written out where the address
+ * is set up.
+ *
+ * The notification that announced it has room for one line and cuts off the
+ * rest — which for a refused certificate meant losing the browser's own
+ * explanation, the one part that says what to change. Here there is room for
+ * all of it, it can be selected and copied, and it survives the popup being
+ * closed and opened again, because the background wrote it down rather than
+ * merely announcing it.
+ *
+ * Shown for any address, not only for an IP under HTTPS: the warning above the
+ * fields guesses in advance from the shape of the address, while this reports
+ * something that actually happened, and a certificate can be wrong for a host
+ * name just as easily.
+ */
+// Reads triggered by storage changes and connection tests can overlap. Only the
+// newest read may update the panel, including when that read clears it.
+let connectionProblemRead = 0;
+
+async function syncConnectionProblem(isCurrent = () => true) {
+  if (!isCurrent()) return false;
+  const read = ++connectionProblemRead;
+  const { connectionProblem } = await browser.storage.session.get({ connectionProblem: null });
+  if (read !== connectionProblemRead || !isCurrent()) return false;
+  const origin = currentOrigin();
+  const problem = origin !== null && connectionProblem?.origin === origin ? connectionProblem : null;
+  connProblemEl.hidden = problem === null;
+  if (problem === null) return false;
+  connProblemTitleEl.textContent = problem.certificate
+    ? msg('connProblemSecure') : msg('connectionFailed');
+  connProblemAddrEl.textContent = msg('connProblemAddress', problem.origin);
+  // Two readings, and the difference between them matters. Where the last
+  // attempt was itself refused over the certificate, the browser's reason is
+  // the reason. Where it was an ordinary failure, that reason is older news —
+  // kept because it is still the one thing to act on, but named as the last
+  // precise word rather than presented as a cause confirmed again just now.
+  connProblemLastEl.textContent = problem.certificate ? '' : msg('connProblemLastAttempt');
+  connProblemReasonEl.textContent = problem.certificate
+    ? msg('connProblemReason', problem.reason)
+    : msg('connProblemEarlier', problem.reason);
+  connProblemAdviceEl.textContent = msg('connProblemAdvice');
+  return true;
+}
+
+/**
+ * Put that panel in front of someone who has just asked the NAS a question.
+ *
+ * Only for a test somebody pressed. A failure in the background says its short
+ * piece in a notification and leaves the panel to be found: unfolding a section
+ * under the user's hands because a keepalive went wrong would be the extension
+ * rearranging the furniture.
+ */
+async function revealConnectionProblem(seq) {
+  // A later test can succeed while the stored reason is being read. Check
+  // before changing the panel as well as before changing the active tab.
+  const isCurrent = () => seq === newestConnectAnswered;
+  await syncConnectionProblem(isCurrent);
+  // A storage update may have rendered the panel while this read waited. The
+  // current test still reveals that panel even if its own read was superseded.
+  if (!isCurrent() || connProblemEl.hidden) return;
+  activateTab('settings', { remember: false });
+  document.getElementById('connectionSection').open = true;
+}
+
+/**
+ * Whether the address is a bare IP rather than a name.
+ *
+ * Deliberately generous: anything that looks like four numbers, and anything
+ * carrying a colon, which no host name does but every IPv6 address has. Being
+ * wrong here only shows or hides a hint, so the loose end is the safe one.
+ */
+function isIpLiteral(host) {
+  const h = String(host ?? '').trim().replace(/^\[|\]$/g, '');
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':');
 }
 
 protocolEl.addEventListener('change', () => {
@@ -685,6 +797,10 @@ async function commitSettings({
   syncDestSaveState(); // the field now matches what's stored
   if (layoutChanged) renderTasks();
   syncRefreshTimer(); // the refresh interval may have just changed
+  // A kept failure belongs to the address it happened at. Saving a different
+  // one leaves it behind — and the panel has to be told, because nothing was
+  // written or removed for the storage listener to pick up.
+  syncConnectionProblem();
   showSavedFeedback(feedbackOn);
 
   // Try the new details straight away rather than letting the first download
@@ -696,7 +812,7 @@ async function commitSettings({
       // the same as the one next to it — no reason to make people find that.
       connMessageEl.hidden = true;
       const otp = otpField.hidden ? '' : otpCodeEl.value.trim();
-      await attemptConnect(otp || undefined);
+      await attemptConnect(otp || undefined, { deliberate: true });
     } else {
       promptForSetup();
     }
@@ -1088,14 +1204,24 @@ let otpPendingFor = null;
 let connectSeq = 0;
 let newestConnectAnswered = 0;
 
-/** Whether a sign-in started later has already had its say. */
-function outdatedConnect(seq) {
-  if (seq <= newestConnectAnswered) return true;
+/**
+ * Whether a sign-in started later has already had its say.
+ *
+ * The first look also records this attempt as the newest to have answered, so
+ * from then on an equal number is its own and only a higher one belongs to
+ * somebody else — which is what `recorded` asks for. It has to be asked again
+ * after every await that follows, because each of those is a window in which a
+ * newer test can go through: without the second look an older failure put its
+ * bar back up over a connection that had just been made. The background
+ * settles the same argument the same way — see laterTestAnswered.
+ */
+function outdatedConnect(seq, { recorded = false } = {}) {
+  if (recorded ? seq < newestConnectAnswered : seq <= newestConnectAnswered) return true;
   newestConnectAnswered = seq;
   return false;
 }
 
-async function attemptConnect(otpCode) {
+async function attemptConnect(otpCode, { deliberate = false } = {}) {
   // Nothing signs in to a NAS while a code for that same NAS is being checked:
   // that spends the same code twice, and DSM refuses whichever arrives second.
   const connection = connectionKey(settings);
@@ -1105,7 +1231,7 @@ async function attemptConnect(otpCode) {
   if (claimed !== null) otpPendingFor = claimed;
   const seq = ++connectSeq;
   try {
-    return await runConnect(otpCode, seq);
+    return await runConnect(otpCode, seq, deliberate);
   } finally {
     // Only while it is still ours. A check for another NAS started meanwhile
     // holds the gate now, and opening that one would let a second code go out
@@ -1138,7 +1264,7 @@ function showConnectFailure(result) {
   return false;
 }
 
-async function runConnect(otpCode, seq) {
+async function runConnect(otpCode, seq, deliberate = false) {
   // Asked for deliberately, so the bar comes down: this is the one thing that
   // is meant to try the NAS again after a kept failure.
   connectBlocked = false;
@@ -1154,6 +1280,13 @@ async function runConnect(otpCode, seq) {
     if (result.connectionChanged || result.outdated) return false;
 
     if (result.success) {
+      // A refusal that arrived while this test was away is older news than a
+      // test that has just gone through — and it used to stand. The bar was
+      // lowered before the request, not after the answer, so an add's outcome
+      // landing in between put it back up behind the word "Connected": Refresh
+      // sent nothing, and the list never loaded. Down before the list is asked
+      // for, since that is one of the things the bar holds back.
+      releaseConnectBar();
       showOtpPrompt(false);
       const v = result.info?.authVersion ?? '?';
       setStatus('connected', msg('connectedWithVersion', String(v)));
@@ -1161,11 +1294,19 @@ async function runConnect(otpCode, seq) {
       startAutoRefresh();
       return true;
     }
+    // Asked for by hand, so the whole reason belongs on screen rather than the
+    // one line the header has room for. Reading it is an await of its own, and
+    // a newer test can go through inside it — so this attempt's verdict is only
+    // pronounced afterwards, and only if it is still the current one.
+    if (deliberate) await revealConnectionProblem(seq);
+    if (outdatedConnect(seq, { recorded: true })) return false;
     return showConnectFailure(result);
   } catch (err) {
     // A failure from an overtaken attempt is as out of date as its success
     // would have been, and would stop the refresh a newer one just started.
     if (outdatedConnect(seq)) return false;
+    if (deliberate) await revealConnectionProblem(seq);
+    if (outdatedConnect(seq, { recorded: true })) return false;
     const why = err.message || msg('extensionError');
     setStatus('error', msg('connectionFailed'), why);
     showMessage(why, true);
@@ -1177,7 +1318,7 @@ async function runConnect(otpCode, seq) {
 async function testConnection() {
   btnTest.disabled = true;
   try {
-    await attemptConnect();
+    await attemptConnect(undefined, { deliberate: true });
   } finally {
     btnTest.disabled = false;
   }
@@ -1189,7 +1330,7 @@ async function submitOtp() {
   btnOtpSubmit.disabled = true;
   try {
     // attemptConnect holds the gate — see otpPendingFor.
-    await attemptConnect(code);
+    await attemptConnect(code, { deliberate: true });
   } finally {
     btnOtpSubmit.disabled = false;
   }
@@ -1469,6 +1610,51 @@ function sortTasks(tasks) {
 }
 
 /** Draw the page buttons, collapsing long runs of pages with an ellipsis. */
+/**
+ * What a control means, rather than which node it happens to be: the task and
+ * the action, or the page it turns to. Anything else has no identity to keep.
+ *
+ * The arrows are asked first, because they carry a page number as well — the
+ * one they would turn to. Read by that number alone, "next" on page 1 and the
+ * button labelled "2" were the same control, so a refresh moved the keyboard
+ * from the arrow onto the number. Pressing Enter again then re-selected page 2
+ * instead of going on to page 3: the paging had quietly stopped moving.
+ */
+function focusKey(el) {
+  const { field, taskId, page, nav } = el?.dataset ?? {};
+  if (field && taskId) return `${field}:${taskId}`;
+  if (nav) return `nav:${nav}`;
+  if (page) return `page:${page}`;
+  return null;
+}
+
+/**
+ * Rebuild `root` without dropping the keyboard.
+ *
+ * Both lists are replaced wholesale on every refresh, the automatic one
+ * included, and a browser moves focus to the document when the element holding
+ * it is removed. Someone tabbing to "Pause" on a task therefore lost the
+ * keyboard every few seconds, with nothing on screen to say where it had gone —
+ * and the same on every page button.
+ *
+ * Only what was already focused inside this root is restored, and only onto the
+ * control that means the same thing. Where that control is gone — the task
+ * finished, the page gave way — the focus goes with it, and that loss is honest.
+ */
+function keepingFocus(root, render) {
+  const key = root.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+  render();
+  if (!key) return;
+  for (const candidate of root.querySelectorAll('button')) {
+    if (candidate.disabled || candidate.hidden) continue;
+    // preventScroll, because this is not the user asking to go anywhere: focus()
+    // scrolls its element into view by default, so someone who had focused a
+    // button and then scrolled down the list was dragged back up to it at the
+    // next refresh — every few seconds.
+    if (focusKey(candidate) === key) { candidate.focus({ preventScroll: true }); return; }
+  }
+}
+
 function renderPager(totalPages, total, from, to) {
   if (totalPages <= 1) {
     pagerEl.hidden = true;
@@ -1479,18 +1665,22 @@ function renderPager(totalPages, total, from, to) {
 
   const frag = document.createDocumentFragment();
 
-  const arrow = (label, title, page, disabled) => {
+  // `nav` says which arrow this is, and stays the same wherever it points. The
+  // page number changes under it as the pages turn, and is what the click
+  // handler reads — it is not an identity the keyboard can be given back to.
+  const arrow = (nav, label, title, page, disabled) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'pbtn';
     b.textContent = label;
     b.title = title;
     b.disabled = disabled;
+    b.dataset.nav = nav;
     if (!disabled) b.dataset.page = String(page);
     return b;
   };
 
-  frag.appendChild(arrow('‹', msg('prevPage'), currentPage - 1, currentPage === 1));
+  frag.appendChild(arrow('prev', '‹', msg('prevPage'), currentPage - 1, currentPage === 1));
 
   // First page, last page, and a window around the current one.
   const pages = new Set([1, totalPages, currentPage, currentPage - 1, currentPage + 1]);
@@ -1514,14 +1704,14 @@ function renderPager(totalPages, total, from, to) {
     previous = p;
   }
 
-  frag.appendChild(arrow('›', msg('nextPage'), currentPage + 1, currentPage === totalPages));
+  frag.appendChild(arrow('next', '›', msg('nextPage'), currentPage + 1, currentPage === totalPages));
 
   const info = document.createElement('span');
   info.className = 'pager-info';
   info.textContent = msg('pagerInfo', String(from), String(to), String(total));
   frag.appendChild(info);
 
-  pagerEl.replaceChildren(frag);
+  keepingFocus(pagerEl, () => pagerEl.replaceChildren(frag));
 }
 
 pagerEl.addEventListener('click', (e) => {
@@ -1672,7 +1862,7 @@ function renderTasks(tasks) {
     fragment.appendChild(card);
   }
 
-  taskListEl.replaceChildren(fragment);
+  keepingFocus(taskListEl, () => taskListEl.replaceChildren(fragment));
 }
 
 /**
@@ -1925,6 +2115,9 @@ let backgroundAddBusy = true;
 let localAddsPending = 0;
 let consumingAdd = null;
 let popupReady = false;
+// The newest version learned from reads or events. A delayed snapshot must
+// never replace newer news about a sign-in or a connection change.
+let latestConnectionVersion = null;
 
 function syncAddControls() {
   const busy = backgroundAddBusy || localAddsPending > 0 || consumingAdd !== null;
@@ -1964,7 +2157,7 @@ async function loadAddBusy() {
  * place that reads it, so a popup that stayed open and a popup that was
  * reopened do exactly the same thing with it.
  */
-async function applyAddOutcome(result) {
+async function applyAddOutcome(result, currentVersion = null) {
   if (!result) return;
 
   const failed = result.failedUrls ?? [];
@@ -1990,7 +2183,26 @@ async function applyAddOutcome(result) {
     // and spent five more attempts on a password that had just been turned down.
     // There is no kept record behind this one, so the way back is the Test
     // button, as it is for any other refusal shown here.
-    if (result.namedReason === true) {
+    //
+    // Only for the NAS this outcome is actually about. A result checked out
+    // while the user switched to another NAS and signed in there arrives after
+    // the fact, and blocking on it shut the new connection out of a session
+    // that was working perfectly well.
+    //
+    // The key alone cannot say that, because it leaves the password out — and
+    // has to: changing a password does not change whose tasks these are. So a
+    // refusal over the old password, landing after the corrected one had signed
+    // in, read as news about this very connection and barred it. The version
+    // the background counts alongside moves with the password without carrying
+    // it; where it does not match, this outcome is about credentials that are
+    // no longer in use, and only the links themselves are still its business.
+    // A rejected list has a useful reason without necessarily invalidating the
+    // login. Older stored outcomes predate the separate connection-block flag.
+    // Events may also arrive after a newer read: only a higher observed version
+    // retires this snapshot, not an event still describing an older one.
+    if ((result.blockConnection ?? result.namedReason) === true && result.connection === connectionKey(settings)
+      && result.connectionVersion === currentVersion
+      && (latestConnectionVersion === null || currentVersion >= latestConnectionVersion)) {
       showConnectFailure({ error: { message: result.errorMessage } });
     }
   } else {
@@ -2018,9 +2230,25 @@ async function applyAddOutcome(result) {
 function consumeLastAdd() {
   if (consumingAdd) return consumingAdd;
   consumingAdd = (async () => {
-    const { lastAdd } = await browser.storage.session.get({ lastAdd: null });
+    let answered = newestConnectAnswered;
+    // Read together with the record, and compared against the one stamped on
+    // it: the connection the user is on now, counted in a way that a changed
+    // password moves — see applyAddOutcome. That function also checks changes
+    // announced while this read waited, so two matching old values cannot put
+    // a retired refusal back over a successful sign-in. The links still apply.
+    const { lastAdd, connectionVersion } = await browser.storage.session.get(
+      { lastAdd: null, connectionVersion: 0 });
+    let currentVersion = connectionVersion;
+    // A local test can answer before its storage event reaches us. Read the
+    // version again in that case, rather than guessing that every result is
+    // old: a new failure may already belong to the newly accepted session.
+    while (lastAdd && answered !== newestConnectAnswered) {
+      answered = newestConnectAnswered;
+      ({ connectionVersion: currentVersion } = await browser.storage.session.get({ connectionVersion: 0 }));
+    }
+    latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, currentVersion);
     if (!lastAdd) return;
-    await applyAddOutcome(lastAdd);
+    await applyAddOutcome(lastAdd, currentVersion);
     await browser.storage.session.remove('lastAdd');
   })().finally(() => {
     consumingAdd = null;
@@ -2124,6 +2352,9 @@ async function resumeAfterKeptFailure() {
 
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session') return;
+  if ('connectionVersion' in changes) {
+    latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, changes.connectionVersion.newValue ?? 0);
+  }
   if ('addInFlight' in changes) {
     if (changes.addInFlight.newValue === true) setAddBusy(true);
     else if (popupReady) loadAddBusy();
@@ -2148,6 +2379,11 @@ browser.storage.onChanged.addListener((changes, area) => {
   if (popupReady && 'lastConnect' in changes && !changes.lastConnect.newValue) {
     resumeAfterKeptFailure();
   }
+  // Written when a connection fails and removed the moment something answers
+  // at that address again. Both arrive here, and both are news for the panel:
+  // one fills it, the other takes it away without anybody having to press
+  // anything.
+  if (popupReady && 'connectionProblem' in changes) syncConnectionProblem();
 });
 
 /**
@@ -2555,6 +2791,9 @@ browser.runtime.connect({ name: 'popup' });
     ]);
     // After loadSettings, so unsaved edits win over the last saved values.
     await loadConnDraft();
+    // After loadSettings too, because which address a kept failure belongs to
+    // is decided against the saved connection.
+    await syncConnectionProblem();
 
     // The interface is complete and translated at this point, so show it.
     // Everything below this line talks to the NAS, and a sleeping one can take

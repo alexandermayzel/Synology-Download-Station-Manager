@@ -31,25 +31,32 @@ browser.storage.onChanged.addListener((changes, area) => {
 });
 
 /**
- * Whether an anchor points at a magnet link.
+ * The anchor's magnet URL as a string, or null.
  *
- * Read from the anchor's own parsed protocol rather than matched against the
- * attribute text: "MAGNET:?xt=…" is the same link to the browser, and an
- * attribute selector for "magnet:" walks straight past it. The attribute is
- * the fallback for anything that never got parsed.
+ * HTML anchors expose a string, SVG anchors an SVGAnimatedString. Use the
+ * current animated value for SVG, falling back to its base value or attribute
+ * when necessary. Check the same string we send: otherwise an SVG link can be
+ * recognised through its attribute but sent as an object after its click has
+ * already been cancelled. Scheme matching remains case-insensitive.
  */
-function isMagnetLink(anchor) {
-  const protocol = typeof anchor.protocol === 'string' ? anchor.protocol : '';
-  if (protocol) return protocol.toLowerCase() === 'magnet:';
-  return /^\s*magnet:/i.test(anchor.getAttribute?.('href') ?? '');
+function magnetUrl(anchor) {
+  const href = anchor.href;
+  const value = typeof href === 'string' ? href
+    : typeof href?.animVal === 'string' ? href.animVal
+    : typeof href?.baseVal === 'string' ? href.baseVal
+    : anchor.getAttribute?.('href');
+  if (typeof value !== 'string') return null;
+  const url = value.trim();
+  return /^magnet:/i.test(url) ? url : null;
 }
 
-/** The magnet link a click landed on, anywhere along its path, or null. */
-function findMagnetLink(nodes) {
+/** The magnet URL a click landed on, anywhere along its path, or null. */
+function findMagnetUrl(nodes) {
   for (const node of nodes) {
     if (!(node instanceof Element) || typeof node.closest !== 'function') continue;
     const anchor = node.closest('a[href]');
-    if (anchor && isMagnetLink(anchor)) return anchor;
+    const url = anchor ? magnetUrl(anchor) : null;
+    if (url) return url;
   }
   return null;
 }
@@ -67,10 +74,10 @@ document.addEventListener(
     if (!e.isTrusted) return;
     // A link inside an open shadow tree cannot be reached from e.target with
     // closest() — the composed path passes through the hosts, so it can. Not
-    // every click target is an Element either, which findMagnetLink guards.
+    // every click target is an Element either, which findMagnetUrl guards.
     const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    const link = findMagnetLink(path.length ? path : [e.target]);
-    if (!link) return;
+    const url = findMagnetUrl(path.length ? path : [e.target]);
+    if (!url) return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -81,7 +88,7 @@ document.addEventListener(
       // second file there for the sake of one string. Kept in step by hand —
       // actions.js says so at the other end.
       action: 'magnetClicked',
-      url: link.href,
+      url,
     }).catch(() => {
       // The background is gone or still starting. Nothing useful to do about it
       // from someone else's page, and leaving the rejection unhandled would

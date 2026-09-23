@@ -1,10 +1,10 @@
-# AMO submission — version 1.1.3
+# AMO submission — version 1.1.4
 
 Working document for the upload at
 [addons.mozilla.org](https://addons.mozilla.org/developers/addon/synology-download-manager/versions/submit/).
 Not part of the extension package.
 
-Upload `synology-download-station-manager-1.1.3.zip`.
+Upload `synology-download-station-manager-1.1.4.zip`.
 
 **Before uploading:** leave the **support email empty**; AMO exposes it through
 the public, unauthenticated API.
@@ -17,87 +17,71 @@ languages; the extension interface remains available in all six languages.
 ### English
 
 ```
-Security
-
-• NAS requests no longer follow redirects, so credentials cannot reach another address.
-• Archive passwords and two-factor codes are cleared on sign-out and on a connection change.
-
 Added
 
-• The extension version is shown in Settings.
-• Choosing HTTP warns that the transfer is unencrypted.
+• Entering an IP address under HTTPS now points out that the certificate has to match it.
+• Certificate failures show Firefox's own explanation. Where two requests to one address overlap and the reason cannot be attributed, the general message stands.
+• The full reason is selectable under Settings, Connection and stays after reopening the popup. Any answer at that address clears it. Both test buttons unfold the section; the short notification points there.
 
 Fixed
 
-• Unintended HTTP-to-HTTPS upgrades.
-• Unanswered adds are checked against the task list; uncertain results are reported separately.
-• Links containing commas are rejected, so the NAS cannot split them into two.
-• Retry creates a replacement only after a confirmed deletion, and names unconfirmed outcomes as such.
-• A running code check blocks further sign-ins to the same connection; stale replies no longer reopen the prompt.
-• Popup sign-in failures survive the popup closing, are notified, and block further automatic sign-ins.
-• Refused sign-ins stop bulk adds and confirmation checks, and stop the popup refreshing.
-• Connection, destination and link drafts survive an immediate close and a pending save.
-• Invalid ports are rejected, a cleared destination stays empty, and a reset clears earlier messages.
-• A stale task list no longer stops the refresh, and the pause button covers every task Pause all does.
-• Premature monitoring stops caused by overlapping resume, keepalive and sign-in.
-• Task actions tell a connection failure before sending from an uncertain result after it.
-• The connection status no longer overwrites newer sign-in results; the full text is in the tooltip.
-• Folder errors name the destination used and tell it from the NAS default.
-• The closing notification matches the completed, failed and paused counts.
+• Seeding torrents can be paused; they had no pause button, and Pause all walked past them.
+• Magnet links inside an embedded frame are captured; only the top document was reached before.
+• Magnet links in SVG graphics are sent as URLs instead of objects.
+• IPv6 NAS addresses work with or without square brackets in the Host field.
+• A refused task list stops the confirmation check and gives that reason; the download stays uncertain. The notification says so for right-clicks and captured magnets too.
+• Retry keeps the link when the NAS is changed after the old task was already removed.
+• Retry calls a task removed only when the NAS confirmed that deletion; a reply refusing it, or naming no task, was reported as a removal.
+• Retry, pause, resume and delete name the reason a secure connection was refused.
+• Retry respects a failed connection test before it wakes the NAS.
+• Failures from the previous NAS no longer block the new connection or count toward stopping its download watch.
+• After a successful sign-in, older sign-in failures no longer block the connection.
+• A late answer from the connection watch no longer ends a session that has been set up since.
+• Keyboard focus stays on the same button when the list refreshes, and the list is not scrolled back to it.
+• Switching the NAS while a download watch was finishing no longer signs the new connection out again.
+• The task counter on the extension icon is no longer cleared by a slower background check that answered late.
+• The bundled Outfit webfont now ships with its licence text as fonts/OFL.txt.
 
 Changed
 
-• Screen-reader feedback for filters and pagination, and the popup's document language.
-• Magnet capture handles uppercase protocol names and links in open shadow DOM.
-• The wake-up wait is 60 seconds and the base add timeout 25, with extra time per link.
-• The refresh interval controls the popup task list; background monitoring runs independently.
-
-Removed
-
-• Local .torrent and .nzb uploads. Torrent links can still be added through the context menu.
+• Recognised certificate failures are reported without automatic retries.
+• Wording and translations improved throughout, in all six languages.
+• The manifest now declares what is transmitted: authentication information and website content for the links you hand over. The recipient is unchanged: the NAS you configured and nowhere else, no telemetry, no third party.
 ```
 
 ### Deutsch
 
 ```
-Sicherheit
-
-• Anfragen an die NAS folgen keinen Weiterleitungen mehr; Zugangsdaten gelangen so nicht an fremde Adressen.
-• Archivpasswort und Zwei-Faktor-Code werden beim Abmelden und beim Verbindungswechsel gelöscht.
-
 Neu
 
-• Die Version der Erweiterung steht in den Einstellungen.
-• Die Wahl von HTTP warnt vor unverschlüsselter Übertragung.
+• Beim Eintragen einer IP-Adresse unter HTTPS steht jetzt dabei, dass das Zertifikat dazu passen muss.
+• Bei Zertifikatsfehlern wird die Meldung von Firefox angezeigt. Überlappen zwei Anfragen an dieselbe Adresse und lässt sich der Grund nicht zuordnen, bleibt die allgemeine Meldung.
+• Der vollständige Grund steht markierbar unter Einstellungen, Verbindung und bleibt nach erneutem Öffnen. Eine Antwort an dieser Adresse löscht ihn. Beide Testschaltflächen öffnen den Bereich; die kurze Benachrichtigung verweist dorthin.
 
 Behoben
 
-• Unbeabsichtigte Umstellung von HTTP auf HTTPS.
-• Unbeantwortetes Hinzufügen wird gegen die Aufgabenliste geprüft; ungewisse Ergebnisse werden getrennt gemeldet.
-• Links mit Komma werden abgelehnt, damit die NAS sie nicht in zwei teilt.
-• Wiederholen legt erst nach bestätigter Löschung neu an und benennt unbestätigte Ergebnisse als solche.
-• Eine laufende Codeprüfung sperrt weitere Anmeldungen derselben Verbindung; veraltete Antworten öffnen die Abfrage nicht wieder.
-• Im Popup gescheiterte Anmeldungen überdauern das Schließen, werden gemeldet und sperren weitere automatische Anmeldungen.
-• Abgelehnte Anmeldungen beenden Sammel-Adds und Nachprüfungen und stoppen die Aktualisierung im Popup.
-• Entwürfe für Verbindung, Zielordner und Linkliste überstehen sofortiges Schließen und ein laufendes Speichern.
-• Ungültige Portnummern werden abgewiesen, ein geleerter Zielordner bleibt leer, und das Zurücksetzen räumt alte Meldungen weg.
-• Eine veraltete Aufgabenliste stoppt die Aktualisierung nicht mehr; der Pause-Knopf deckt alle Aufgaben von Alle anhalten ab.
-• Vorzeitiges Ende der Überwachung durch überlappendes Fortsetzen, Keepalive und Anmelden.
-• Aufgabenaktionen unterscheiden Verbindungsfehler vor dem Senden von ungewissem Ergebnis danach.
-• Der Verbindungsstatus überschreibt neuere Anmeldeergebnisse nicht mehr; der volle Text steht im Tooltip.
-• Ordnerfehler nennen den verwendeten Zielordner und unterscheiden ihn vom NAS-Standard.
-• Die Abschlussmeldung passt zu den Zahlen für abgeschlossen, fehlgeschlagen und pausiert.
+• Seedende Torrents lassen sich pausieren; bisher fehlte der Knopf dafür.
+• Magnet-Links in eingebetteten Frames werden übernommen; bisher nur im obersten Dokument.
+• Magnet-Links in SVG-Grafiken werden als URLs statt als Objekte übergeben.
+• IPv6-Adressen der NAS funktionieren im Hostfeld mit und ohne eckige Klammern.
+• Eine abgelehnte Aufgabenliste beendet die Nachprüfung mit dem Grund; der Download bleibt ungewiss. Das nennt die Benachrichtigung auch bei Rechtsklick und Magnet-Link.
+• Wiederholen behält den Link, wenn die NAS nach dem Entfernen der alten Aufgabe gewechselt wird.
+• Wiederholen meldet eine Aufgabe nur als entfernt, wenn die NAS deren Löschung bestätigt hat.
+• Wiederholen, Pausieren, Fortsetzen und Löschen nennen den Grund einer abgelehnten gesicherten Verbindung mit.
+• Wiederholen beachtet einen fehlgeschlagenen Verbindungstest, bevor es die NAS weckt.
+• Fehler der vorherigen NAS sperren die neue Verbindung nicht mehr und zählen nicht zum Abbruch ihrer Download-Überwachung.
+• Nach einer erfolgreichen Anmeldung blockieren ältere Anmeldefehler die Verbindung nicht mehr.
+• Eine verspätete Antwort der Verbindungsüberwachung beendet keine inzwischen neu aufgebaute Sitzung mehr.
+• Der Tastaturfokus bleibt beim Aktualisieren auf derselben Schaltfläche, und die Liste springt nicht dorthin zurück.
+• Ein NAS-Wechsel während des Auslaufens der Überwachung meldet die neue Verbindung nicht mehr ab.
+• Der Aufgabenzähler am Erweiterungssymbol wird nicht mehr von einer spät antwortenden Hintergrundprüfung geleert.
+• Die Outfit-Schrift bringt ihren Lizenztext als fonts/OFL.txt mit.
 
 Geändert
 
-• Screenreader-Ansagen für Filter und Seiten sowie die Dokumentsprache des Popups.
-• Die Magnet-Übernahme erkennt großgeschriebene Protokollnamen und Links im offenen Shadow DOM.
-• Die Wartezeit für eine schlafende NAS beträgt 60 Sekunden, die Grundzeit fürs Hinzufügen 25, mit Zuschlag je Link.
-• Die Intervall-Einstellung steuert die Aufgabenliste im Popup; die Hintergrundüberwachung läuft unabhängig davon.
-
-Entfernt
-
-• Das Hochladen lokaler .torrent- und .nzb-Dateien. Torrent-Links gehen weiterhin über das Kontextmenü.
+• Erkannte Zertifikatsfehler werden ohne automatische Wiederholungen gemeldet.
+• Formulierungen und Übersetzungen in allen sechs Sprachen überarbeitet.
+• Das Manifest deklariert jetzt, was übertragen wird: Anmeldeinformationen und Website-Inhalte für die übergebenen Links. Empfänger bleibt ausschließlich die eingerichtete NAS, ohne Telemetrie, ohne Dritte.
 ```
 
 ## Notes to reviewer
@@ -105,54 +89,47 @@ Entfernt
 English, one field, plain text.
 
 ```
-WHAT IT DOES
-
-Sends links and magnet links to the user's own Synology NAS through the official Download Station Web API and controls the resulting tasks. Torrent and NZB files are added by their link, which the NAS fetches. No vendor server is involved.
+Controls the user's own Synology Download Station via its Web API.
 
 SOURCE CODE
 
-No build step. The files in the ZIP are the unmodified source: nothing minified, transpiled or bundled. Tests and these notes are excluded. MPL-2.0, continuing the original Download Station add-on under the same licence, with its own extension ID.
-github.com/alexandermayzel/Synology-Download-Station-Manager, tag v1.1.3
+No build step: the ZIP is the unmodified source. MPL-2.0, own extension ID. No eval(), new Function(), innerHTML, remote script, CDN or third-party library; the Outfit webfont is bundled in fonts/ with its OFL.txt.
+github.com/alexandermayzel/Synology-Download-Station-Manager, tag v1.1.4
 
-NO REMOTE CODE, NO THIRD PARTIES
+CSP unchanged since 1.1.3: MV3 default minus upgrade-insecure-requests, which broke plain-HTTP NAS access.
 
-No eval(), new Function(), innerHTML, remotely hosted script, CDN, analytics, telemetry or third-party library. The Outfit webfont is bundled in fonts/.
+PERMISSIONS
 
-CONTENT SECURITY POLICY
+data_collection_permissions.required is ["authenticationInfo","websiteContent"], where 1.1.3 declared none: what goes to the user's configured NAS includes the DSM user name, password and two-factor code, the links picked, their folder and an archive password where given - which Mozilla counts as data leaving the browser. It goes nowhere else: no telemetry, no third party, nothing to the developer. No page address, referrer or history. Credentials live in storage.local.
 
-This version declares extension_pages as script-src 'self'; object-src 'self'. For scripts and objects that is the Manifest V3 default: only packaged code runs, no inline script, no eval, no remote script. The declaration exists to drop one other part of the default, upgrade-insecure-requests, which rewrote http:// to https:// for this extension's own requests. Download Station is reachable over plain HTTP, which the settings offer, so the rewrite broke a documented option. Nothing about script execution is relaxed.
+"webRequest" is new in 1.1.4 and the only addition; host_permissions is unchanged.
 
-DATA COLLECTION AND PERMISSIONS
+Why: fetch rejects every network failure with one opaque TypeError - a refused certificate and a sleeping NAS look the same. onErrorOccurred is the only Firefox API naming the real reason; getSecurityInfo() needs webRequestBlocking and headers that never arrive.
 
-data_collection_permissions.required remains ["none"]. No permissions were added or widened. Credentials are in browser.storage.local, session state in browser.storage.session.
+Scope: two non-blocking listeners - nothing blocked, modified, redirected or cancelled. onErrorOccurred for the reason, onBeforeRequest for the requestId that ties it to its request. Patterns come from the addresses this extension requests itself, never <all_urls>; an event must have no tab (tabId === -1), an originUrl of this extension where given, and an address in flight - so a tab's own NAS interface is ignored.
 
-host_permissions "*://*/*" permits the user-configured NAS address. The content script's matches is <all_urls>: it loads on every page regardless of the magnet option. With the option off its click listener returns at once; with it on, it acts only on clicks the user made (event.isTrusted). Off by default.
+Read and never sent: requestId, error string, request type, address without its query string, timestamp. Three diagnostic records in storage.session, all ending with the browser session: lastTransportError, the last event; transportWatch, the registered patterns and their time; connectionProblem, the configured address's failure, shown in the panel and cleared once anything answers. Recognised by Firefox's symbolic security names (SEC_ERROR_, SSL_ERROR_, MOZILLA_PKIX_ERROR_) or, over HTTPS, by an error given as a sentence rather than a name - shape, never wording; anything else keeps the general message.
 
-WHERE REQUESTS ARE MADE
+host_permissions "*://*/*" covers the user-configured NAS address. The content script (matches <all_urls>) acts only on user clicks (event.isTrusted) and only with the magnet option on, off by default; all_frames is new in 1.1.4, for iframes.
 
-background.js has a single fetch() call site, background.js:256 in fetchOnce(). API discovery and sign-out previously called fetch() directly and now go through it too. That call sets redirect: 'error', so nothing carrying a password, a two-factor code or a session ID can be redirected to another address. Popup and content scripts make no network requests.
+One fetch() call site, background.js:832 in fetchOnce(), with redirect: 'error' so no password, code or session ID goes elsewhere.
 
-CHANGED IN 1.1.3
-
-See the release notes. No new API endpoints or permissions are used; the only manifest change is the content_security_policy described above.
-
-TESTING
-
-144 regression tests use simulated browser storage, popup controls and NAS responses, without connecting to a real NAS. They cover network and response failures, partial task actions, delayed authentication, connection changes, redirect refusal, and two-factor sign-ins answering out of order.
-No public NAS instance is provided; load it through about:debugging and point it at a test NAS.
+TESTING: 216 regression tests against simulated storage, popup and NAS replies; load via about:debugging.
 ```
 
-## Checklist — 1.1.3 (not yet released)
+## Checklist — 1.1.4 (not yet released)
 
-Release notes and notes to reviewer above are written for 1.1.3.
+Release notes and notes to reviewer above are written for 1.1.4.
 
-- [x] `manifest.json` version is `1.1.3`
-- [x] `CHANGELOG.md` release date set (2026-09-20)
-- [x] Title, upload file name, release notes (en + de) and notes to reviewer written for 1.1.3
+- [x] `manifest.json` version is `1.1.4`
+- [x] `CHANGELOG.md` release date set (2026-09-23)
+- [x] Title, upload file name, release notes (en + de) and notes to reviewer written for 1.1.4
 - [x] Regression tests pass
 - [x] Package rebuilt and verified after the last extension edit
-- [x] Tested in Firefox with a NAS
-- [ ] Committed, tagged `v1.1.3` and pushed
+- [ ] Tested in Firefox with a NAS — the refused certificate reproduced end to end
+- [ ] Committed, tagged `v1.1.4` and pushed
 - [ ] Release notes pasted for English and German
 - [ ] Notes to reviewer pasted
+- [ ] Data collection in the AMO form matches the manifest: authentication
+      information and website content, required, no optional categories
 - [ ] Support email still empty

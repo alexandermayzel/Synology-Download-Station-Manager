@@ -85,6 +85,16 @@ function hasCredentials(settings) {
 }
 
 /**
+ * Build the NAS address without changing the saved host or configured port.
+ * IPv6 literals need brackets in a URL; accept either spelling in Settings.
+ */
+function buildConnectionUrl(protocol, host, port) {
+  const urlHost = typeof host === 'string' && host.includes(':') && !host.startsWith('[')
+    ? `[${host}]` : host;
+  return `${protocol}://${urlHost}:${port}`;
+}
+
+/**
  * Fill every [data-i18n] element of `root` from _locales.
  *
  * `translate` is passed in rather than taken from the page: the popup declares
@@ -153,7 +163,16 @@ const WORKING_STATUSES = Object.freeze([
  * and the two had drifted apart — a task waiting on a file host was picked up
  * by the bulk action but had no button of its own.
  */
-const PAUSABLE  = Object.freeze(['downloading', 'waiting', 'filehosting_waiting']);
+/**
+ * `seeding` belongs here even though it is not in WORKING_STATUSES above. The
+ * two lists answer different questions: that one asks whether a download is
+ * still going somewhere, and seeding never ends on its own, so waiting for it
+ * would never finish. This one asks whether the NAS can be told to stop — and
+ * it can. Left out, a seeding torrent had no pause button at all and "Pause
+ * all" walked straight past it, answering "done, 0 affected" while the upload
+ * carried on.
+ */
+const PAUSABLE  = Object.freeze(['downloading', 'waiting', 'filehosting_waiting', 'seeding']);
 const RESUMABLE = Object.freeze(['paused', 'stopped']);
 
 function canPauseTask(status) {

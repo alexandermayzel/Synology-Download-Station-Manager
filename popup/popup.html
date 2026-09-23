@@ -121,7 +121,7 @@
 
         <!-- Belongs to the links above, not in a category of its own: it is
              sent with them and applies only to this one batch. Shown while
-             "Extract archives automatically" is on in Settings. -->
+             "Enter archive password" is on in Settings. -->
         <div class="field" id="archivePasswordField" hidden>
           <label for="unzipPassword" class="label" data-i18n="archivePassword">Archive password (optional)</label>
           <input type="password" id="unzipPassword" class="ta" autocomplete="off" />
@@ -269,6 +269,18 @@
       </summary>
       <div class="section-body">
 
+      <!-- The last connection failure at this address, in full and selectable.
+           Filled from storage by syncConnectionProblem, so it is still here
+           after the popup has been closed and opened again. Above the fields
+           because it is about what is in them. -->
+      <div id="connectionProblem" class="conn-problem" hidden>
+        <p class="conn-problem-title" id="connProblemTitle"></p>
+        <p class="conn-problem-line" id="connProblemAddress"></p>
+        <p class="conn-problem-line" id="connProblemLast"></p>
+        <p class="conn-problem-line" id="connProblemReason"></p>
+        <p class="conn-problem-line" id="connProblemAdvice"></p>
+      </div>
+
       <div class="row">
         <div class="field" style="width:88px">
           <label for="protocol" class="label" data-i18n="protocol">Protocol</label>
@@ -289,6 +301,11 @@
       <!-- Shown only while HTTP is chosen. A warning, not a refusal. -->
       <p id="protocolWarning" class="hint warn" data-i18n="protocolInsecure" hidden>
         HTTP sends your password and session id unencrypted. Using HTTPS is recommended, so the data travels encrypted.
+      </p>
+      <!-- Shown only for HTTPS to a bare IP. Also a warning, not a refusal:
+           a certificate may carry an IP, it is just very rarely done. -->
+      <p id="certWarning" class="hint warn" data-i18n="hostIpCert" hidden>
+        With HTTPS the certificate has to match the address you entered. If your NAS certificate only covers a host name, use that name instead of the IP address.
       </p>
 
       <!-- Credentials (nested collapsible) -->
@@ -380,7 +397,7 @@
         <label class="checkline">
           <input type="checkbox" id="extractArchives" class="toggle-input" />
           <span class="toggle" aria-hidden="true"></span>
-          <span data-i18n="extractArchives">Extract archives automatically</span>
+          <span data-i18n="extractArchives">Enter archive password</span>
         </label>
         <span class="hint" data-i18n="extractArchivesHint">
           Adds an archive-password field next to the link list. The extraction itself is

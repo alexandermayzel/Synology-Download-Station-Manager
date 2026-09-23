@@ -73,7 +73,8 @@ cannot; the setting exists there but is ignored.
   the file itself. Uploading one from the disk is not offered; see *No file
   upload* below for why.
 - **Magnet links** can be intercepted automatically, so a click goes to the NAS
-  instead of prompting for a torrent client. Off by default.
+  instead of prompting for a torrent client, including links in embedded frames
+  and SVG graphics. Off by default.
 - **The list survives** a closed popup, so links can be collected across several
   visits. Cleared after a successful add, by *Clear list*, or when Firefox
   closes.
@@ -180,7 +181,7 @@ All settings live in the popup's **Settings** tab.
 | Field | Notes |
 |---|---|
 | Protocol | `https` (port 5001) or `http` (port 5000) |
-| Host | IP, hostname or DDNS name of the NAS. **Not** `localhost` — that points at your own computer |
+| Host | IP, hostname or DDNS name of the NAS. IPv6 accepts both `fd00::1` and `[fd00::1]`; enter the port separately. **Not** `localhost` — that points at your own computer |
 | Port | DSM web port |
 | Username / Password | The DSM account from the section above |
 
@@ -193,7 +194,7 @@ save and stays however you leave it after that.
 |---|---|---|
 | Default destination | *(empty)* | Applied on Enter or its own save button. See [Destination folder](#destination-folder) |
 | Auto-capture magnet links | **off** | Intercepts `magnet:` clicks on every page |
-| Extract archives automatically | **off** | Shows the archive-password field. See [Automatic extraction](#automatic-extraction-happens-on-the-nas) |
+| Enter archive password | **off** | Shows the archive-password field. Extraction itself is set in DSM — see [Automatic extraction](#automatic-extraction-happens-on-the-nas) |
 
 ### Notifications
 
@@ -205,7 +206,7 @@ save and stays however you leave it after that.
 
 | Option | Default | Notes |
 |---|---|---|
-| Task refresh interval | 10 s | 3 / 10 / 30 seconds, or manual. Runs only while tasks are active |
+| Task refresh interval | 10 s | 3 / 10 / 30 seconds, or manual. Runs only while tasks are active. For 30 seconds after an add, the list refreshes every 3 seconds whatever this says, *Manual only* included |
 | Tasks per page | 10 | 10 / 25 / 50 / 100 |
 | Sort tasks by | By status | Plus a drag-to-reorder status priority, by default Active → Failed → Waiting → Paused → Finished |
 
@@ -251,18 +252,22 @@ what the switches are for.
 can show "Connected" the instant it opens. The ping is skipped when the same
 session reached the NAS within that time anyway, as the download watch and an
 open popup do. That traffic can stop the NAS parking its disks, which is why it
-ships **off**. With it off the extension signs in when
-needed and hands the session back when it is done.
+ships **off**. With it off the extension signs in when needed and hands the
+session back when it is done — though not always the moment the last download
+finishes; see [Sessions on browser close](#sessions-on-browser-close) for the
+cases that hold a session open.
 
 After a failed popup connection test, new automatic sign-ins are blocked,
 including those needed to add downloads. Use **Test** or **Save and test connection**
-to retry; an existing session can still be used.
+to retry; an existing session can still be used. **Retry** respects this block
+before checking whether the NAS is awake or removing the old task.
 
 ### Automatic extraction happens on the NAS
 
-The extension's *Extract archives automatically* option only reveals the
-archive-password field. The extraction is Download Station's own, and it has two
-levels — which is what makes it easy to get wrong:
+The extension's *Enter archive password* option only reveals the
+archive-password field and hands that password to the NAS. The extraction is
+Download Station's own, and it has two levels — which is what makes it easy to
+get wrong:
 
 1. **The service**, enabled once for the whole NAS. Only an administrator can
    switch it on.
@@ -279,8 +284,8 @@ someone's NAS is not what an add-on that sends links should be doing.
 
 The archive password is a different matter. It travels with the task as
 `unzip_password`, and **Download Station keeps it**: the password turns up in its
-Password List afterwards and is tried on later archives. The extension itself
-stores nothing.
+Password List afterwards and is tried on later archives. The extension does not
+save the archive password in browser storage.
 
 ### Where credentials are stored
 
@@ -295,14 +300,15 @@ moments when nobody is there to type anything. Encrypting them would not help,
 because the key would live in the same profile, and Firefox gives extensions no
 access to its own password manager.
 
-Four things deliberately do **not** persist:
+The following temporary data is cleared automatically:
 
 | | Kept in | Gone when |
 |---|---|---|
 | Unsaved connection details | `storage.session` | Firefox closes |
 | An unsaved destination folder | `storage.session` | Firefox closes |
 | The pending link list | `storage.session` | Firefox closes |
-| The archive password | nowhere | the popup closes |
+| Connection diagnostic panel | `storage.session` | anything answers at that address again, or Firefox closes |
+| The archive password | memory only, for this popup and any submission still running | the popup closes and any submission in progress has finished |
 
 The drafts exist because Firefox closes the popup the moment you click anything
 outside it — reaching for a password manager's toolbar button included.
@@ -318,11 +324,11 @@ part this extension controls.
 
 Four mechanisms, at different points and for different reasons.
 
-**Ordinary requests.** With the disks parked the first request is refused
-outright, and it can be half a minute before the NAS answers. Rather than report
-that as a failure, a request times out after 8 seconds and is quietly repeated up
-to four times, ten seconds apart, showing nothing beyond "Connecting…" in the
-header. An answer that says *no* — wrong password, missing folder — is never
+**Ordinary requests.** With the disks parked the first request may be refused
+outright or simply left hanging, and it can be half a minute before the NAS
+answers at all. Rather than report that as a failure, a request times out after
+8 seconds and is quietly tried again — four attempts in total, ten seconds
+apart — showing nothing beyond "Connecting…" in the header. An answer that says *no* — wrong password, missing folder — is never
 repeated and appears at once.
 
 A sign-in carrying a two-factor code is the exception: one attempt, 25 seconds,
@@ -333,15 +339,15 @@ which DSM answers with "wrong code".
 **Before an add, a wake check.** A create gets a single attempt, so adding starts
 by knocking: a plain read with no session behind it, repeated in three-second
 gaps for up to a minute until the NAS answers, then a couple of seconds for
-Download Station to finish starting. Each knock costs almost nothing, because a
-sleeping NAS refuses at once rather than leaving the connection hanging, so the
-download starts within a few seconds of the NAS becoming reachable. One that
-never answers is reported as unreachable after about a minute, with every link
-left in the box.
+Download Station to finish starting. A probe may be refused immediately or time
+out after five seconds, so each knock costs little either way. One that never
+answers is reported as unreachable after about a minute, with every link left in
+the box.
 
-**Then the add itself.** One attempt, and by now the NAS is awake. The create
-gets 25 seconds plus a little more for each link in the batch — long enough for a
-Download Station that is busy rather than asleep.
+**Then the add itself.** One attempt, and by now the NAS should be awake. The
+create gets 25 seconds plus 300 milliseconds per link in the batch. That is
+sized for a Download Station that is busy rather than asleep; it is a budget,
+not a guarantee that the answer arrives inside it.
 
 **Afterwards, if the add went unanswered.** A browser network error cannot tell
 us whether the request reached the NAS, and a missing or unreadable response does
@@ -352,13 +358,23 @@ takes it, so the question is repeated every three seconds and dropped as soon as
 every link is accounted for. The lookup uses a 15-second budget. Waiting for an
 already-running sign-in or API discovery can extend the overall duration. A link
 that never appears is reported for what those answers show: the NAS answered and
-does not have it, so adding it failed and it can be sent again — or the NAS never
+the link was not in its task list, so it can be sent again — or the NAS never
 answered, so nothing could be established. Either way it waits in the list.
+If the NAS refuses the task-list request, for example because the account lacks
+permission, the lookup stops and shows that API error. Whether the add arrived
+remains unknown. For a right-click or a captured magnet link, the notification
+title says the download is unconfirmed and asks you to check Tasks; its body
+gives the reason the lookup failed. A successful task-list check replaces any
+earlier certificate error with the result of that check.
 
 ### No file upload
 
-A `.torrent` on your disk cannot be sent from here, and the button for it is
-gone. Two things stand in the way, and the second one decides it.
+Local `.torrent` and `.nzb` file uploads are not supported. Send a direct link
+instead so Download Station can fetch the file itself — through the right-click
+menu, or by pasting the link into the Links list.
+
+There used to be a button for it. Two things stand in its way, and the second
+one decides it.
 
 The file dialog takes the focus, so Firefox closes the popup — and the script
 that was to read the chosen file closes with it. Pressing the button did
@@ -405,12 +421,80 @@ stays open until DSM times it out.
 
 ### Why the broad permissions
 
-Two separate entries, for two different reasons. `host_permissions` is `*://*/*`
+Three entries, for three different reasons. `host_permissions` is `*://*/*`
 because the NAS address is whatever you type into the settings and cannot be
 narrowed at build time. The content script's `matches` is `<all_urls>`: it is
 loaded on every page, where it watches for clicks on `magnet:` links. With magnet
 capture off — the default — its listener returns immediately and nothing is
 intercepted.
+
+`webRequest`, new in 1.1.4, is there to name one failure properly. `fetch`
+rejects every network failure with the same opaque `TypeError`, so a certificate
+the browser refuses is indistinguishable from a NAS that is asleep; both were
+reported as *the NAS did not respond* and retried for thirty seconds, which could
+not change the answer. `webRequest.onErrorOccurred` is the only Firefox API that
+names the real reason. Two events are watched, and neither is used for anything
+else: `onErrorOccurred` for the reason, and `onBeforeRequest` for the request id
+alone — the id is what ties a reason to the request that met it, and it can only
+be learnt while the request is starting. Both listeners observe and never block;
+their patterns come from the addresses this extension requests itself; and an
+event counts only when it belongs to no tab, matches an address in flight right
+then, and — where Firefox names the page that triggered it — names this
+extension. That name is not always given, so its absence is no reason to discard
+the event; a tab always identifies itself, and the NAS interface open in a tab of
+your own is ignored on that alone.
+
+Firefox's explanation can arrive shortly after the request has failed. The
+extension waits up to half a second for it and continues as soon as it arrives.
+A request whose id is known is answered by that id or not at all; where no id
+was learnt, the address and the timing decide, and where two of this extension's
+requests to one address overlap, the general message stands rather than a guess.
+
+Two things are read as a certificate problem: the security-layer error names
+Firefox states symbolically (`SEC_ERROR_…`, `SSL_ERROR_…`, `MOZILLA_PKIX_ERROR_…`),
+and — over HTTPS only — an error given as a translated sentence rather than a
+symbolic name. The second uses the observed format of Firefox's error messages
+without matching translated wording; Mozilla documents `details.error` as
+internal and promises nothing about it between versions, so the classification
+may be imperfect if Firefox reports a different format. Anything not recognised
+keeps the general message.
+
+### Where a refused connection is explained
+
+A notification shows one line and cuts off the rest, which is exactly where the
+browser's own explanation used to disappear. So the notification says only that
+the secure connection failed and where to read the rest, and the whole of it —
+the address, Firefox's wording and what to check — stands above the connection
+fields in **Settings → Connection**, wraps rather than truncates, and can be
+selected and copied.
+
+It is kept there: closing and reopening the popup does not lose it, and the
+attempts that follow a refused certificate usually come back as a NAS that did
+not answer, which would otherwise take the one thing you can act on with them.
+Once that happens the panel says so — *last attempt: the NAS did not respond* —
+and names Firefox's wording as the last precise reason rather than as a fresh
+verdict. It goes as soon as anything answers at that address again, whatever the
+answer. Delayed processing of an earlier failure cannot bring that explanation
+back after a successful response.
+
+There is one of these, and it belongs to the address you have configured. A
+failure arriving from a NAS you have since switched away from is not recorded:
+it would take the place of the one about the NAS you are actually using, and
+that one would then be shown nowhere at all. Pressing **Test** or **Save and
+test connection** unfolds the section and puts it in front of you; a failure in
+the background leaves it to be found.
+
+### What leaves the browser
+
+Your DSM user name, password and two-factor code, and the links you hand over,
+are sent to the NAS you configured — and nowhere else. There is no telemetry, no
+analytics and no third-party endpoint, and nothing reaches the author. Mozilla
+counts a transmission of that kind as data collection, so `manifest.json`
+declares `authenticationInfo` for the credentials and `websiteContent` for the
+links — that category covers the text and links on a page, which is what a
+chosen link target is. The address of the page you are on, the referrer and your
+history are never part of it. That list of categories is fixed and has no way to
+say *only to your own NAS*, which is why it is said here.
 
 ---
 
@@ -429,9 +513,14 @@ popup/
   popup.js             Popup logic
   popup.css            Styles (CSS custom properties, Firefox panel look)
 icons/                 Extension icons
-fonts/                 Outfit (bundled, no external requests)
+fonts/                 Outfit (bundled, no external requests) and its OFL.txt
 tests/                 Regression tests (development only)
 ```
+
+The extension itself is under the Mozilla Public License 2.0 (`LICENSE`). The
+bundled Outfit webfont is not: it is © 2021 The Outfit Project Authors under the
+SIL Open Font License 1.1, whose full text ships beside it as `fonts/OFL.txt`.
+The OFL asks for exactly that whenever the font travels with something else.
 
 No build step: extension scripts ship as written. For AMO, package
 `manifest.json`, `actions.js`, `background.js`, `content.js`, `LICENSE`, and the

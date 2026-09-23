@@ -3,6 +3,97 @@
 All notable changes to this extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.4] — 2026-09-23
+
+### Added
+
+- Hint on an IP address under HTTPS that the certificate must match the entered
+  address, and that the host name the certificate covers is the one to use.
+- A refused certificate is now named as such instead of being reported as an
+  unreachable NAS, quoting the browser's own explanation of what does not match.
+  This uses the new `webRequest` permission, which Firefox grants without asking
+  and which is only ever consulted for this extension's own requests to the NAS.
+  Firefox's explanation can arrive shortly after the request has failed; the
+  extension waits up to half a second for it and continues as soon as it
+  arrives. Each reason is tied to the request that met it by the browser's own
+  request id. Where no id is given and two requests to one address overlap, the
+  general message stands.
+- The whole reason for a refused connection stands above the connection fields
+  in *Settings → Connection*: the address, the browser's wording and what to
+  check. It wraps instead of being cut off, can be selected and copied, is still
+  there after the popup has been closed and reopened, and goes as soon as
+  anything answers at that address again. Delayed processing of an earlier
+  failure cannot restore it after a successful response. The attempts that follow
+  a refusal usually come back as a NAS that did not answer; the panel says so and
+  keeps the browser's wording as the last precise reason rather than a fresh verdict.
+  *Test* and *Save and test connection* unfold the section and put it in front
+  of you. The notification stays short and points there — it shows one line and
+  cuts off the rest, which is exactly where the explanation used to disappear.
+  If a later task-list check answers, its result replaces the earlier certificate
+  error in the notification as well.
+
+### Fixed
+
+- Seeding torrents can be paused. They had no pause button, and *Pause all*
+  walked past them while the upload carried on.
+- Magnet links inside an embedded frame are captured. Only the top document was
+  reached before.
+- Magnet links in SVG graphics are sent as URLs; their clicks were intercepted
+  but the link target was passed as an object instead of a string.
+- IPv6 NAS addresses work with or without square brackets in the Host field.
+- API refusals during an add's confirmation check are reported with their
+  reason and stop the lookup. The add's outcome remains unconfirmed; a refused
+  task list is not evidence that the download failed. For a right-click or a
+  captured magnet link, the notification title states that uncertainty and
+  asks the user to check Tasks, while its body gives the reason.
+- *Retry* keeps the link when the NAS is changed after the old task has already
+  been removed. Both the task and the link were lost before.
+- *Retry* calls a task removed only when the NAS confirmed that very task. A
+  reply that accepted the request while refusing the deletion, or that named no
+  task at all, was reported as a removal when the NAS was switched in between.
+- *Retry* names the reason a secure connection was refused, alongside saying the
+  link has been kept.
+- After a failed connection test, *Retry* respects the block on automatic
+  sign-ins before waking the NAS or removing the old task.
+- A failure reported by the NAS you have since left no longer blocks the one you
+  switched to.
+- Late background failures from the previous NAS no longer count toward stopping
+  the new NAS's download watch.
+- After a successful sign-in, older sign-in failures no longer block the
+  connection — not even one that arrives while the connection test is still
+  running or whose stored result is read late. A failure landing late, after the
+  password had been corrected or a test had gone through, shut that working
+  session out of the popup, which then read *Connected* while *Refresh* sent
+  nothing at all.
+- A keepalive answer about a session that has since been replaced no longer
+  signs the new one out. A connection test that succeeded while the keepalive
+  was away left the extension reporting itself as not connected.
+- Keyboard focus stays on the same button when the task list refreshes, as long
+  as that button is still there, and the list is not scrolled back to it. Every
+  refresh rebuilt the list and the pager from scratch, and the focus went with
+  them — every few seconds, with nothing on screen to say where.
+- Switching the NAS while a download watch was finishing no longer signs the new
+  connection straight out again.
+- The badge keeps the newer count instead of being cleared by a slower
+  background check that answered late.
+- Pause, resume and delete name the reason a secure connection was refused,
+  alongside saying the result is unconfirmed.
+- The bundled Outfit webfont now ships with its licence. The font files carried
+  the copyright notice and a link, but the SIL Open Font License asks for the
+  text itself wherever the font travels; it is `fonts/OFL.txt`.
+
+### Changed
+
+- Certificate refusals that can be attributed to their request are reported at
+  once, with the browser's reason. The automatic retries for them are gone; they
+  were four attempts over thirty seconds that could not change the answer.
+- Wording and translations improved throughout, in all six languages.
+- The manifest now declares what is transmitted — authentication information for
+  the credentials, website content for the links you hand over — where it
+  previously declared `none`. Nothing has changed about where any of it goes: to
+  the NAS you configured and nowhere else, with no telemetry and no third party.
+  `none` was simply the wrong word for sending a password to anything at all.
+
 ## [1.1.3] — 2026-09-20
 
 ### Security
@@ -118,10 +209,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 - The keepalive skips its request when the same session reached the NAS within
   the last three minutes, also after the background page was unloaded.
 - Internal clean-up: unused code was removed and the active task statuses are
-  defined once. The task list is no longer redrawn or re-sorted when nothing it
-  shows has changed, drafts left by older versions are cleared once on update
-  instead of on every popup open, and links and files share one way of handing
-  an add to the background.
+  defined once. Changing unrelated settings no longer redraws the task list, and
+  changing pages reuses the prepared sort order. Drafts left by older versions
+  are cleared once on update instead of on every popup open, and links and files
+  share one way of handing an add to the background.
 - Added regression tests.
 
 ## [1.1.1] — 2026-09-02
@@ -283,6 +374,7 @@ same licence (MPL-2.0), with its own extension ID and version numbering.
 - Adaptive polling that stops on its own, and an optional session keepalive
   that is off by default so the NAS's disks can hibernate.
 
+[1.1.4]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.0...v1.1.1

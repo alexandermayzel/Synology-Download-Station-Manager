@@ -482,6 +482,27 @@ textarea.ta{resize:none;min-height:56px}
    gap — that leaves a dead strip under the buttons above it. */
 .hint.center:empty{display:none}
 
+/* The last connection failure, written out in full above the fields it is
+   about. A notification shows one line and cuts off the rest, and the browser's
+   own reason for refusing a certificate is regularly longer than that line.
+   Selectable on purpose: it is the kind of text people paste into a search, or
+   hand to whoever looks after the NAS. */
+.conn-problem{
+  display:flex;flex-direction:column;gap:3px;
+  border:1px solid var(--danger);border-radius:6px;
+  background:rgba(243,139,168,.08);padding:8px;
+  user-select:text;
+}
+.conn-problem-title{margin:0;font-size:12px;font-weight:600;color:var(--danger-text)}
+/* Wraps instead of truncating, and breaks a long unbroken address rather than
+   pushing the panel sideways. */
+.conn-problem-line{
+  margin:0;font-size:11px;line-height:1.5;color:var(--text);
+  overflow-wrap:anywhere;
+}
+/* Not every line is filled every time — an empty one must not leave a gap. */
+.conn-problem-line:empty{display:none}
+
 .checkline{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:var(--text)}
 
 /* Toggle switch. The real checkbox stays in the DOM and keeps the id, so it

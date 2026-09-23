@@ -2,12 +2,13 @@
   "htmlLang": { "message": "en", "description": "BCP 47 tag of this file's own language, used for the document's lang attribute. Not a translation: set it to this locale's own code." },
   "portInvalid": { "message": "The port has to be a whole number between 1 and 65535." },
   "protocolInsecure": { "message": "HTTP sends your password and session id unencrypted. Using HTTPS is recommended, so the data travels encrypted.", "description": "Shown under the protocol selector while HTTP is chosen." },
+  "hostIpCert": { "message": "With HTTPS the certificate has to match the address you entered. If your NAS certificate only covers a host name, use that name instead of the IP address.", "description": "Shown under the address while HTTPS is chosen and the host is a bare IP." },
   "extensionName": {
     "message": "Synology - Download Station Manager",
     "description": "Name of the extension."
   },
   "extensionDescription": {
-    "message": "Send links, magnet links and torrent links to Synology Download Station and manage your downloads right in Firefox – without DSM.",
+    "message": "Send links, magnet links and torrent links to Synology Download Station and manage your downloads right in Firefox – without opening DSM.",
     "description": "Short description shown in the add-ons manager."
   },
   "contextMenuTitle": {
@@ -32,6 +33,7 @@
   },
   "retryLinkKeptUnsent": { "message": "The NAS did not confirm the deletion, so nothing was added again. The link has been put back in the Links list — check the tasks on the NAS before adding it.", "description": "Retry where the delete went unconfirmed, so no replacement was created." },
   "retryLinkKeptUnknown": { "message": "The original task was removed. Whether the new one was created is unknown — check the task list before adding it again. The link has been put back in the Links list.", "description": "Retry where the delete succeeded but the answer to the new create never arrived." },
+  "retryLinkKeptSwitched": { "message": "The original task was removed. No new task was created, because the connection it belonged to has since been changed or ended. The link has been put back in the Links list.", "description": "Retry where the delete was carried out and the connection was changed, signed out of, or had its credentials replaced before a replacement could be created." },
   "actionResultUnknown": { "message": "The NAS did not confirm the result — check the task list before trying again.", "description": "A pause, resume or delete whose answer never arrived." },
   "retryOriginalFolder": {
     "message": "Original folder: $FOLDER$",
@@ -50,6 +52,13 @@
   },
   "connectionFailed": { "message": "Connection failed" },
   "errNasUnreachable": { "message": "The NAS did not respond. It may be asleep or unreachable." },
+  "errCertificate": { "message": "The secure connection to the NAS failed. Firefox reports: “$REASON$” Check the NAS address and the certificate.", "description": "Shown when the browser itself turned the request down over the certificate. $REASON$ is the browser's own wording, already translated, and is quoted rather than restated.", "placeholders": { "REASON": { "content": "$1", "example": "Requested domain name does not match the server's certificate." } } },
+  "connProblemSecure": { "message": "Secure connection failed", "description": "Heading of the connection panel in the popup when the browser itself turned the connection down." },
+  "connProblemAddress": { "message": "Address: $ADDRESS$", "description": "The address the failure happened at, scheme, host and port only.", "placeholders": { "ADDRESS": { "content": "$1", "example": "https://192.168.1.2:5001" } } },
+  "connProblemLastAttempt": { "message": "Last attempt: the NAS did not respond.", "description": "Shown when the most recent attempt was an ordinary network failure and the reason below it is kept from an earlier one." },
+  "connProblemReason": { "message": "Firefox reports: “$REASON$”", "description": "The browser's own wording, already translated, quoted rather than restated.", "placeholders": { "REASON": { "content": "$1", "example": "Requested domain name does not match the server's certificate." } } },
+  "connProblemEarlier": { "message": "On an earlier attempt Firefox reported: “$REASON$”", "description": "The same wording, named as older news so it does not read as a cause confirmed again just now.", "placeholders": { "REASON": { "content": "$1", "example": "Requested domain name does not match the server's certificate." } } },
+  "connProblemAdvice": { "message": "Check the NAS address and the certificate." },
   "extensionError": { "message": "Extension error" },
   "backgroundUnavailable": { "message": "Background unavailable" },
   "backgroundUnreachable": { "message": "Could not reach background." },
@@ -75,14 +84,14 @@
   "linksFailed": { "message": "$COUNT$ link(s) could not be added. They are still in the list.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ link(s) could not be added: $REASON$ They are still in the list.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
   "linkHasComma": { "message": "A link containing a comma cannot be sent: the NAS reads commas as the separator between links.", "description": "Shown for a link turned down before anything was sent, because the Download Station API would split it into two." },
-  "linksUncertain": { "message": "The NAS did not answer, so whether these $COUNT$ link(s) arrived is unknown. Check Tasks before trying again.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksUncertain": { "message": "Adding $COUNT$ link(s) was not confirmed. Check Tasks before adding them again.", "description": "The NAS may have answered without that answer being readable, so this says what was not confirmed rather than claiming it did not answer.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Finished" },
   "filterPaused": { "message": "Paused" },
   "refresh": { "message": "Refresh" },
   "pauseAll": { "message": "Pause all" },
   "resumeAll": { "message": "Resume all" },
-  "clearFinished": { "message": "Clear finished downloads" },
+  "clearFinished": { "message": "Remove completed tasks" },
   "deleteAll": { "message": "Delete all tasks" },
   "confirmDeleteAll": { "message": "Delete all tasks? Running downloads are cancelled and this cannot be undone." },
   "cancel": { "message": "Cancel" },
@@ -127,7 +136,7 @@
   "intervalManual": { "message": "Manual only" },
 
   "sortTasksBy": { "message": "Sort tasks by" },
-  "sortStatus": { "message": "By status" },
+  "sortStatus": { "message": "Status", "description": "One option of the \"Sort tasks by\" selector, which already says \"by\"." },
   "sortAdded": { "message": "Date added" },
   "sortName": { "message": "Name" },
   "sortProgress": { "message": "Progress" },
@@ -136,7 +145,7 @@
   "sortAscending": { "message": "Ascending" },
 
   "statusOrder": { "message": "Status order" },
-  "statusOrderHint": { "message": "Drag the handle or use the arrows. Top of the list appears first, so what's still running stays on page 1." },
+  "statusOrderHint": { "message": "Drag the handle or use the arrows. The status groups appear in the order set here.", "description": "Deliberately says nothing about page 1: with many tasks, or sorted another way, the first group need not fit on it." },
   "reset": { "message": "Reset" },
   "moveUp": { "message": "Move up" },
   "moveDown": { "message": "Move down" },
@@ -163,8 +172,8 @@
   "settingsDownloads": { "message": "Downloads" },
   "settingsNotifications": { "message": "Notifications" },
   "autoCaptureMagnets": { "message": "Auto-capture magnet links" },
-  "extractArchives": { "message": "Extract archives automatically" },
-  "extractArchivesHint": { "message": "Adds an archive-password field next to the link list. The extraction itself is the NAS's job: in DSM, under Download Station > Settings > Auto extract, tick Enable Auto extract for downloaded files. Every account sets that for itself, and it is off by default." },
+  "extractArchives": { "message": "Enter archive password" },
+  "extractArchivesHint": { "message": "Adds an archive-password field next to the link list. The extraction itself is the NAS's job: in DSM, open Download Station > Settings > Auto extract. There, tick \"Enable Auto extract for downloaded files\". Every account sets that for itself, and it is off by default." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -181,13 +190,13 @@
   "statusHostWaiting": { "message": "Waiting for host" },
   "keepaliveLabel": { "message": "Keep session alive in background" },
   "keepaliveHint": {
-    "message": "Pings the NAS every 3 minutes so the popup shows \"Connected\" instantly. Enabling might block HDD hibernation on the NAS when in idle."
+    "message": "Keeps an existing NAS session alive with regular background requests. This can stop the NAS hard drives from going to sleep."
   },
   "defaultDestination": { "message": "Default destination (optional)" },
   "destinationHint": {
     "message": "Path starting with the shared folder's name, no leading slash (e.g. \"downloads/series\", not \"/downloads/series\" or \"/volume1/downloads/series\"). Leave empty to use the default destination already configured on the NAS itself (DSM → Download Station → Settings → General)."
   },
-  "addNotListed": { "message": "The NAS answered but does not list the download, so it did not arrive.", "description": "Shown after a create went unanswered and the task list does not have the link. Files are matched by name and stay uncertain instead." },
+  "addNotListed": { "message": "The NAS answered, but the download was not found in its task list.", "description": "Shown after a create went unanswered and the task list, which did answer, does not have the link. Where nothing answered at all, addNasUnreachable says so instead." },
   "addNasUnreachable": { "message": "The NAS is not reachable, so whether the download arrived could not be checked." },
   "resetAll": { "message": "Reset all settings" },
   "appVersion": { "message": "Version $VERSION$", "description": "Extension version at the foot of the Settings tab.", "placeholders": { "VERSION": { "content": "$1", "example": "1.1.2" } } },
@@ -211,9 +220,11 @@
   "notifyPausedCount": { "message": "$COUNT$ paused",    "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Failed" },
   "notifyError": { "message": "Download Station — Error" },
+  "notifyAddUnconfirmed": { "message": "Download unconfirmed — check Tasks first", "description": "Notification title when an unanswered add cannot be checked. The body names the lookup failure; the title must retain the uncertain add outcome even if that body is truncated." },
+  "notifyCertificate": { "message": "The secure connection to the NAS failed. The reason is under Settings → Connection.", "description": "Notification body. Deliberately short: a notification shows one line and cuts off the rest, and the browser's own reason is regularly longer than that." },
   "notifyPartial": { "message": "Download Station — Partial failure" },
   "notifyWaking": { "message": "The connection to the NAS could not be made yet. Another attempt follows.", "description": "Shown while the NAS is being woken. Deliberately names no cause: a parked disk, a DNS failure and a 503 all end up here." },
-  "notifyUncertain": { "message": "The NAS did not answer. Whether the download arrived is unknown — check Tasks before adding it again." },
+  "notifyUncertain": { "message": "Adding was not confirmed. Check Tasks before adding the link again." },
   "notifyBulkUncertainCount": { "message": "$COUNT$ uncertain — check Tasks before adding them again.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "$COUNT$ link(s) added",

@@ -42,6 +42,26 @@ function event() {
     emit: (...args) => [...listeners].map(fn => fn(...args)) };
 }
 
+/**
+ * A match pattern as Firefox applies it — including what it cannot express.
+ *
+ * The host is compared against the hostname, so a pattern carrying a port
+ * matches nothing at all (bug 1362809). That is not a shortcut here: it is the
+ * trap itself, and a harness that waved filters through let a listener which
+ * could never fire look perfectly healthy.
+ */
+function matchPattern(pattern, url) {
+  const parts = /^(\*|https?):\/\/(\*|(?:\*\.)?[^/]+)(\/.*)$/.exec(pattern);
+  if (!parts) return false;
+  let target;
+  try { target = new URL(url); } catch { return false; }
+  const [, scheme, host, path] = parts;
+  if (scheme !== '*' && `${scheme}:` !== target.protocol) return false;
+  if (host !== '*' && host !== target.hostname) return false;
+  const escaped = path.split('*').map(bit => bit.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*');
+  return new RegExp(`^${escaped}$`).test(target.pathname + target.search);
+}
+
 function makeBrowser({ local = {}, session = {} } = {}) {
   const changes = event();
   const data = { local: { ...defaults, ...local }, session: { sid: 'old-sid', apiPaths: apis, ...session } };
@@ -76,10 +96,32 @@ function makeBrowser({ local = {}, session = {} } = {}) {
     },
     async clear() { await this.remove(Object.keys(data[name])); },
   });
-  const alarmCalls = [], activeAlarms = new Set(), notifications = [];
+  const alarmCalls = [], activeAlarms = new Set(), notifications = [], badges = [];
+  // The filter each registration asks for is kept, and applied: what this
+  // listener is allowed to see is the point of it, not an implementation
+  // detail, and an event that the real filter would never deliver must not
+  // reach the handler here either.
+  const errorFilters = [], startFilters = [];
+  const errorListeners = new Map(), startListeners = new Map();
+  const deliver = (listeners, details) => [...listeners]
+    .filter(([, filter]) => (filter?.urls ?? []).some(pattern => matchPattern(pattern, details.url)))
+    .map(([fn]) => fn(details));
+  const listening = (filters, listeners) => ({
+    addListener: (fn, filter) => { filters.push(filter); listeners.set(fn, filter); },
+    removeListener: fn => listeners.delete(fn),
+    emit: details => deliver(listeners, details),
+  });
+  const webRequest = {
+    onErrorOccurred: listening(errorFilters, errorListeners),
+    // Nothing is read from this one but the requestId, which is what ties a
+    // refusal to the request that met it. Filtered exactly like the other, so
+    // a test cannot bind an id through a filter the real one would not deliver.
+    onBeforeRequest: listening(startFilters, startListeners),
+  };
   const runtime = { onMessage: event(), onConnect: event(), onInstalled: event(), onStartup: event() };
   runtime.sendMessage = message => new Promise(resolve => runtime.onMessage.emit(message, {}, resolve));
   runtime.connect = port => { port.onDisconnect = event(); runtime.onConnect.emit(port); return port; };
+  runtime.getURL = path => `moz-extension://test-extension/${path}`;
   const browser = {
     storage: { local: area('local'), session: area('session'), onChanged: changes }, runtime,
     i18n: { getMessage: (key, subs = []) => key + (subs.length ? ':' + subs.join('|') : ''), getUILanguage: () => 'en' },
@@ -88,10 +130,14 @@ function makeBrowser({ local = {}, session = {} } = {}) {
       clear: async name => { activeAlarms.delete(name); alarmCalls.push({ name, created: false }); return true; },
       get: async name => (activeAlarms.has(name) ? { name } : undefined) },
     notifications: { create: async info => { notifications.push(info); return 'notification'; } },
-    action: { setBadgeText() {}, setBadgeBackgroundColor() {}, setBadgeTextColor() {}, async openPopup() {} },
+    // What the badge was told, in order: a stale answer overwriting a newer
+    // one is invisible unless the writes themselves are on record.
+    action: { setBadgeText: info => badges.push(info?.text), setBadgeBackgroundColor() {},
+      setBadgeTextColor() {}, async openPopup() {} },
     contextMenus: { onShown: event(), onClicked: event(), removeAll: fn => fn(), create() {}, update() {}, refresh() {} },
+    webRequest,
   };
-  return { browser, data, writes, alarmCalls, notifications };
+  return { browser, data, writes, alarmCalls, notifications, badges, errorFilters, startFilters, webRequest };
 }
 
 /**
@@ -108,6 +154,10 @@ function domStub() {
         toggle(x, on) { if (on) classes.add(x); else classes.delete(x); } },
       addEventListener(type, fn) { listeners[type] = fn; },
       setAttribute(key, value) { this.attributes[key] = value; },
+      // No tree is kept here — appendChild and replaceChildren are stubs — so
+      // nothing is ever inside anything else. Reflexive and no more, rather
+      // than a "yes" that would let a focus test pass without a focus.
+      contains(el) { return el === this; },
       querySelectorAll: () => [], querySelector: () => node(''),
       replaceChildren() {}, appendChild() {}, append() {}, focus() {}, select() {},
       // Enough of a <template> for renderTasks to stamp out task cards.
@@ -124,7 +174,7 @@ async function background(fetchImpl = success, storage = {}) {
   const requests = [];
   let now = 100000;
   class Clock extends Date { static now() { return now; } }
-  const context = vm.createContext({ browser: h.browser, URLSearchParams, FormData, Blob, Date: Clock,
+  const context = vm.createContext({ browser: h.browser, URL, URLSearchParams, FormData, Blob, Date: Clock,
     AbortSignal: { timeout: ms => ({ timeout: ms }) },
     setTimeout(fn, ms) { now += ms; queueMicrotask(fn); return 1; },
     async fetch(url, options = {}) {
@@ -137,7 +187,7 @@ async function background(fetchImpl = success, storage = {}) {
   vm.runInContext(scripts.actions + '\n' + scripts.background, context);
   const evaluate = code => vm.runInContext(code, context);
   await evaluate('stateReady');
-  const api = evaluate('({ apiFetch, apiAddTaskBatch, addBatchWithDetail, apiBulkTaskAction, apiRetryTask, apiLogout, recordForPopup, addDownloadTasksBulk })');
+  const api = evaluate('({ apiFetch, apiAddTaskBatch, addBatchWithDetail, apiBulkTaskAction, apiRetryTask, apiLogout, recordForPopup, readConnectionVersion, addDownloadTasksBulk })');
   // What the popup would have received with its task list, and sends back with every action on it.
   const connection = evaluate('connectionKey')(h.data.local);
   return { ...h, context, evaluate, api, requests, connection, send: message => h.browser.runtime.sendMessage(message) };
@@ -147,7 +197,7 @@ function popup(h = makeBrowser()) {
   const { nodes, document } = domStub();
   const timers = new Map();
   let timerId = 0;
-  const context = vm.createContext({ browser: h.browser, document, Date,
+  const context = vm.createContext({ browser: h.browser, document, Date, URL,
     setTimeout(fn) { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id),
     setInterval: () => ++timerId, clearInterval() {},
   });
@@ -155,7 +205,7 @@ function popup(h = makeBrowser()) {
   const source = scripts.popup.slice(0, scripts.popup.indexOf('(async function init() {'));
   vm.runInContext(scripts.actions + '\n' + source, context);
   const evaluate = code => vm.runInContext(code, context);
-  const api = evaluate('({ setAddBusy, syncAddControls, loadAddBusy, consumeLastAdd, applyAddOutcome, loadDraft, sortTasks, calcProgress, updateTotalSpeed, commitSettings, addBulkLinks })');
+  const api = evaluate('({ setAddBusy, syncAddControls, loadAddBusy, consumeLastAdd, applyAddOutcome, loadDraft, sortTasks, calcProgress, updateTotalSpeed, commitSettings, addBulkLinks, syncConnectionProblem })');
   return { ...h, context, evaluate, api, nodes, document, timers };
 }
 
@@ -772,6 +822,41 @@ test('a magnet link is recognised by its protocol and along the whole click path
   const plainLink = new Element({ href: 'https://example.test/x', protocol: 'https:' });
   assert.equal(click({ target: plainLink }).prevented, false);
   assert.equal(sent.length, 2);
+});
+
+test('HTML and SVG magnet anchors send the same string that was recognised', async () => {
+  const { sent, click, Element } = await page();
+  const cases = [
+    [{ href: 'magnet:?xt=urn:btih:lower', protocol: 'magnet:' }, 'magnet:?xt=urn:btih:lower'],
+    [{ href: 'MAGNET:?xt=urn:btih:UPPER', protocol: 'magnet:' }, 'MAGNET:?xt=urn:btih:UPPER'],
+    [{ href: { baseVal: 'magnet:?xt=urn:btih:old', animVal: 'magnet:?xt=urn:btih:current' },
+      getAttribute: () => 'magnet:?xt=urn:btih:old' }, 'magnet:?xt=urn:btih:current'],
+    [{ href: { baseVal: '  MAGNET:?xt=urn:btih:base  ' } }, 'MAGNET:?xt=urn:btih:base'],
+    [{ getAttribute: () => ' magnet:?xt=urn:btih:attribute ' }, 'magnet:?xt=urn:btih:attribute'],
+  ];
+  for (const [anchor, expected] of cases) {
+    assert.equal(click({ target: new Element(anchor) }).prevented, true);
+    assert.equal(sent.at(-1).url, expected);
+    assert.equal(typeof sent.at(-1).url, 'string');
+    assert.deepEqual(Object.keys(sent.at(-1)).sort(), ['action', 'url']);
+  }
+  assert.equal(sent.length, cases.length);
+});
+
+test('SVG capture follows the current target and retains the trusted-click guard', async () => {
+  const { sent, click, Element } = await page();
+  const currentHttp = new Element({
+    href: { baseVal: 'magnet:?xt=urn:btih:old', animVal: 'https://example.test/current' },
+    getAttribute: () => 'magnet:?xt=urn:btih:old',
+  });
+  assert.equal(click({ target: currentHttp }).prevented, false);
+  const magnet = new Element({ href: {
+    baseVal: 'magnet:?xt=urn:btih:base', animVal: 'magnet:?xt=urn:btih:current',
+  } });
+  assert.equal(click({ isTrusted: false, target: magnet }).prevented, false);
+  const unusable = new Element({ href: { baseVal: 42, animVal: {} } });
+  assert.equal(click({ target: unusable }).prevented, false);
+  assert.equal(sent.length, 0);
 });
 
 test('task actions only run against the connection their list came from', async () => {
@@ -2223,6 +2308,128 @@ test('a batch names what is uncertain, not only what was refused', async () => {
   assert.match(note, /notifyBulkUncertainCount:1/, note);
 });
 
+test('an answered lookup replaces the certificate reason of the unanswered create', async () => {
+  let h;
+  h = await background(async (url, options) => {
+    const method = options.body?.get('method');
+    if (method === 'create') {
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+      throw new TypeError('NetworkError');
+    }
+    return method === 'list' ? response({ success: true, data: { tasks: [] } }) : success();
+  });
+  const result = await h.send({ action: 'addTasksBulk', urls: ['https://download.example/a'] });
+  await until(() => h.notifications.length > 0);
+  assert.equal(result.deliveryUnknown, false);
+  assert.equal(result.errorMessage, 'addNotListed');
+  assert.equal(result.certificateReason, false);
+  assert.equal(h.data.session.connectionProblem, undefined);
+  assert.equal(h.notifications.at(-1).message, 'notifyBulkPartial:0|1|addNotListed');
+});
+
+test('a permanent lookup permission refusal is named once even with notifications off', async () => {
+  for (const enabled of [true, false]) for (const route of ['bulk', 'single']) {
+    let lists = 0, logins = 0;
+    const h = await background(async (_, options) => {
+      const method = options.body?.get('method');
+      if (method === 'create') throw new TypeError('lost create response');
+      if (method === 'list') { lists++; return response({ success: false, error: { code: 105 } }); }
+      if (method === 'login') { logins++; return response({ success: true, data: { sid: 'lookup-sid' } }); }
+      return success();
+    }, { local: { notificationsEnabled: enabled } });
+    const result = route === 'bulk'
+      ? await h.send({ action: 'addTasksBulk', urls: ['https://download.example/a'] })
+      : await h.evaluate("addDownloadTask('https://download.example/a')");
+    await until(() => h.notifications.length > 0);
+    assert.equal(logins, 1);
+    assert.equal(lists, 2);
+    assert.equal(result.deliveryUnknown, true);
+    assert.match(route === 'bulk' ? result.errorMessage : result.error.message, /err105/);
+    assert.match(h.notifications.at(-1).message, /err105/);
+    assert.equal(h.notifications.length, 1);
+    if (route === 'bulk') {
+      assert.equal(result.uncertain, 1);
+      assert.equal(result.namedReason, true);
+      assert.equal(result.blockConnection, false);
+      assert.equal(result.configError, true);
+      assert.match(h.notifications.at(-1).message, /notifyBulkUncertainCount:1/);
+      assert.deepEqual(plain(result.failedUrls), ['https://download.example/a']);
+    }
+  }
+});
+
+test('single-link notifications retain uncertainty when the confirmation lookup is refused', async () => {
+  for (const route of ['magnet', 'contextMenu']) for (const refusal of ['permission', 'api', 'login', 'certificate']) {
+    let h;
+    h = await background(async (url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'create') throw new TypeError('Create response lost');
+      if (method === 'list') {
+        if (refusal === 'certificate') {
+          h.webRequest.onErrorOccurred.emit({ error: 'SSL_ERROR_BAD_CERT_DOMAIN',
+            type: 'xmlhttprequest', tabId: -1, url,
+            originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+          throw new TypeError('NetworkError');
+        }
+        return response({ success: false, error: {
+          code: refusal === 'permission' ? 105 : refusal === 'login' ? 119 : 101,
+        } });
+      }
+      if (method === 'login') return refusal === 'login'
+        ? response({ success: false, error: { code: 400 } })
+        : response({ success: true, data: { sid: 'lookup-sid' } });
+      return success();
+    });
+    const url = 'magnet:?xt=urn:btih:example';
+    if (route === 'magnet') {
+      const result = await h.send({ action: 'magnetClicked', url });
+      assert.equal(result.deliveryUnknown, true);
+    } else {
+      h.browser.contextMenus.onClicked.emit({ linkUrl: url });
+    }
+    await until(() => h.notifications.length > 0 && h.evaluate('addsPending') === 0);
+    const note = h.notifications.at(-1);
+    assert.equal(note.title, 'notifyAddUnconfirmed', `${route}: ${refusal}`);
+    assert.match(note.message, refusal === 'certificate' ? /^notifyCertificate$/
+      : refusal === 'login' ? /errLoginFailed/ : refusal === 'permission' ? /err105/ : /err101/);
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1);
+  }
+});
+
+test('a general lookup API refusal shows its reason without blocking the popup or overriding notification settings', async () => {
+  for (const route of ['bulk', 'single']) {
+    let lists = 0;
+    const h = await background(async (_, options) => {
+      const method = options.body?.get('method');
+      if (method === 'create') throw new TypeError('lost create response');
+      if (method === 'list') { lists++; return response({ success: false, error: { code: 101 } }); }
+      return success();
+    }, { local: { notificationsEnabled: false } });
+    const result = route === 'bulk'
+      ? await h.api.addDownloadTasksBulk(['https://download.example/a'], '')
+      : await h.evaluate("addDownloadTask('https://download.example/a')");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(lists, 1);
+    assert.equal(result.deliveryUnknown, true);
+    assert.match(route === 'bulk' ? result.errorMessage : result.error.message, /err101/);
+    assert.equal(h.notifications.length, 0);
+    if (route === 'bulk') {
+      assert.equal(result.namedReason, true);
+      assert.equal(result.blockConnection, false);
+      assert.equal(result.configError, false);
+      await h.api.recordForPopup(result, h.connection, await h.api.readConnectionVersion());
+      const p = popup(h);
+      p.context.savedConnection = defaults;
+      p.evaluate('settings = { ...settings, ...savedConnection };');
+      await p.api.consumeLastAdd();
+      assert.match(p.evaluate('linksMessageEl.textContent'), /err101/);
+      assert.match(p.evaluate('linksMessageEl.textContent'), /linksUncertain:1/);
+      assert.equal(p.evaluate('connectBlocked'), false);
+    }
+  }
+});
+
 test('a refused sign-in during the lookup is still named when nothing was refused', async () => {
   const h = await background(async (_, options) => {
     const method = options.body?.get('method');
@@ -2253,11 +2460,17 @@ test('a sign-in refused during the lookup reaches the open popup as well', async
   });
 
   // The whole chain, not a hand-built result: the add records itself for the
-  // popup, and the popup takes it the way it would on its own.
+  // popup, and the popup takes it the way it would on its own. The connection
+  // and its version travel with it, as the message handler sends them — this
+  // outcome is about the NAS still configured and the password still in use, so
+  // it is this one's to act on.
   await h.api.recordForPopup(
-    await h.api.addDownloadTasksBulk(['https://download.example/a'], ''));
+    await h.api.addDownloadTasksBulk(['https://download.example/a'], ''),
+    h.connection, await h.api.readConnectionVersion());
 
   const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate('settings = { ...settings, ...savedConnection };');
   const callbacks = [];
   p.context.setInterval = (fn) => { callbacks.push(fn); return fn; };
   p.context.clearInterval = () => {};
@@ -2625,6 +2838,29 @@ test('choosing HTTP says what it costs, and HTTPS takes the warning away', () =>
   assert.equal(p.nodes.get('protocolWarning').hidden, true);
 });
 
+test('HTTPS to a bare IP says so before anything is sent', () => {
+  const p = popup();
+  const warn = (protocol, host) => {
+    p.nodes.get('protocol').value = protocol;
+    p.nodes.get('host').value = host;
+    p.evaluate('syncProtocolWarning()');
+    return !p.nodes.get('certWarning').hidden;
+  };
+
+  // A NAS certificate usually covers a name only. Over HTTPS the browser then
+  // turns this down before the NAS is asked, and the refusal used to read as
+  // "not reachable" after four sign-in attempts and thirty seconds.
+  assert.equal(warn('https', '192.168.1.2'), true);
+  assert.equal(warn('https', '[fd00::1]'), true, 'IPv6 is the same case');
+  // A name takes it away again.
+  assert.equal(warn('https', 'nas.example.com'), false);
+  // And it is about HTTPS alone: without TLS no certificate is involved.
+  assert.equal(warn('http', '192.168.1.2'), false);
+  // The two warnings answer different questions and do not stand in for each
+  // other — HTTP is what the second one is about.
+  assert.equal(p.nodes.get('protocolWarning').hidden, false);
+});
+
 test('an unsaved HTTP choice still carries its warning after reopening', async () => {
   const h = makeBrowser();
   // Chosen, not saved, popup closed — the draft is all that is left of it.
@@ -2634,6 +2870,1749 @@ test('an unsaved HTTP choice still carries its warning after reopening', async (
   await p.evaluate('loadConnDraft()');
   assert.equal(p.nodes.get('protocol').value, 'http');
   assert.equal(p.nodes.get('protocolWarning').hidden, false);
+});
+
+test('a restored address decides the certificate hint, not the one it replaced', async () => {
+  // The form as applySettingsToForm leaves it — the *saved* connection — and
+  // then the draft on top of it. Both warnings read protocol and address
+  // together, so asking while only half the draft has landed answers about a
+  // connection that exists nowhere.
+  const restore = async (saved, connDraft) => {
+    const h = makeBrowser();
+    await h.browser.storage.session.set({ connDraft });
+    const p = popup(h);
+    for (const [id, value] of Object.entries(saved)) p.nodes.get(id).value = value;
+    p.evaluate('syncProtocolWarning()');
+    await p.evaluate('loadConnDraft()');
+    return !p.nodes.get('certWarning').hidden;
+  };
+
+  // Saved under a name, half-typed into an IP: the hint belongs to the IP.
+  assert.equal(await restore({ protocol: 'https', host: 'nas.example.com' },
+    { protocol: 'https', host: '192.168.1.2' }), true);
+  // And the other way round it has to go again.
+  assert.equal(await restore({ protocol: 'https', host: '192.168.1.2' },
+    { protocol: 'https', host: 'nas.example.com' }), false);
+});
+
+test('the browser reason for a refused request is recorded, and only for this NAS', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/auth.cgi`;
+  let h, afterForeign;
+  // Raised while the request is genuinely in flight — afterwards there is
+  // nothing for a refusal to belong to, and it is dropped on purpose.
+  h = await background(async () => {
+    // Another service on the same machine: through the filter, which cannot
+    // express a port, but not ours.
+    h.webRequest.onErrorOccurred.emit({ error: 'SEC_ERROR_UNKNOWN_ISSUER', type: 'xmlhttprequest', tabId: -1,
+      url: `https://${defaults.host}:9999/something-else` });
+    // Nor the NAS's own web interface, open in a tab and failing against the
+    // very same certificate. Adopting that would put a message on screen about
+    // a request nobody here made.
+    h.webRequest.onErrorOccurred.emit({ error: 'SEC_ERROR_UNKNOWN_ISSUER', type: 'xmlhttprequest', tabId: 7,
+      url: `https://${defaults.host}:${defaults.port}/webman/index.cgi` });
+    afterForeign = h.data.session.lastTransportError;
+
+    h.webRequest.onErrorOccurred.emit({ error: 'SEC_ERROR_EXPIRED_CERTIFICATE', type: 'xmlhttprequest', tabId: -1,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html'),
+      url: `${endpoint}?_sid=secret-session-id` });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+  await h.api.apiFetch(endpoint, {}, { repeatable: false }).catch(() => {});
+
+  // Scoped to the host being talked to. Watching every address would hand the
+  // extension other sites' failures, which is none of its business.
+  //
+  // Without the port: Firefox match patterns cannot express one, and a pattern
+  // carrying it is accepted and then matches nothing — a listener that can
+  // never fire, which is exactly what it looks like when nothing is wrong.
+  assert.deepEqual(plain(h.errorFilters), [{ urls: [`https://${defaults.host}/*`] }]);
+  assert.deepEqual(plain(h.data.session.transportWatch.patterns), [`https://${defaults.host}/*`]);
+  assert.equal(afterForeign, undefined, 'neither of those is ours');
+
+  const seen = h.data.session.lastTransportError;
+  assert.equal(seen.error, 'SEC_ERROR_EXPIRED_CERTIFICATE');
+  assert.equal(seen.type, 'xmlhttprequest');
+  // Filed under the endpoint alone: a query string is not part of the address
+  // the in-flight bookkeeping is keyed on.
+  assert.equal(seen.url, endpoint);
+});
+
+// Measured against Firefox 156: the security layer answers in prose, already
+// translated, where an ordinary network failure gives a symbolic name. Matching
+// SSL_ERROR_BAD_CERT_DOMAIN — the obvious thing to write — would have matched
+// nothing at all, and every test of it would still have passed.
+const CERT_PROSE = 'Sichere Kommunikation mit der Gegenstelle ist nicht möglich: '
+  + 'Angeforderter Domainname stimmt nicht mit dem Zertifikat des Servers überein.';
+
+/** A NAS that fails at the handshake, with the browser raising `error` as it does. */
+function refusing(error, { tabId = -1 } = {}) {
+  let h;
+  const made = async (url) => {
+    h.webRequest.onErrorOccurred.emit({ error, type: 'xmlhttprequest', tabId, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  };
+  return background(made).then(ready => (h = ready));
+}
+
+test('a refused certificate is said in the browser\'s own words, once', async () => {
+  const h = await refusing(CERT_PROSE);
+  const err = await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  // Quoted, not restated: Mozilla promises nothing about this wording, so the
+  // extension frames it rather than claiming it as its own diagnosis.
+  assert.equal(err.message, `errCertificate:${CERT_PROSE}`);
+  assert.equal(err.certificateError, true);
+  // No repeating: this connection was answered and turned down, so waiting for
+  // a NAS to wake is no remedy. That is what `nasUnreachable` would have
+  // earned it.
+  assert.equal(err.nasUnreachable, undefined);
+  // But saying what was refused and saying nothing was sent are two different
+  // claims. A handshake failing before any application data goes out sends
+  // nothing — the security layer also speaks after a request has gone, and the
+  // two cannot be told apart from here. So the delivery stays uncertain, and
+  // an add that may have landed is still reconciled against the task list.
+  assert.equal(err.deliveryUnknown, true);
+  assert.equal(h.requests.length, 1, 'thirty seconds of retries against a wall');
+});
+
+test('two requests to one endpoint never take each other\'s verdict', async () => {
+  // create and list share an endpoint and are regularly in flight together. An
+  // address and a time cannot say which refusal belongs to which, and guessing
+  // would hand one request's verdict — and its certainty — to the other.
+  //
+  // Nothing identifies these two: the browser reports no start for either, so
+  // neither learns a requestId. That is the case this pins. Where ids do
+  // arrive, both are answered by name — see the test below.
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/DownloadStation/task.cgi`;
+  const held = deferred();
+  let h;
+  // Only one of the two fails at the certificate; the other simply gets no
+  // answer. So a claim made here is demonstrably the wrong request's.
+  h = await background(async (url, options) => {
+    if (options?.body?.get?.('method') === 'create') await held.promise;
+    else {
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    }
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const creating = h.api.apiFetch(endpoint, { method: 'POST', body: new URLSearchParams({ method: 'create' }) },
+    { repeatable: false }).then(() => null, caught => caught);
+  const listing = h.api.apiFetch(endpoint, {}, { repeatable: false }).then(() => null, caught => caught);
+  await until(() => h.requests.length === 2);
+  held.resolve();
+
+  // Neither may claim the verdict while the other stood beside it — taking the
+  // refusal out of the list stops it serving twice, but does not make the one
+  // use correct. The general answer is the honest one here.
+  for (const err of [await creating, await listing]) {
+    assert.equal(err.certificateError, undefined, 'a verdict that cannot be attributed is not claimed');
+    assert.equal(err.deliveryUnknown, true, 'an add that may have landed stays uncertain');
+  }
+});
+
+test('two identified requests to one endpoint each get their own answer', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/DownloadStation/task.cgi`;
+  const held = deferred();
+  let h, calls = 0;
+  // The same pair as above, and this time Firefox says which is which. One meets
+  // the certificate, the other simply gets no answer — so a verdict handed to
+  // the wrong one would be plain to see.
+  h = await background(async (url, options) => {
+    const about = { type: 'xmlhttprequest', tabId: -1, url, requestId: `req-${++calls}`,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    h.webRequest.onBeforeRequest.emit(about);
+    if (options?.body?.get?.('method') === 'create') {
+      await held.promise;
+      h.webRequest.onErrorOccurred.emit({ ...about, error: 'NS_ERROR_NET_TIMEOUT' });
+    } else {
+      h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE });
+    }
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const creating = h.api.apiFetch(endpoint, { method: 'POST', body: new URLSearchParams({ method: 'create' }) },
+    { repeatable: false }).then(() => null, caught => caught);
+  const listing = h.api.apiFetch(endpoint, {}, { repeatable: false }).then(() => null, caught => caught);
+  await until(() => h.requests.length === 2);
+  held.resolve();
+
+  // Neither has to give up its reason for the other's sake any more.
+  assert.equal((await listing).certificateError, true);
+  assert.equal((await creating).certificateError, undefined);
+  assert.equal((await creating).nasUnreachable, true);
+});
+
+/**
+ * The browser's reason arriving *after* the request it belongs to has failed.
+ *
+ * Firefox raises the two independently, and this is the order actually
+ * measured against it. Every certificate test above hands the reason over
+ * before the fetch rejects, so none of them reproduced it — and a build that
+ * waited a single turn for it, and then reported an unreachable NAS on every
+ * attempt after the first, passed all of them.
+ *
+ * `turns` is counted in microtasks, so the harness has an order rather than a
+ * clock to go by. Eight is well past the one yield the old build allowed and
+ * well inside the budget the new one keeps.
+ */
+function refusingLate(error, { turns = 8, requestId = 'req-1' } = {}) {
+  let h;
+  const made = async (url) => {
+    const about = { type: 'xmlhttprequest', tabId: -1, url, requestId,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    h.webRequest.onBeforeRequest.emit(about);
+    let left = turns;
+    const later = () => {
+      if (--left > 0) { queueMicrotask(later); return; }
+      h.webRequest.onErrorOccurred.emit({ ...about, error });
+    };
+    queueMicrotask(later);
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  };
+  return background(made).then(ready => (h = ready));
+}
+
+test('a refusal that arrives after its request has failed is still named', async () => {
+  const h = await refusingLate(CERT_PROSE);
+
+  const err = await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  assert.equal(err.message, `errCertificate:${CERT_PROSE}`);
+  assert.equal(err.certificateError, true);
+  // Both events go through the same filter as the other: an id learnt through
+  // a filter the real one would never deliver would be worth nothing.
+  assert.deepEqual(plain(h.startFilters), [{ urls: [`https://${defaults.host}/*`] }]);
+  assert.equal(h.requests.length, 1, 'answered and turned down — repeating changes nothing');
+});
+
+test('a refusal arriving after its request is not pinned on the next one', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/auth.cgi`;
+  const retried = deferred();
+  let h, calls = 0;
+  h = await background(async (url) => {
+    const about = { type: 'xmlhttprequest', tabId: -1, url, requestId: `req-${++calls}`,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    h.webRequest.onBeforeRequest.emit(about);
+    // The first request's reason, held back until the retry is out. By then the
+    // retry is the only thing at this address and the time is its own, so
+    // nothing but the id says whose reason this is.
+    if (calls === 1) retried.promise.then(() => h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE }));
+    else retried.resolve();
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const err = await h.api.apiFetch(endpoint, {}).then(() => null, caught => caught);
+
+  // Losing a message is an inconvenience; pinning one on the wrong request is a
+  // wrong answer. The retry says what it can stand behind.
+  assert.equal(err.message, 'errNasUnreachable');
+  assert.equal(err.certificateError, undefined);
+  assert.equal(h.requests.length, 4, 'a NAS that never answered is still worth waiting for');
+  // Seen and written down all the same — dropped by nobody, claimed by nobody.
+  assert.equal(h.data.session.lastTransportError.error, CERT_PROSE);
+});
+
+test('a start the browser does not identify leaves the old route open', async () => {
+  let h;
+  // The start carries no id; the refusal does. Treating the missing one as an
+  // identity would mark the attempt identified — and so deaf to the address as
+  // well — while the reason it is waiting for is filed under an id it never
+  // learnt. Worse than never having been identified at all.
+  h = await background(async (url) => {
+    const about = { type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    h.webRequest.onBeforeRequest.emit(about);
+    h.webRequest.onErrorOccurred.emit({ ...about, requestId: 'req-1', error: CERT_PROSE });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const err = await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  assert.equal(err.message, `errCertificate:${CERT_PROSE}`);
+});
+
+test('a request that is over does not stand in the way of the next one', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/auth.cgi`;
+  let h, calls = 0;
+  h = await background(async (url) => {
+    // The first request fails with the browser saying nothing at all, so it
+    // never learns an id of its own and is given up on unexplained.
+    if (++calls === 1) throw new TypeError('NetworkError when attempting to fetch resource.');
+    const about = { type: 'xmlhttprequest', tabId: -1, url, requestId: 'req-2',
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    h.webRequest.onBeforeRequest.emit(about);
+    h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  await h.api.apiFetch(endpoint, {}, { repeatable: false }).catch(() => {});
+  const err = await h.api.apiFetch(endpoint, {}, { repeatable: false })
+    .then(() => null, caught => caught);
+
+  // The second request's id has to reach the second request. Left on the
+  // books, the first would still be the oldest thing waiting for an id at this
+  // address and would take it — and with it the reason, which would then be
+  // delivered to a request nobody is listening for any more.
+  assert.equal(err.message, `errCertificate:${CERT_PROSE}`);
+});
+
+test('the reason for a refusal outlives the attempts that follow it', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/auth.cgi`;
+  const origin = `https://${defaults.host}:${defaults.port}`;
+  let h, mode = 'refused';
+  h = await background(async (url) => {
+    if (mode === 'answers') return success();
+    if (mode === 'refused') {
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    }
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  await h.api.apiFetch(endpoint, {}, { repeatable: false }).catch(() => {});
+  const refused = plain(h.data.session.connectionProblem);
+  assert.equal(refused.origin, origin);
+  assert.equal(refused.certificate, true);
+  assert.equal(refused.reason, CERT_PROSE);
+
+  // What the user actually meets next: the attempts after a refused
+  // certificate come back as a NAS that simply did not answer. The reason has
+  // to survive that, or the one thing to act on is gone by the time anyone
+  // looks — but it is no longer this attempt's verdict, and is not filed as one.
+  mode = 'silent';
+  await h.api.apiFetch(endpoint, {}, { repeatable: false }).catch(() => {});
+  const kept = plain(h.data.session.connectionProblem);
+  assert.equal(kept.certificate, false);
+  assert.equal(kept.reason, CERT_PROSE);
+
+  // Something answered, so the handshake is good now — whatever the answer was.
+  mode = 'answers';
+  await h.api.apiFetch(endpoint, {});
+  assert.equal(h.data.session.connectionProblem, undefined);
+});
+
+test('a NAS that simply does not answer leaves no panel behind', async () => {
+  const h = await background(async () => { throw new TypeError('NetworkError when attempting to fetch resource.'); });
+  await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {}, { repeatable: false })
+    .catch(() => {});
+  // The general message already says this much. A panel repeating it would be
+  // noise, and would put a red box in front of every sleeping NAS.
+  assert.equal(h.data.session.connectionProblem, undefined);
+});
+
+test('a reason from a finished request is not taken by the one still waiting', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/auth.cgi`;
+  const retried = deferred();
+  let h, calls = 0;
+  h = await background(async (url) => {
+    const about = { type: 'xmlhttprequest', tabId: -1, url, requestId: 'req-1',
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    if (++calls === 1) {
+      // Identified, then given up on without a word — and only afterwards does
+      // its reason arrive.
+      h.webRequest.onBeforeRequest.emit(about);
+      retried.promise.then(() => h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE }));
+    } else {
+      // The retry, whose own start Firefox has not reported yet: it still goes
+      // by address, and the address is the same one.
+      retried.resolve();
+    }
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const err = await h.api.apiFetch(endpoint, {}).then(() => null, caught => caught);
+
+  // An id known to be finished with keeps its reason out of the shared list
+  // altogether. Left there, the retry would have adopted it — and with it a
+  // verdict that costs it the very repeats a sleeping NAS needs.
+  assert.equal(err.certificateError, undefined);
+  assert.equal(err.message, 'errNasUnreachable');
+  assert.equal(h.requests.length, 4);
+  assert.equal(h.data.session.connectionProblem, undefined, 'and nothing is filed about it');
+});
+
+test('a request that learns its id late still recognises its own reason', async () => {
+  let h;
+  h = await background(async (url) => {
+    const about = { type: 'xmlhttprequest', tabId: -1, url, requestId: 'req-1',
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+    // The refusal arrives while nothing here knows the id yet, so it goes to
+    // the shared list; the start follows. The order of the two deliveries is
+    // the browser's, not ours, and an attempt that is handed its id afterwards
+    // must still be able to name its own reason.
+    h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE });
+    queueMicrotask(() => h.webRequest.onBeforeRequest.emit(about));
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const err = await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  assert.equal(err.message, `errCertificate:${CERT_PROSE}`);
+});
+
+test('a reason from the NAS switched away from does not displace the current one', async () => {
+  const held = deferred();
+  let h;
+  h = await background(async (url) => {
+    // The NAS being left is still out, and answers last — with a refusal of
+    // its own.
+    if (url.startsWith(`https://${defaults.host}`)) await held.promise;
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const leaving = h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {},
+    { repeatable: false }).catch(() => {});
+  await until(() => h.requests.length === 1);
+  await h.browser.storage.local.set({ host: 'new-nas.example' });
+  await h.api.apiFetch('https://new-nas.example:5001/webapi/auth.cgi', {}, { repeatable: false })
+    .catch(() => {});
+  const current = plain(h.data.session.connectionProblem);
+  held.resolve();
+  await leaving;
+
+  // One record, and it belongs to the address in use. The other NAS's reason is
+  // about an address nobody is looking at any more: written there, the popup
+  // would have shown nothing at all.
+  assert.equal(current.origin, 'https://new-nas.example:5001');
+  assert.deepEqual(plain(h.data.session.connectionProblem), current);
+});
+
+test('a connection switch during the first diagnosis read preserves the new NAS record and cache', async () => {
+  const held = deferred();
+  let h, reading = false, answers = false;
+  h = await background(async url => {
+    if (answers) return success();
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  }, { session: { sid: null, apiPaths: null } });
+
+  const session = h.browser.storage.session;
+  const read = session.get.bind(session);
+  session.get = async keys => {
+    const snapshot = await read(keys);
+    if (!reading && keys && 'connectionProblem' in keys) {
+      reading = true;
+      await held.promise;
+    }
+    return snapshot;
+  };
+
+  // A has passed its address check and is still loading an empty diagnosis.
+  const leaving = h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {},
+    { repeatable: false }).catch(() => {});
+  await until(() => reading);
+  await h.evaluate('updateSettings({ connection: { host: "new-nas.example" } })');
+  const endpoint = 'https://new-nas.example:5001/webapi/auth.cgi';
+  await h.api.apiFetch(endpoint, {}, { repeatable: false }).catch(() => {});
+  const current = plain(h.data.session.connectionProblem);
+  assert.equal(current.origin, 'https://new-nas.example:5001');
+
+  held.resolve();
+  await leaving;
+  assert.deepEqual(plain(h.data.session.connectionProblem), current);
+
+  // A stale initial read must not silently replace B's in-memory record either:
+  // the next successful response needs that record to clear the visible panel.
+  answers = true;
+  await (await h.api.apiFetch(endpoint, {})).json();
+  assert.equal(h.data.session.connectionProblem, undefined);
+});
+
+test('a delayed diagnosis cannot restore a certificate panel after a newer connection test succeeds', async () => {
+  const held = deferred();
+  let h, failedFetch = false, holding = false;
+  h = await background(async (url, options) => {
+    if (options.body?.get('method') === 'list') {
+      failedFetch = true;
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+      throw new TypeError('NetworkError');
+    }
+    return response({ success: true, data: { sid: 'working-new-sid' } });
+  });
+  const read = h.browser.storage.local.get.bind(h.browser.storage.local);
+  h.browser.storage.local.get = async keys => {
+    const snapshot = await read(keys);
+    if (failedFetch && !holding) {
+      holding = true;
+      await held.promise;
+    }
+    return snapshot;
+  };
+  const listing = h.send({ action: 'listTasks' });
+  await until(() => holding);
+  assert.equal((await h.send({ action: 'testConnection' })).success, true);
+  assert.equal(h.data.session.connectionProblem, undefined);
+  held.resolve();
+  assert.equal((await listing).success, false);
+  assert.equal(h.data.session.sid, 'working-new-sid');
+  assert.equal(h.data.session.connectionProblem, undefined);
+
+  // A genuinely later failure must still be shown for this same address.
+  assert.equal((await h.send({ action: 'listTasks' })).success, false);
+  assert.equal(h.data.session.connectionProblem.reason, CERT_PROSE);
+});
+
+test('an older successful response cannot clear a newer diagnosis after a delayed storage read', async () => {
+  const held = deferred();
+  let h, holding = false, refuse = false;
+  const origin = `https://${defaults.host}:${defaults.port}`;
+  const endpoint = `${origin}/webapi/auth.cgi`;
+  h = await background(async url => {
+    if (!refuse) return success();
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError');
+  }, { session: { connectionProblem: { origin, certificate: true, reason: 'older reason', at: 1 } } });
+  const read = h.browser.storage.session.get.bind(h.browser.storage.session);
+  h.browser.storage.session.get = async keys => {
+    const snapshot = await read(keys);
+    if (!holding && keys && 'connectionProblem' in keys) {
+      holding = true;
+      await held.promise;
+    }
+    return snapshot;
+  };
+  const answering = h.api.apiFetch(endpoint, {}).then(resp => resp.json());
+  await until(() => holding);
+  refuse = true;
+  await assert.rejects(h.api.apiFetch(`${origin}/webapi/query.cgi`, {}, { repeatable: false }),
+    err => err.certificateError === true);
+  const latest = plain(h.data.session.connectionProblem);
+  held.resolve();
+  await answering;
+  assert.equal(latest.reason, CERT_PROSE);
+  assert.deepEqual(plain(h.data.session.connectionProblem), latest);
+});
+
+test('diagnosis writes cannot finish after a newer clear', async () => {
+  const base = `https://${defaults.host}:${defaults.port}/webapi/`;
+  const held = deferred();
+  let h, writing = false;
+  h = await background(async url => {
+    if (!url.endsWith('refused.cgi')) return success();
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError');
+  });
+  const set = h.browser.storage.session.set.bind(h.browser.storage.session);
+  h.browser.storage.session.set = async values => {
+    if (!writing && values.connectionProblem) { writing = true; await held.promise; }
+    return set(values);
+  };
+  const older = h.api.apiFetch(`${base}refused.cgi`, {}, { repeatable: false }).catch(err => err);
+  await until(() => writing);
+  const newer = h.api.apiFetch(`${base}answered.cgi`, {}).then(resp => resp.json());
+  await until(() => h.evaluate('connectionProblem === null'));
+  held.resolve();
+  await Promise.all([older, newer]);
+  assert.equal(h.data.session.connectionProblem, undefined);
+  assert.equal(h.evaluate('connectionProblem'), null);
+});
+
+test('a later result that leaves the diagnosis unchanged cannot cancel a queued clear', async () => {
+  for (const following of ['answered-again.cgi', 'unreachable.cgi']) {
+    const base = `https://${defaults.host}:${defaults.port}/webapi/`;
+    const held = deferred();
+    let h, writing = false;
+    h = await background(async url => {
+      if (url.endsWith('refused.cgi')) {
+        h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+          originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+        throw new TypeError('NetworkError');
+      }
+      if (url.endsWith('unreachable.cgi')) throw new TypeError('NetworkError');
+      return success();
+    });
+    const set = h.browser.storage.session.set.bind(h.browser.storage.session);
+    h.browser.storage.session.set = async values => {
+      if (!writing && values.connectionProblem) { writing = true; await held.promise; }
+      return set(values);
+    };
+    const older = h.api.apiFetch(`${base}refused.cgi`, {}, { repeatable: false }).catch(err => err);
+    await until(() => writing);
+    const cleared = h.api.apiFetch(`${base}answered.cgi`, {}).then(resp => resp.json());
+    await until(() => h.evaluate('connectionProblem === null'));
+    // This result changes no panel state, but used to invalidate the queued
+    // removal that still had to make the persisted state match the cache.
+    await h.api.apiFetch(`${base}${following}`, {}, { repeatable: false })
+      .then(resp => resp.json(), err => err);
+    held.resolve();
+    await Promise.all([older, cleared]);
+    assert.equal(h.evaluate('connectionProblem'), null);
+    assert.equal(h.data.session.connectionProblem, undefined, following);
+  }
+});
+
+test('a pending old removal finishes before the newer diagnosis is stored', async () => {
+  const base = `https://${defaults.host}:${defaults.port}/webapi/`;
+  const held = deferred();
+  let h, removing = false, second = false;
+  h = await background(async url => {
+    if (!url.endsWith('refused.cgi')) return success();
+    h.webRequest.onErrorOccurred.emit({ error: second ? 'SEC_ERROR_UNKNOWN_ISSUER' : CERT_PROSE,
+      type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError');
+  });
+  await h.api.apiFetch(`${base}refused.cgi`, {}, { repeatable: false }).catch(() => {});
+  const remove = h.browser.storage.session.remove.bind(h.browser.storage.session);
+  h.browser.storage.session.remove = async keys => {
+    if (!removing && [].concat(keys).includes('connectionProblem')) {
+      removing = true;
+      await held.promise;
+    }
+    return remove(keys);
+  };
+  const older = h.api.apiFetch(`${base}answered.cgi`, {}).then(resp => resp.json());
+  await until(() => removing);
+  second = true;
+  const newer = h.api.apiFetch(`${base}refused.cgi`, {}, { repeatable: false }).catch(err => err);
+  await until(() => h.evaluate('connectionProblem?.reason') === 'SEC_ERROR_UNKNOWN_ISSUER');
+  held.resolve();
+  await Promise.all([older, newer]);
+  assert.equal(h.data.session.connectionProblem.reason, 'SEC_ERROR_UNKNOWN_ISSUER');
+  assert.equal(h.evaluate('connectionProblem.reason'), 'SEC_ERROR_UNKNOWN_ISSUER');
+});
+
+test('a late browser reason cannot outlive a newer answer on the same origin', async () => {
+  const base = `https://${defaults.host}:${defaults.port}/webapi/`;
+  let h, wake;
+  const about = { url: `${base}refused.cgi`, type: 'xmlhttprequest', tabId: -1,
+    requestId: 'old-request', originUrl: 'moz-extension://test-extension/_generated_background_page.html' };
+  h = await background(async url => {
+    if (url.endsWith('refused.cgi')) {
+      h.webRequest.onBeforeRequest.emit(about);
+      throw new TypeError('NetworkError');
+    }
+    return success();
+  });
+  const timer = h.context.setTimeout;
+  h.context.setTimeout = (fn, ms) => {
+    if (!wake) { wake = fn; return 1; }
+    return timer(fn, ms);
+  };
+  const older = h.api.apiFetch(about.url, {}, { repeatable: false }).catch(err => err);
+  await until(() => wake);
+  await (await h.api.apiFetch(`${base}answered.cgi`, {})).json();
+  h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE });
+  wake();
+  assert.equal((await older).certificateError, true, 'the old caller still receives its own reason');
+  assert.equal(h.data.session.connectionProblem, undefined, 'the panel reflects the newer response');
+});
+
+test('a refused certificate is announced short and handed over in full', async () => {
+  const h = await refusing(CERT_PROSE);
+
+  const answer = await h.send({ action: 'testConnection' });
+
+  // A notification shows one line and cuts off the rest — and what disappeared
+  // was the browser's own reason, the part worth reading.
+  assert.equal(h.notifications.at(-1).message, 'notifyCertificate');
+  // The popup has room for all of it, so nothing is shortened on the way there.
+  assert.equal(answer.error.message, `errCertificate:${CERT_PROSE}`);
+});
+
+test('the add path announces a refused certificate short as well', async () => {
+  const h = await refusing(CERT_PROSE);
+
+  const answer = await h.send({ action: 'addTasksBulk', urls: ['https://download.example/a'] });
+
+  // A NAS that cannot be woken ends the add before anything is sent, and this
+  // was the one route on which the browser's wording still went into a
+  // notification whole — and was cut off there exactly as before.
+  assert.equal(h.notifications.at(-1).message, 'notifyBulkPartial:0|1|notifyCertificate');
+  assert.equal(answer.errorMessage, `errCertificate:${CERT_PROSE}`);
+});
+
+test('add preparation retains the certificate reason after a successful wake', async () => {
+  for (const stage of ['login', 'discovery']) for (const route of ['bulk', 'single']) {
+    let h, queries = 0;
+    h = await background(async (url, options) => {
+      const isQuery = new URL(url).pathname.endsWith('/query.cgi');
+      if (isQuery) queries++;
+      if ((stage === 'discovery' && isQuery && queries === 2)
+        || options.body?.get('method') === 'login') {
+        h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+          originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+        throw new TypeError('NetworkError');
+      }
+      return success();
+    }, { session: { sid: null, apiPaths: stage === 'discovery' ? null : apis } });
+    const urls = ['https://download.example/a,b',
+      ...Array.from({ length: 51 }, (_, i) => `https://download.example/${i}`)];
+    const result = route === 'bulk'
+      ? await h.send({ action: 'addTasksBulk', urls })
+      : await h.evaluate("addDownloadTask('https://download.example/a')");
+    await until(() => h.notifications.length > 0);
+    assert.equal(h.requests.length, 2, `${stage} ${route}`);
+    assert.equal(result.deliveryUnknown, false);
+    assert.equal(route === 'bulk' ? result.certificateReason : result.certificateError, true);
+    assert.equal(route === 'bulk' ? result.errorMessage : result.error.message, `errCertificate:${CERT_PROSE}`);
+    assert.equal(h.notifications.at(-1).message, route === 'bulk'
+      ? 'notifyBulkPartial:0|52|notifyCertificate' : 'notifyCertificate');
+    assert.equal(h.data.session.connectionProblem.reason, CERT_PROSE);
+  }
+});
+
+test('blocked adds retain their certificate panel without another wake request', async () => {
+  for (const route of ['bulk', 'single']) {
+    let h, refuse = true;
+    h = await background(async url => {
+      if (refuse) {
+        h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+          originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+        throw new TypeError('NetworkError');
+      }
+      return success();
+    }, { local: { notificationsEnabled: false }, session: { sid: null } });
+    const login = await h.send({ action: 'testConnection' });
+    assert.equal(login.certificateError, true);
+    const panel = plain(h.data.session.connectionProblem);
+    const requests = h.requests.length;
+    h.notifications.length = 0;
+    refuse = false;
+    const result = route === 'bulk'
+      ? await h.send({ action: 'addTasksBulk', urls: ['https://download.example/a'] })
+      : await h.evaluate("addDownloadTask('https://download.example/a')");
+    await until(() => h.notifications.length > 0);
+    assert.equal(h.requests.length, requests, 'blocked login must not clear its panel with a wake');
+    assert.deepEqual(plain(h.data.session.connectionProblem), panel);
+    assert.equal(result.deliveryUnknown, false);
+    assert.equal(h.notifications.at(-1).message, route === 'bulk'
+      ? 'notifyBulkPartial:0|1|notifyCertificate' : 'notifyCertificate');
+  }
+});
+
+test('a blocked retry retains the certificate panel without waking or changing tasks', async () => {
+  let h, refuse = true;
+  h = await background(async url => {
+    if (refuse) {
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+      throw new TypeError('NetworkError');
+    }
+    return success();
+  }, { session: { sid: null } });
+  assert.equal((await h.send({ action: 'testConnection' })).certificateError, true);
+  const panel = plain(h.data.session.connectionProblem);
+  const before = h.requests.length;
+  refuse = false;
+  const result = await h.send({ action: 'retryTask', id: 'dbid_1',
+    uri: 'https://download.example/a', connection: h.connection });
+  assert.equal(result.success, false);
+  assert.equal(result.deliveryUnknown, false);
+  assert.equal(result.certificateError, true);
+  assert.equal(result.error.message, `errCertificate:${CERT_PROSE}`);
+  assert.equal(h.requests.length, before, 'no wake, delete or create while sign-in is blocked');
+  assert.deepEqual(plain(h.data.session.connectionProblem), panel);
+  assert.equal(h.data.session.bulkDraft, undefined);
+});
+
+test('an itemised batch stops when a replacement login meets a certificate refusal', async () => {
+  let h, creates = 0;
+  h = await background(async (url, options) => {
+    const method = options.body?.get('method');
+    if (method === 'create') return response({ success: false, error: { code: ++creates === 1 ? 400 : 107 } });
+    if (method === 'login') {
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+      throw new TypeError('NetworkError');
+    }
+    return success();
+  });
+  const result = await h.send({ action: 'addTasksBulk',
+    urls: ['https://download.example/a', 'https://download.example/b'] });
+  await until(() => h.notifications.length > 0);
+  assert.equal(creates, 2);
+  assert.equal(h.requests.filter(r => r.body.method === 'login').length, 1);
+  assert.equal(result.failed, 2);
+  assert.equal(result.deliveryUnknown, false);
+  assert.equal(result.certificateReason, true);
+  assert.equal(result.errorMessage, `errCertificate:${CERT_PROSE}`);
+  assert.equal(h.notifications.at(-1).message, 'notifyBulkPartial:0|2|notifyCertificate');
+});
+
+test('a test overtaken while it reads the panel does not put the bar back up', async () => {
+  let refuse = true;
+  const h = await background(async (_, options) => {
+    const method = options.body?.get('method');
+    if (method === 'login') {
+      return refuse ? response({ success: false, error: { code: 400 } })
+        : response({ success: true, data: { sid: 'new-sid' } });
+    }
+    if (method === 'list') return response({ success: true, data: { tasks: [] } });
+    return success();
+  });
+  const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate('settings = { ...settings, ...savedConnection }; popupReady = true;');
+
+  // One refused test first, so that every later read of the panel record is the
+  // popup's own: the background reads it once per page life and remembers the
+  // answer, and hooking that read would suspend a request the test below waits
+  // on.
+  await p.evaluate('attemptConnect(undefined, { deliberate: true })');
+
+  const session = h.browser.storage.session;
+  const read = session.get.bind(session);
+  let overtaken = false;
+  session.get = async (keys) => {
+    const value = await read(keys);
+    // The window the older test sits in: told "failed", and now reading the
+    // panel in order to show it. A newer test goes through inside that read.
+    if (!overtaken && keys && 'connectionProblem' in keys) {
+      overtaken = true;
+      refuse = false;
+      await p.evaluate('attemptConnect(undefined, { deliberate: true })');
+    }
+    return value;
+  };
+
+  await p.evaluate('attemptConnect(undefined, { deliberate: true })');
+  assert.equal(overtaken, true, 'the panel read is where the older test waits');
+
+  // The older answer is about a connection that has since been made. Pronounced
+  // after the wait, it barred the working session and wrote "connection
+  // failed" over the word Connected.
+  assert.equal(p.evaluate('connectBlocked'), false);
+  assert.match(p.nodes.get('statusText').textContent, /^connected/);
+});
+
+test('an overtaken test cannot restore its certificate panel or change tabs', async () => {
+  for (const ready of [false, true]) {
+    let refuse = true, h;
+    h = await background(async (url, options) => {
+      if (refuse) {
+        h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+          originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+        throw new TypeError('NetworkError');
+      }
+      const method = options.body?.get('method');
+      if (method === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+      if (method === 'list') return response({ success: true, data: { tasks: [] } });
+      return success();
+    });
+    const p = popup(h);
+    p.context.savedConnection = defaults;
+    p.evaluate('settings = { ...settings, ...savedConnection };');
+    await p.evaluate('attemptConnect(undefined, { deliberate: true })');
+    p.evaluate("activateTab('tasks'); document.getElementById('connectionSection').open = false;");
+    p.nodes.get('connectionProblem').hidden = true;
+    p.context.ready = ready;
+    p.evaluate('popupReady = ready;');
+    const read = h.browser.storage.session.get.bind(h.browser.storage.session);
+    let overtaken = false;
+    h.browser.storage.session.get = async keys => {
+      const value = await read(keys);
+      if (!overtaken && keys && 'connectionProblem' in keys && p.evaluate('connectSeq === newestConnectAnswered')) {
+        overtaken = true;
+        refuse = false;
+        await p.evaluate('attemptConnect(undefined, { deliberate: true })');
+      }
+      return value;
+    };
+    await p.evaluate('attemptConnect(undefined, { deliberate: true })');
+    await until(() => !p.evaluate('refreshInFlight'));
+    assert.equal(overtaken, true);
+    assert.equal(h.data.session.connectionProblem, undefined);
+    assert.equal(p.evaluate('connectBlocked'), false);
+    assert.match(p.nodes.get('statusText').textContent, /^connected/);
+    assert.equal(p.nodes.get('connectionProblem').hidden, true);
+    assert.equal(p.evaluate('activeTab'), 'tasks');
+    assert.equal(p.nodes.get('connectionSection').open, false);
+  }
+});
+
+test('a slower panel read cannot overwrite a newer reason or a cleared panel', async () => {
+  for (const cleared of [false, true]) {
+    const oldProblem = { origin: `https://${defaults.host}:${defaults.port}`,
+      certificate: true, reason: 'older reason', reasonAt: 1, at: 1 };
+    const h = makeBrowser({ session: { connectionProblem: oldProblem } });
+    const p = popup(h);
+    p.context.savedConnection = defaults;
+    p.evaluate('settings = { ...settings, ...savedConnection };');
+    const read = h.browser.storage.session.get.bind(h.browser.storage.session);
+    const slowRead = deferred();
+    let held = false;
+    h.browser.storage.session.get = async keys => {
+      const value = await read(keys);
+      if (!held && keys && 'connectionProblem' in keys) {
+        held = true;
+        await slowRead.promise;
+      }
+      return value;
+    };
+    const older = p.api.syncConnectionProblem();
+    await until(() => held);
+    if (cleared) await h.browser.storage.session.remove('connectionProblem');
+    else await h.browser.storage.session.set({ connectionProblem: { ...oldProblem, reason: 'newer reason', at: 2 } });
+    await p.api.syncConnectionProblem();
+    slowRead.resolve();
+    await older;
+    assert.equal(p.nodes.get('connectionProblem').hidden, cleared);
+    if (!cleared) assert.equal(p.nodes.get('connProblemReason').textContent, 'connProblemReason:newer reason');
+  }
+});
+
+test('a storage refresh does not suppress the current test opening its panel', async () => {
+  const h = makeBrowser({ session: { connectionProblem: {
+    origin: `https://${defaults.host}:${defaults.port}`,
+    certificate: true, reason: CERT_PROSE, reasonAt: 1, at: 1,
+  } } });
+  const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate("settings = { ...settings, ...savedConnection }; newestConnectAnswered = 1; activateTab('tasks');");
+  const held = deferred();
+  const read = h.browser.storage.session.get.bind(h.browser.storage.session);
+  let reading = false;
+  h.browser.storage.session.get = async keys => {
+    const value = await read(keys);
+    if (!reading && keys && 'connectionProblem' in keys) {
+      reading = true;
+      await held.promise;
+    }
+    return value;
+  };
+
+  const opening = p.evaluate('revealConnectionProblem(1)');
+  await until(() => reading);
+  // A storage event refreshes the panel, but no newer test has superseded the
+  // user's request to open it. The navigation must still take place.
+  await p.api.syncConnectionProblem();
+  held.resolve();
+  await opening;
+  assert.equal(p.nodes.get('connectionProblem').hidden, false);
+  assert.equal(p.nodes.get('connProblemReason').textContent, `connProblemReason:${CERT_PROSE}`);
+  assert.equal(p.evaluate('activeTab'), 'settings');
+  assert.equal(p.nodes.get('connectionSection').open, true);
+});
+
+test('the connection panel shows the whole reason, and only for this address', async () => {
+  const origin = `https://${defaults.host}:${defaults.port}`;
+  const h = makeBrowser({ session: { connectionProblem: {
+    origin, certificate: true, reason: CERT_PROSE, reasonAt: 1, at: 1 } } });
+  const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate('settings = { ...settings, ...savedConnection };');
+
+  await p.api.syncConnectionProblem();
+  assert.equal(p.nodes.get('connectionProblem').hidden, false);
+  assert.equal(p.nodes.get('connProblemTitle').textContent, 'connProblemSecure');
+  assert.equal(p.nodes.get('connProblemAddress').textContent, `connProblemAddress:${origin}`);
+  assert.equal(p.nodes.get('connProblemReason').textContent, `connProblemReason:${CERT_PROSE}`);
+  assert.equal(p.nodes.get('connProblemAdvice').textContent, 'connProblemAdvice');
+  assert.equal(p.nodes.get('connProblemLast').textContent, '',
+    'the last attempt is the one being explained — no need to say so');
+
+  // The same reason, after an attempt that only timed out. Still the one thing
+  // to act on, but named as the last precise word rather than as a cause just
+  // confirmed again.
+  await h.browser.storage.session.set({ connectionProblem: {
+    origin, certificate: false, reason: CERT_PROSE, reasonAt: 1, at: 2 } });
+  await p.api.syncConnectionProblem();
+  assert.equal(p.nodes.get('connProblemTitle').textContent, 'connectionFailed');
+  assert.equal(p.nodes.get('connProblemLast').textContent, 'connProblemLastAttempt');
+  assert.equal(p.nodes.get('connProblemReason').textContent, `connProblemEarlier:${CERT_PROSE}`);
+
+  // A failure at an address this popup is no longer configured for explains
+  // nothing about the one it is.
+  await h.browser.storage.session.set({ connectionProblem: {
+    origin: 'https://other-nas.example:5001', certificate: true, reason: CERT_PROSE, reasonAt: 1, at: 3 } });
+  await p.api.syncConnectionProblem();
+  assert.equal(p.nodes.get('connectionProblem').hidden, true);
+});
+
+test('a connection test somebody pressed puts the whole reason in front of them', async () => {
+  const h = await refusing(CERT_PROSE);
+  const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate('settings = { ...settings, ...savedConnection };');
+
+  // The popup signing in by itself, as it does on opening. That failure says
+  // its short piece in a notification; unfolding a section under someone's
+  // hands would be the extension rearranging the furniture.
+  await p.evaluate('attemptConnect()');
+  assert.equal(p.document.getElementById('connectionSection').open, false);
+
+  // The Test button. This one was asked for, so the reason goes on screen where
+  // the address it is about is set up.
+  await p.nodes.get('btnTest').listeners.click();
+  assert.equal(p.document.getElementById('connectionSection').open, true);
+  assert.equal(p.nodes.get('connectionProblem').hidden, false);
+  assert.equal(p.nodes.get('connProblemReason').textContent, `connProblemReason:${CERT_PROSE}`);
+});
+
+test('an ordinary network failure keeps its retries and its wording', async () => {
+  // Symbolic, not prose — Firefox names these rather than describing them.
+  const h = await refusing('NS_ERROR_NET_TIMEOUT');
+  const err = await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  assert.equal(err.message, 'errNasUnreachable');
+  assert.equal(err.nasUnreachable, true);
+  assert.equal(err.deliveryUnknown, true);
+  assert.equal(h.requests.length, 4, 'a sleeping NAS is still worth waiting for');
+});
+
+test('a failure belonging to a tab is never adopted as ours', async () => {
+  // The NAS's own web interface, open in a window, fails against the same
+  // certificate. Its refusal is not an answer to anything asked here.
+  const h = await refusing(CERT_PROSE, { tabId: 7 });
+  const err = await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  assert.equal(err.message, 'errNasUnreachable');
+  assert.equal(err.certificateError, undefined);
+});
+
+test('prose over plain http is not called a certificate problem', async () => {
+  const h = await refusing(CERT_PROSE);
+  const err = await h.api.apiFetch(`http://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+
+  // Without TLS there is no certificate to be wrong, whatever arrived.
+  assert.equal(err.message, 'errNasUnreachable');
+  assert.equal(err.certificateError, undefined);
+});
+
+test('a NAS moved to another port is still heard', async () => {
+  const h = await refusing(CERT_PROSE);
+  await h.api.apiFetch(`https://${defaults.host}:${defaults.port}/webapi/auth.cgi`, {}).catch(() => {});
+
+  // Same scheme and host, so the filter pattern does not change — and a pattern
+  // cannot carry a port at all. What decides is the address actually in flight.
+  const err = await h.api.apiFetch(`https://${defaults.host}:5000/webapi/auth.cgi`, {})
+    .then(() => null, caught => caught);
+  assert.equal(err.certificateError, true);
+});
+
+test('a farewell to the old NAS does not deafen the new one', async () => {
+  // Switching NAS: the sign-in at the new address is under way when a logout
+  // leaves for the old one. Both are watched, or the later registration
+  // silently unwatches the earlier host and its refusals vanish.
+  const held = deferred();
+  let h;
+  h = await background(async (url) => {
+    // The sign-in is still out when the logout registers its own host. Its
+    // refusal arrives only afterwards — which is the whole point: a listener
+    // re-registered for the newer host alone has stopped watching this one.
+    if (url.includes('new-nas')) {
+      await held.promise;
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    }
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const signIn = h.api.apiFetch(`https://new-nas.example:5001/webapi/auth.cgi`, {}, { repeatable: false })
+    .then(() => null, caught => caught);
+  await until(() => h.requests.length === 1);
+  await h.api.apiFetch(`https://old-nas.example:5001/webapi/auth.cgi`, {}, { repeatable: false })
+    .catch(() => {});
+  held.resolve();
+
+  assert.equal((await signIn).certificateError, true, 'the new NAS is still heard');
+  assert.deepEqual(plain(h.data.session.transportWatch.patterns).sort(),
+    ['https://new-nas.example/*', 'https://old-nas.example/*']);
+});
+
+test('IPv6 hosts with and without brackets work for discovery, login and waking', async () => {
+  for (const host of ['fd00::1', '[fd00::1]']) {
+    const h = await background(async (url, options) => {
+      const target = new URL(url);
+      assert.equal(target.hostname, '[fd00::1]');
+      assert.equal(target.port, '5001');
+      if (target.pathname.endsWith('/query.cgi')) return response({ success: true, data: {
+        'SYNO.API.Auth': { path: 'auth.cgi', minVersion: 1, maxVersion: 7 },
+        'SYNO.DownloadStation.Task': { path: 'DownloadStation/task.cgi', minVersion: 1, maxVersion: 3 },
+      } });
+      assert.equal(options.body.get('method'), 'login');
+      return response({ success: true, data: { sid: 'ipv6-sid' } });
+    }, { local: { host }, session: { sid: null, apiPaths: null } });
+    assert.equal((await h.send({ action: 'testConnection' })).success, true);
+    await h.evaluate('wakeNas()');
+    assert.deepEqual(h.requests.map(r => new URL(r.url).pathname),
+      ['/webapi/query.cgi', '/webapi/auth.cgi', '/webapi/query.cgi']);
+  }
+});
+
+test('IPv6 certificate errors reach the matching connection panel', async () => {
+  for (const host of ['fd00::1', '[fd00::1]']) for (const port of [443, 5001]) {
+    let h;
+    h = await background(async url => {
+      const about = { url, tabId: -1, type: 'xmlhttprequest', requestId: 'ipv6-request',
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') };
+      h.webRequest.onBeforeRequest.emit(about);
+      h.webRequest.onErrorOccurred.emit({ ...about, error: CERT_PROSE });
+      throw new TypeError('NetworkError');
+    }, { local: { host, port } });
+    assert.equal((await h.send({ action: 'testConnection' })).certificateError, true);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.requests[0].url, `https://[fd00::1]:${port}/webapi/auth.cgi`);
+    assert.deepEqual(plain(h.errorFilters), [{ urls: ['https://[fd00::1]/*'] }]);
+    const origin = new URL(`https://[fd00::1]:${port}`).origin;
+    assert.equal(h.data.session.connectionProblem.origin, origin);
+    const p = popup(h);
+    p.context.savedConnection = { ...defaults, host, port };
+    p.evaluate('settings = { ...settings, ...savedConnection };');
+    await p.api.syncConnectionProblem();
+    assert.equal(p.nodes.get('connectionProblem').hidden, false);
+    assert.equal(p.nodes.get('connProblemAddress').textContent, `connProblemAddress:${origin}`);
+  }
+});
+
+test('a NAS on the scheme\'s default port is still recognised', async () => {
+  let h;
+  h = await background(async (url) => {
+    // The settings always name a port; the browser reports the address with the
+    // default one dropped, as the URL standard says it must. Compared as raw
+    // text those are two addresses, and the refusal belonged to neither.
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1,
+      url: String(url).replace(':443', ''),
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+  const err = await h.api.apiFetch(`https://${defaults.host}:443/webapi/auth.cgi`, {}, { repeatable: false })
+    .then(() => null, caught => caught);
+  assert.equal(err.certificateError, true);
+});
+
+test('a refusal during a response body is not handed to the next request', async () => {
+  const endpoint = `https://${defaults.host}:${defaults.port}/webapi/query.cgi`;
+  const bodyDone = deferred(), nextFails = deferred();
+  let h, calls = 0;
+  h = await background(async (url) => {
+    calls += 1;
+    // The first answer has its headers in and its body still coming.
+    if (calls === 1) {
+      return { ok: true, status: 200, json: async () => {
+        await bodyDone.promise;
+        h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+          originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+        throw new TypeError('NetworkError when attempting to fetch resource.');
+      } };
+    }
+    await nextFails.promise;
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const first = await h.api.apiFetch(endpoint, {}, { repeatable: false });
+  const second = h.api.apiFetch(endpoint, {}, { repeatable: false }).then(() => null, caught => caught);
+  await until(() => h.requests.length === 2);
+  const reading = first.json().then(() => null, caught => caught);
+  bodyDone.resolve();
+  await reading;
+  nextFails.resolve();
+
+  // The two overlapped, so the later one cannot know the refusal was not its
+  // own - and must not lose its retries to a verdict it did not earn.
+  const err = await second;
+  assert.equal(err.certificateError, undefined);
+  assert.equal(err.nasUnreachable, true);
+});
+
+/**
+ * An answer whose body nobody reads still has to hold its address.
+ *
+ * `first` decides how that answer arrives: the wake probe asks for one it never
+ * reads, and a refused status is thrown away before anyone could. Both used to
+ * free the address at the headers, so the next request to the same endpoint
+ * started uncontended and inherited a refusal raised by the earlier body.
+ */
+for (const [name, first] of [
+  ['an answer nobody reads', { ok: true, status: 200 }],
+  ['an answer refused on its status', { ok: false, status: 404 }],
+]) {
+  test(`${name} holds its address until the body is done`, async () => {
+    const endpoint = `https://${defaults.host}:${defaults.port}/webapi/query.cgi`;
+    const bodyDone = deferred(), nextFails = deferred();
+    let h, calls = 0;
+    h = await background(async (url) => {
+      calls += 1;
+      if (calls === 1) {
+        return { ...first, text: async () => {
+          await bodyDone.promise;
+          h.webRequest.onErrorOccurred.emit({ error: 'SSL_ERROR_BAD_MAC_READ',
+            type: 'xmlhttprequest', tabId: -1, url,
+            originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+          throw new TypeError('NetworkError when attempting to fetch resource.');
+        } };
+      }
+      await nextFails.promise;
+      throw new TypeError('NetworkError when attempting to fetch resource.');
+    });
+
+    await h.evaluate(`fetchOnce(${JSON.stringify(endpoint)}, {}, 8000, { holdBody: false })`)
+      .catch(() => {});
+    // Discovery starts on the same endpoint while that body is still coming.
+    const second = h.api.apiFetch(endpoint, {}, { repeatable: false })
+      .then(() => null, caught => caught);
+    await until(() => h.requests.length === 2);
+    bodyDone.resolve();
+    await until(() => h.data.session.lastTransportError);
+    nextFails.resolve();
+
+    const err = await second;
+    assert.equal(err.certificateError, undefined, 'the earlier body\'s refusal is not this one\'s');
+    assert.equal(err.nasUnreachable, true, 'and its own retries stay available');
+  });
+}
+
+test('a watch that has been overtaken does not sign the new session out', async () => {
+  let listAsked = false;
+  const h = await background(async () => {
+    listAsked = true;
+    return response({ success: true, data: { tasks: [] } });
+  });
+  h.data.local.keepaliveEnabled = false;
+
+  // Hold the settings read that sits between the empty list and the sign-out.
+  // Nothing is being watched, so notifyWatchFinished returns without reading
+  // anything and this is the next read the poll makes.
+  const held = deferred();
+  const read = h.browser.storage.local.get;
+  let holding = false;
+  h.browser.storage.local.get = async (keys) => {
+    if (listAsked && !holding) { holding = true; await held.promise; }
+    return read(keys);
+  };
+
+  const polling = h.evaluate('pollDownloads()');
+  await until(() => holding);
+  // The NAS is switched and signed into while that read is out, and the popup
+  // is closed again — exactly the window the sign-out used to fall into.
+  h.evaluate('sessionEpoch += 1; signInsAccepted += 1; cachedSid = "new-sid";');
+  held.resolve();
+  await polling;
+
+  assert.equal(h.evaluate('cachedSid'), 'new-sid', 'the new session is left alone');
+  assert.ok(!h.requests.some(request => request.body.method === 'logout'),
+    'and is never handed back to the NAS');
+});
+
+test('a task action keeps its uncertainty and still names the refused certificate', async () => {
+  let h;
+  h = await background(async (url) => {
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const answer = await h.send({ action: 'pauseTask', id: 'dbid_1', connection: h.connection });
+
+  assert.equal(answer.success, false);
+  // Both: what is unknown, and what the browser actually refused. The reason
+  // used to be replaced by the uncertainty and lost.
+  assert.equal(answer.deliveryUnknown, true);
+  assert.match(answer.error.message, /^actionResultUnknown /);
+  assert.ok(answer.error.message.includes(CERT_PROSE), 'the browser reason is carried along');
+});
+
+test('a late keepalive list does not wipe a newer badge', async () => {
+  const h = await background(async () => response({ success: true, data: { tasks: [] } }));
+  // A newer list — the popup's, typically — has already answered.
+  h.evaluate('newestListAnswered = 999; sessionUsed = { sid: null, at: 0 };');
+  const before = h.badges.length;
+
+  await h.evaluate('runKeepalive()');
+
+  assert.ok(h.requests.length > 0, 'the keepalive really asked');
+  assert.equal(h.badges.length, before, 'but its stale, empty list is not taken');
+});
+
+/**
+ * Send the delete, switch the NAS while its answer is still on the way, and let
+ * the answer arrive. What that answer says about this one task is the whole
+ * question: `success: true` is the envelope, and an accepted call can still
+ * carry a refusal for the task inside it, or say nothing about it at all.
+ */
+async function switchedAwayFromDelete(answer) {
+  const uri = 'https://download.example/a';
+  const removing = deferred();
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'delete') return removing.promise;
+    return success();
+  });
+  const retrying = h.api.apiRetryTask('dbid_1', uri, '').then(r => r, caught => caught);
+  await until(() => h.requests.some(request => request.body.method === 'delete'));
+  h.evaluate('sessionEpoch += 1;');
+  removing.resolve(response(answer));
+  return { uri, h, out: await retrying };
+}
+
+test('a NAS switched after the delete went through still keeps the link', async () => {
+  const { uri, h, out } = await switchedAwayFromDelete(
+    { success: true, data: [{ id: 'dbid_1', error: 0 }] });
+
+  // The task is gone and it held the only copy of this link. Treating the
+  // switch as "nothing happened" let both go.
+  assert.equal(out.linkKept, true);
+  assert.match(out.error.message, /retryLinkKeptSwitched/);
+  assert.equal(h.data.session.bulkDraft, uri, 'the link is back in the list');
+});
+
+test('a NAS switched away from does not report a delete it refused', async () => {
+  // Accepted call, refused task: the one reply shape that looks like a success
+  // from the outside. It counted as a confirmed deletion, and the retry
+  // announced the removal of a task still sitting there with its link in it.
+  const { h, out } = await switchedAwayFromDelete(
+    { success: true, data: [{ id: 'dbid_1', error: 405 }] });
+
+  assert.equal(out.linkKept, undefined);
+  assert.equal(out.connectionChanged, true);
+  // Nothing was lost, so nothing is rescued — the same as a refusal outside a
+  // connection change, which is handed on exactly as it came.
+  assert.equal(h.data.session.bulkDraft, undefined, 'the task still holds this link');
+});
+
+test('a NAS switched away from keeps a delete it said nothing about unconfirmed', async () => {
+  const { uri, h, out } = await switchedAwayFromDelete({ success: true });
+
+  // No task results at all: the delete may well have run, so the link is
+  // rescued — but "the task was removed" is a claim the NAS never made.
+  assert.equal(out.linkKept, true);
+  assert.match(out.error.message, /^retryLinkKeptUnsent/, out.error.message);
+  assert.equal(h.data.session.bulkDraft, uri, 'the link is back in the list');
+});
+
+test('a retry that is refused by the certificate says so as well', async () => {
+  const uri = 'https://download.example/a';
+  let h;
+  h = await background(async (url, options) => {
+    // The delete goes through; the replacement meets the certificate.
+    if (options.body?.get('method') === 'delete') {
+      return response({ success: true, data: [{ id: 'dbid_1', error: 0 }] });
+    }
+    if (options.body?.get('method') === 'create') {
+      h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+        originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+      throw new TypeError('NetworkError when attempting to fetch resource.');
+    }
+    return success();
+  });
+
+  const out = await h.api.apiRetryTask('dbid_1', uri, '').then(r => r, caught => caught);
+
+  // Both: the link is kept and its outcome open, and the reason the user can
+  // act on. The reason used to be dropped for the kept-link wording entirely.
+  assert.equal(out.linkKept, true);
+  assert.match(out.error.message, /retryLinkKeptUnknown/);
+  assert.ok(out.error.message.includes(CERT_PROSE), 'the browser reason is carried along');
+});
+
+test('seeding torrents can be paused', async () => {
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'list') {
+      return response({ success: true, data: { tasks: [{ id: 'dbid_1', status: 'seeding' }] } });
+    }
+    return response({ success: true, data: [{ id: 'dbid_1', error: 0 }] });
+  });
+
+  // Deliberately not in WORKING_STATUSES — seeding never ends by itself, so the
+  // watch must not wait for it. That is a different question from whether the
+  // NAS can be told to stop, and it can.
+  assert.equal(h.evaluate('canPauseTask("seeding")'), true);
+
+  const result = await h.send({ action: 'pauseAll', connection: h.connection });
+  assert.equal(result.success, true);
+  // It used to answer "done, 0 affected" while the upload carried on.
+  assert.equal(result.affected, 1);
+  assert.match(h.requests.find(request => request.body.method === 'pause').body.id, /dbid_1/);
+});
+
+test('an outcome from the NAS left behind does not block the new one', async () => {
+  const h = await background(async (_, options) => {
+    const method = options.body?.get('method');
+    if (method === 'create') throw new TypeError('Connection reset');
+    if (method === 'list')  return response({ success: false, error: { code: 105 } });
+    if (method === 'login') return response({ success: false, error: { code: 400 } });
+    return success();
+  });
+  // Recorded against the NAS that was configured when the add began. The
+  // version is the one still current, so the key is what has to do the work.
+  await h.api.recordForPopup(
+    await h.api.addDownloadTasksBulk(['https://download.example/a'], ''),
+    h.connection, await h.api.readConnectionVersion());
+
+  const p = popup(h);
+  // By the time it is read, the user is on another NAS and signed in there.
+  p.context.savedConnection = { ...defaults, host: 'new-nas.example' };
+  p.evaluate('settings = { ...settings, ...savedConnection };');
+  p.evaluate("activateTab('tasks');");
+  await p.api.consumeLastAdd();
+
+  // The links still say what happened to them — that outcome is theirs.
+  assert.match(p.evaluate('linksMessageEl.textContent'), /errLoginFailed/);
+  // But the new connection is not shut out over a refusal from the old one.
+  assert.equal(p.evaluate('connectBlocked'), false);
+  assert.notEqual(p.nodes.get('statusText').textContent, 'connectionFailed');
+});
+
+test('a changed password retires an outcome about the old one', async () => {
+  const h = await background(async (_, options) => {
+    const method = options.body?.get('method');
+    if (method === 'create') throw new TypeError('Connection reset');
+    if (method === 'list')  return response({ success: false, error: { code: 105 } });
+    if (method === 'login') return response({ success: false, error: { code: 400 } });
+    return success();
+  });
+  // Taken when the add is asked for, as the message handler takes it.
+  const version = await h.api.readConnectionVersion();
+  const outcome = await h.api.addDownloadTasksBulk(['https://download.example/a'], '');
+  // The password is corrected while the refusal is still being written up, and
+  // the new one signs in perfectly well.
+  await h.evaluate('updateSettings({ connection: { password: "new-password" } })');
+  await h.api.recordForPopup(outcome, h.connection, version);
+
+  const p = popup(h);
+  p.context.savedConnection = { ...defaults, password: 'new-password' };
+  p.evaluate('settings = { ...settings, ...savedConnection };');
+  p.evaluate("activateTab('tasks');");
+  await p.api.consumeLastAdd();
+
+  // Same NAS, same account: the key cannot tell these two apart, and it must
+  // not try — it is what task ids are read against.
+  assert.equal(p.evaluate('connectionKey(settings)'), h.connection);
+  // The links still say what happened to them...
+  assert.match(p.evaluate('linksMessageEl.textContent'), /errLoginFailed/);
+  // ...but a password nobody uses any more does not bar the one that works.
+  assert.equal(p.evaluate('connectBlocked'), false);
+  assert.notEqual(p.nodes.get('statusText').textContent, 'connectionFailed');
+});
+
+test('a late keepalive refusal does not clear a newer session', async () => {
+  const listing = deferred();
+  const h = await background(async (_, options) => {
+    const method = options.body?.get('method');
+    if (method === 'list')  return listing.promise;
+    if (method === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+    return success();
+  });
+  // Due a keepalive: nothing of this session's own has been seen recently.
+  h.evaluate('sessionUsed = { sid: null, at: 0 };');
+  const keeping = h.evaluate('runKeepalive()');
+  await until(() => h.requests.some(request => request.body.method === 'list'));
+
+  // "Test connection" goes through while that list is still away.
+  assert.equal((await h.send({ action: 'testConnection' })).success, true);
+  assert.equal(h.data.session.sid, 'new-sid');
+
+  // Only now does the old session's list come back, refused for being unknown.
+  listing.resolve(response({ success: false, error: { code: 119 } }));
+  await keeping;
+
+  // That answer is about a session nobody is using. Taken for the current one,
+  // it threw away a working sign-in and getStatus reported "not connected".
+  assert.equal(h.evaluate('cachedSid'), 'new-sid');
+  assert.equal(h.data.session.sid, 'new-sid');
+});
+
+test('a failed response body from the old NAS does not count against the new watch', async () => {
+  const body = deferred();
+  let reading = false, currentFails = false;
+  const h = await background(async (url, options) => {
+    const method = options.body?.get('method');
+    if (method === 'list' && new URL(url).hostname === defaults.host) {
+      return { ok: true, status: 200, json: async () => {
+        reading = true;
+        await body.promise;
+        throw new SyntaxError('Old NAS body was truncated');
+      } };
+    }
+    if (method === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+    if (method === 'list') {
+      if (currentFails) throw new TypeError('New NAS temporarily unavailable');
+      return response({ success: true, data: { tasks: [{ id: 'new-task', status: 'downloading' }] } });
+    }
+    return success();
+  });
+  const polling = h.evaluate('pollDownloads()');
+  await until(() => reading);
+  await h.evaluate('updateSettings({ connection: { host: "new-nas.example" } })');
+  assert.equal((await h.send({ action: 'testConnection' })).success, true);
+  assert.equal((await h.send({ action: 'listTasks' })).success, true);
+  assert.equal(h.evaluate('pollFailures'), 0);
+  body.resolve();
+  await polling;
+  assert.equal(h.evaluate('pollFailures'), 0);
+  assert.deepEqual(plain(h.evaluate('[...watchedIds]')), ['new-task']);
+  assert.ok(h.alarmCalls.at(-1).created, 'the new watch remains armed');
+  assert.equal(h.data.session.sid, 'new-sid');
+
+  // Failures of the current NAS must still count towards its own limit.
+  currentFails = true;
+  await h.evaluate('pollDownloads()');
+  assert.equal(h.evaluate('pollFailures'), 1);
+});
+
+test('a NAS that answers 503 is waited for, and the wait is announced', async () => {
+  let probes = 0;
+  const h = await background(async () => {
+    // Services still starting: 502/503 until they are up — see fetchOnce.
+    if (++probes < 3) return { ok: false, status: 503 };
+    return success();
+  });
+
+  await h.evaluate('wakeNas({ announce: true })');
+
+  assert.equal(probes, 3, 'the probe was repeated rather than given up on');
+  assert.ok(h.notifications.some(note => note.message === 'notifyWaking'),
+    'and the wait was said out loud');
+});
+
+test('a rebuilt list keeps the keyboard on the same control', () => {
+  const p = popup();
+  // Hand-built controls: the stub document has no tree to rebuild, and what is
+  // under test is which control the keyboard is given back, not the rendering.
+  const outcome = p.evaluate(`
+    const button = (dataset) => ({ dataset, disabled: false, hidden: false,
+      focus(options) { this.given = options ?? {}; } });
+    const rebuild = (held, fresh) => {
+      document.activeElement = held;
+      keepingFocus({ contains: el => el === held, querySelectorAll: () => fresh }, () => {});
+      return fresh.map(control => control.given !== undefined);
+    };
+
+    const held  = button({ field: 'pauseBtn', taskId: 'dbid_1' });
+    // The same action on another task, the same task with another action, and
+    // then the one that means what the keyboard was on.
+    const fresh = [button({ field: 'pauseBtn', taskId: 'dbid_9' }),
+                   button({ field: 'removeBtn', taskId: 'dbid_1' }),
+                   button({ field: 'pauseBtn', taskId: 'dbid_1' })];
+    const taken = rebuild(held, fresh);
+    // Not a scroll the user asked for: focus() would otherwise pull the list
+    // back up to this button at every refresh.
+    const kept = fresh[2].given.preventScroll === true;
+
+    // A control that is gone takes the focus with it rather than handing it to
+    // whatever happens to sit in its place.
+    const orphaned = [button({ field: 'pauseBtn', taskId: 'dbid_9' })];
+    const stolen = rebuild(held, orphaned)[0];
+
+    // The arrows carry the page they would turn to, so "next" on page 1 and the
+    // button labelled "2" read alike. The keyboard moved onto the number, and
+    // Enter then re-selected page 2 instead of going on to page 3.
+    const onNext = button({ nav: 'next', page: '2' });
+    const pager  = [button({ nav: 'prev', page: '0' }), button({ page: '2' }),
+                    button({ nav: 'next', page: '3' })];
+    const paging = rebuild(onNext, pager);
+
+    ({ taken, kept, stolen, paging });
+  `);
+
+  assert.deepEqual(plain(outcome), {
+    taken: [false, false, true], kept: true, stolen: false,
+    paging: [false, false, true],
+  });
+});
+
+test('a test that goes through takes down a bar raised behind its back', async () => {
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'login') {
+      return response({ success: true, data: { sid: 'new-sid' } });
+    }
+    return success();
+  });
+  const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate('settings = { ...settings, ...savedConnection };');
+
+  const testing = p.nodes.get('btnTest').listeners.click();
+  // Parked on its answer. An older add's refusal now comes in through the one
+  // door that raises the bar — the door applyAddOutcome uses.
+  p.evaluate("showConnectFailure({ error: { message: 'errLoginFailed' } });");
+  assert.equal(p.evaluate('connectBlocked'), true);
+  await testing;
+  await until(() => !p.evaluate('refreshInFlight'));
+
+  // The test answered after that refusal, and it answered "connected". The bar
+  // used to stay up behind the word: Refresh sent nothing at all.
+  assert.equal(p.evaluate('connectBlocked'), false);
+  assert.match(p.nodes.get('statusText').textContent, /^connected/);
+  assert.ok(h.requests.some(request => request.body.method === 'list'), 'the list is asked for');
+});
+
+test('a delayed add-result snapshot cannot block a connection that changed while it was read', async () => {
+  for (const changedBy of ['popup login', 'popup login before version event', 'background login', 'password change']) {
+    const held = deferred();
+    const h = await background(async (_, options) => {
+      if (options.body?.get('method') === 'login') {
+        return response({ success: true, data: { sid: 'new-sid' } });
+      }
+      return response({ success: true, data: { tasks: [] } });
+    });
+    const uri = 'https://download.example/a';
+    await h.api.recordForPopup({ success: false, added: 0, failed: 1, uncertain: 1,
+      namedReason: true, blockConnection: true, errorMessage: 'old login failure',
+      failedUrls: [uri] }, h.connection, await h.api.readConnectionVersion());
+    const p = popup(h);
+    p.context.savedConnection = defaults;
+    p.evaluate('settings = { ...settings, ...savedConnection }; popupReady = true;');
+    const read = h.browser.storage.session.get.bind(h.browser.storage.session);
+    let reading = false;
+    h.browser.storage.session.get = async keys => {
+      const snapshot = await read(keys);
+      if (!reading && keys && 'lastAdd' in keys) {
+        reading = true;
+        await held.promise;
+      }
+      return snapshot;
+    };
+    const consuming = p.api.consumeLastAdd();
+    await until(() => reading);
+    const versionEvents = [];
+    const emit = h.browser.storage.onChanged.emit.bind(h.browser.storage.onChanged);
+    if (changedBy === 'popup login before version event') {
+      h.browser.storage.onChanged.emit = (changes, area) => {
+        if (area === 'session' && 'connectionVersion' in changes) {
+          versionEvents.push([changes, area]);
+          return [];
+        }
+        return emit(changes, area);
+      };
+    }
+    if (changedBy.startsWith('popup login')) {
+      assert.equal(await p.evaluate('attemptConnect()'), true);
+      await until(() => !p.evaluate('refreshInFlight'));
+    } else if (changedBy === 'background login') {
+      assert.equal((await h.send({ action: 'testConnection' })).success, true);
+    } else {
+      await h.evaluate('updateSettings({ connection: { password: "corrected-password" } })');
+    }
+    assert.ok(await h.api.readConnectionVersion() > 0);
+    assert.equal(p.evaluate('connectBlocked'), false);
+    held.resolve();
+    await consuming;
+    assert.equal(p.evaluate('connectBlocked'), false, changedBy);
+    if (changedBy.startsWith('popup login')) {
+      assert.match(p.nodes.get('statusText').textContent, /^connected/);
+      assert.equal(h.data.session.sid, 'new-sid');
+    }
+    assert.equal(p.nodes.get('bulkLinks').value, uri, 'the failed link is still displayed');
+    assert.match(p.evaluate('linksMessageEl.textContent'), /old login failure/);
+    assert.equal(h.data.session.lastAdd, undefined);
+    if (changedBy === 'popup login before version event') {
+      assert.equal(versionEvents.length, 1);
+      versionEvents.forEach(args => emit(...args));
+    }
+  }
+});
+
+test('current add failures still block when version events lag behind storage', async () => {
+  for (const storedVersion of [3, 4]) {
+    const h = await background();
+    await h.api.recordForPopup({ success: false, added: 0, failed: 1,
+      failedUrls: ['https://download.example/a'], blockConnection: true,
+      namedReason: true, errorMessage: 'current login failure' }, h.connection, storedVersion);
+    h.data.session.connectionVersion = storedVersion;
+    const p = popup(h);
+    p.context.savedConnection = defaults;
+    p.evaluate('settings = { ...settings, ...savedConnection };');
+    // A reader can already see version 4 while the latest delivered event
+    // still describes version 3. Neither that case nor equal versions is stale.
+    h.browser.storage.onChanged.emit({ connectionVersion: { newValue: 3 } }, 'session');
+    await p.api.consumeLastAdd();
+    assert.equal(p.evaluate('connectBlocked'), true, String(storedVersion));
+    assert.equal(p.nodes.get('statusText').textContent, 'connectionFailed');
+    assert.match(p.evaluate('linksMessageEl.textContent'), /current login failure/);
+  }
+});
+
+test('a sign-in that succeeds later overtakes the older refusal', async () => {
+  let refusing = true;
+  const h = await background(async (_, options) => {
+    const method = options.body?.get('method');
+    if (method === 'create') throw new TypeError('Connection reset');
+    if (method === 'list')  return response({ success: false, error: { code: 105 } });
+    if (method === 'login') {
+      return refusing ? response({ success: false, error: { code: 400 } })
+        : response({ success: true, data: { sid: 'new-sid' } });
+    }
+    return success();
+  });
+  const version = await h.api.readConnectionVersion();
+  const outcome = await h.api.addDownloadTasksBulk(['https://download.example/a'], '');
+  // Whatever was wrong is put right — a code typed, a locked account released,
+  // the NAS woken — and Test goes through. Nothing in the settings changes, so
+  // the connection is the same one from beginning to end.
+  refusing = false;
+  assert.equal((await h.send({ action: 'testConnection' })).success, true);
+  // Only now does the add's refusal reach a popup.
+  await h.api.recordForPopup(outcome, h.connection, version);
+
+  const p = popup(h);
+  p.context.savedConnection = defaults;
+  p.evaluate('settings = { ...settings, ...savedConnection };');
+  p.evaluate("activateTab('tasks');");
+  await p.api.consumeLastAdd();
+
+  // The account has signed in since. A refusal from before that says nothing
+  // about the session now standing, and it used to bar it all the same.
+  assert.equal(p.evaluate('connectionKey(settings)'), h.connection);
+  assert.match(p.evaluate('linksMessageEl.textContent'), /errLoginFailed/);
+  assert.equal(p.evaluate('connectBlocked'), false);
+  assert.notEqual(p.nodes.get('statusText').textContent, 'connectionFailed');
+});
+
+test('a certificate refusal during discovery is not an action that may have happened', async () => {
+  let h;
+  h = await background(async (url) => {
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  }, { session: { apiPaths: null } });
+
+  const err = await h.api.apiBulkTaskAction('pause', ['dbid_1']).then(() => null, caught => caught);
+
+  // Discovery is preparation, like the sign-in: only query.cgi went out, and no
+  // pause was ever sent to be uncertain about.
+  assert.equal(h.requests.length, 1);
+  assert.match(h.requests[0].url, /query\.cgi/);
+  assert.equal(err.deliveryUnknown, false);
+  assert.equal(err.certificateError, true);
+  assert.match(err.message, /^errCertificate:/);
+});
+
+test('the lookup stops at a refused certificate instead of asking out its budget', async () => {
+  let h;
+  h = await background(async (url) => {
+    h.webRequest.onErrorOccurred.emit({ error: CERT_PROSE, type: 'xmlhttprequest', tabId: -1, url,
+      originUrl: h.browser.runtime.getURL('_generated_background_page.html') });
+    throw new TypeError('NetworkError when attempting to fetch resource.');
+  });
+
+  const out = await h.evaluate(
+    "onNas(['https://download.example/a'], sessionEpoch, LINK_MATCH.taskKeys)");
+
+  // The same wall as a refused sign-in: asking again cannot get past it. It
+  // used to ask for the whole budget and then report the NAS as unreachable.
+  assert.equal(out.refusal?.certificateError, true);
+  assert.equal(h.requests.length, 1);
+});
+
+test('discovery passes a refused certificate on instead of guessing paths', async () => {
+  const h = await refusing(CERT_PROSE);
+  h.evaluate('cachedApiPaths = null;');
+
+  // discoverApiPaths itself, not a request that merely resembles its own. Its
+  // whole business is to swallow failures and carry on with the well-known
+  // paths, and a refused certificate is the one failure that cannot be carried
+  // on from — the next request goes to the same address and is refused again.
+  const err = await h.evaluate(`discoverApiPaths('https', ${JSON.stringify(defaults.host)}, ${defaults.port})`)
+    .then(() => null, caught => caught);
+  assert.equal(err?.certificateError, true, 'discovery swallowed it');
+  assert.equal(h.requests.length, 1);
 });
 
 test('a port that is not a port cannot replace the stored one', async () => {
@@ -2708,12 +4687,22 @@ test('the Settings tab shows the version from the manifest', () => {
 test('release files parse, manifest assets exist and locale keys stay in sync', () => {
   for (const file of ['actions.js', 'background.js', 'content.js', 'popup/popup.js']) new vm.Script(read(file));
   const manifest = JSON.parse(read('manifest.json'));
-  assert.equal(manifest.version, '1.1.3');
+  assert.equal(manifest.version, '1.1.4');
   for (const file of [...manifest.background.scripts, ...manifest.content_scripts.flatMap(s => s.js),
     manifest.action.default_popup, ...Object.values(manifest.icons)]) assert.ok(fs.existsSync(path.join(root, file)), file);
   // The default policy for Manifest V3 rewrites http requests to https, which
   // is why a NAS on plain http could not be reached from here at all. Ours is
   // as strict as the default about scripts and leaves that rewrite out.
+  // Pinned as a set, so a permission cannot be added or dropped unnoticed —
+  // every one of these is something the review and the install prompt answer
+  // for. webRequest is here for the browser's own reason a request failed,
+  // which fetch is required by its standard never to disclose.
+  assert.deepEqual([...manifest.permissions].sort(),
+    ['alarms', 'contextMenus', 'notifications', 'storage', 'webRequest']);
+  // Without this the content script reaches the top document only, and a magnet
+  // link clicked inside an ordinary iframe never gets to the listener at all.
+  assert.equal(manifest.content_scripts[0].all_frames, true);
+
   const csp = manifest.content_security_policy.extension_pages;
   assert.match(csp, /script-src 'self'/);
   assert.match(csp, /object-src 'self'/);

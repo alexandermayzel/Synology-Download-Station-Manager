@@ -2,8 +2,9 @@
   "htmlLang": { "message": "de" },
   "portInvalid": { "message": "Der Port muss eine ganze Zahl zwischen 1 und 65535 sein." },
   "protocolInsecure": { "message": "HTTP überträgt Passwort und Sitzungs-ID unverschlüsselt. Es wird empfohlen HTTPS zu nutzen, um die Daten verschlüsselt zu übertragen." },
+  "hostIpCert": { "message": "Bei HTTPS muss das Zertifikat zur eingetragenen Adresse passen. Gilt dein NAS-Zertifikat nur für einen Hostnamen, verwende diesen statt der IP-Adresse." },
   "extensionName": { "message": "Synology - Download Station Manager" },
-  "extensionDescription": { "message": "Sende Links, Magnet- und Torrent-Links an Synology Download Station und verwalte Downloads direkt in Firefox – ohne DSM." },
+  "extensionDescription": { "message": "Sende Links, Magnet- und Torrent-Links an Synology Download Station und verwalte Downloads direkt in Firefox – ohne DSM zu öffnen." },
   "contextMenuTitle": { "message": "Mit Download Station herunterladen" },
 
   "loading": { "message": "Wird geladen…" },
@@ -23,6 +24,7 @@
   },
   "retryLinkKeptUnsent": { "message": "Die NAS hat die Löschung nicht bestätigt, daher wurde nichts neu hinzugefügt. Der Link steht wieder in der Linkliste — prüfe vor erneutem Hinzufügen die Aufgaben auf der NAS." },
   "retryLinkKeptUnknown": { "message": "Die ursprüngliche Aufgabe wurde entfernt. Ob die neue Aufgabe angelegt wurde, ist unklar — prüfe vor erneutem Hinzufügen die Aufgabenliste. Der Link steht wieder in der Linkliste." },
+  "retryLinkKeptSwitched": { "message": "Die ursprüngliche Aufgabe wurde entfernt. Eine neue Aufgabe wurde nicht angelegt, weil die bisherige Verbindung inzwischen geändert oder beendet wurde. Der Link steht wieder in der Linkliste." },
   "actionResultUnknown": { "message": "Die NAS hat das Ergebnis nicht bestätigt — prüfe die Aufgabenliste, bevor du es erneut versuchst." },
   "retryOriginalFolder": {
     "message": "Ursprünglicher Ordner: $FOLDER$",
@@ -41,6 +43,13 @@
   },
   "connectionFailed": { "message": "Verbindung fehlgeschlagen" },
   "errNasUnreachable": { "message": "Die NAS hat nicht geantwortet. Möglicherweise schläft sie oder ist nicht erreichbar." },
+  "errCertificate": { "message": "Die sichere Verbindung zur NAS ist fehlgeschlagen. Firefox meldet: „$REASON$“ Prüfe die NAS-Adresse und das Zertifikat.", "placeholders": { "REASON": { "content": "$1", "example": "Angeforderter Domainname stimmt nicht mit dem Zertifikat des Servers überein." } } },
+  "connProblemSecure": { "message": "Sichere Verbindung fehlgeschlagen", "description": "Heading of the connection panel in the popup when the browser itself turned the connection down." },
+  "connProblemAddress": { "message": "Adresse: $ADDRESS$", "description": "The address the failure happened at, scheme, host and port only.", "placeholders": { "ADDRESS": { "content": "$1", "example": "https://192.168.1.2:5001" } } },
+  "connProblemLastAttempt": { "message": "Letzter Versuch: Die NAS hat nicht geantwortet.", "description": "Shown when the most recent attempt was an ordinary network failure and the reason below it is kept from an earlier one." },
+  "connProblemReason": { "message": "Firefox meldet: „$REASON$“", "description": "The browser's own wording, already translated, quoted rather than restated.", "placeholders": { "REASON": { "content": "$1", "example": "Angeforderter Domainname stimmt nicht mit dem Zertifikat des Servers überein." } } },
+  "connProblemEarlier": { "message": "Bei einem früheren Versuch meldete Firefox: „$REASON$“", "description": "The same wording, named as older news so it does not read as a cause confirmed again just now.", "placeholders": { "REASON": { "content": "$1", "example": "Angeforderter Domainname stimmt nicht mit dem Zertifikat des Servers überein." } } },
+  "connProblemAdvice": { "message": "Prüfe die NAS-Adresse und das Zertifikat." },
   "extensionError": { "message": "Fehler in der Erweiterung" },
   "backgroundUnavailable": { "message": "Hintergrunddienst nicht verfügbar" },
   "backgroundUnreachable": { "message": "Hintergrunddienst nicht erreichbar." },
@@ -66,14 +75,14 @@
   "linksFailed": { "message": "$COUNT$ Link(s) konnten nicht hinzugefügt werden. Sie stehen noch in der Liste.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ Link(s) konnten nicht hinzugefügt werden: $REASON$ Sie stehen noch in der Liste.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
   "linkHasComma": { "message": "Ein Link mit Komma kann nicht gesendet werden: Die NAS liest Kommas als Trennzeichen zwischen Links." },
-  "linksUncertain": { "message": "Die NAS hat nicht geantwortet. Ob diese $COUNT$ Link(s) angekommen sind, ist unklar. Bitte in den Aufgaben nachsehen, bevor du es erneut versuchst.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksUncertain": { "message": "Das Hinzufügen von $COUNT$ Link(s) wurde nicht bestätigt. Prüfe die Aufgabenliste, bevor du sie erneut hinzufügst.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Fertig" },
   "filterPaused": { "message": "Pausiert" },
   "refresh": { "message": "Aktualisieren" },
-  "pauseAll": { "message": "Alle anhalten" },
+  "pauseAll": { "message": "Alle pausieren" },
   "resumeAll": { "message": "Alle fortsetzen" },
-  "clearFinished": { "message": "Alle fertigen Downloads aufräumen" },
+  "clearFinished": { "message": "Abgeschlossene Aufgaben entfernen" },
   "deleteAll": { "message": "Alle Aufgaben löschen" },
   "confirmDeleteAll": { "message": "Alle Aufgaben löschen? Laufende Downloads werden abgebrochen, das lässt sich nicht rückgängig machen." },
   "cancel": { "message": "Abbrechen" },
@@ -118,7 +127,7 @@
   "intervalManual": { "message": "Nur manuell" },
 
   "sortTasksBy": { "message": "Aufgaben sortieren nach" },
-  "sortStatus": { "message": "Nach Status" },
+  "sortStatus": { "message": "Status" },
   "sortAdded": { "message": "Hinzugefügt am" },
   "sortName": { "message": "Name" },
   "sortProgress": { "message": "Fortschritt" },
@@ -127,7 +136,7 @@
   "sortAscending": { "message": "Aufsteigend" },
 
   "statusOrder": { "message": "Status-Reihenfolge" },
-  "statusOrderHint": { "message": "Am Griff ziehen oder die Pfeile verwenden. Was oben steht, wird zuerst angezeigt — laufende Downloads bleiben so auf Seite 1." },
+  "statusOrderHint": { "message": "Ändere die Reihenfolge mit dem Griff oder den Pfeilen. Die Statusgruppen erscheinen in der hier festgelegten Reihenfolge." },
   "reset": { "message": "Zurücksetzen" },
   "moveUp": { "message": "Nach oben" },
   "moveDown": { "message": "Nach unten" },
@@ -154,8 +163,8 @@
   "settingsDownloads": { "message": "Downloads" },
   "settingsNotifications": { "message": "Benachrichtigungen" },
   "autoCaptureMagnets": { "message": "Magnet-Links automatisch abfangen" },
-  "extractArchives": { "message": "Archive automatisch entpacken" },
-  "extractArchivesHint": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein. Entpacken muss die NAS selbst: in DSM unter Download Station > Einstellungen > Automatisch extrahieren den Haken bei Automatisches Extrahieren für heruntergeladene Dateien aktivieren setzen. Das stellt jedes Konto für sich ein, voreingestellt ist es aus." },
+  "extractArchives": { "message": "Archiv-Passwort eingeben" },
+  "extractArchivesHint": { "message": "Blendet neben der Linkliste ein Feld für das Archiv-Passwort ein. Entpacken muss die NAS selbst: Öffne in DSM Download Station > Einstellungen > Automatisch extrahieren. Setze dort den Haken bei „Automatisches Extrahieren für heruntergeladene Dateien aktivieren“. Das stellt jedes Konto für sich ein, voreingestellt ist es aus." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -172,13 +181,13 @@
   "statusHostWaiting": { "message": "Wartet auf Hoster" },
   "keepaliveLabel": { "message": "Sitzung im Hintergrund aktiv halten" },
   "keepaliveHint": {
-    "message": "Fragt die NAS alle 3 Minuten ab, damit das Popup sofort „Verbunden“ anzeigt. Aktivieren kann den Ruhezustand der Festplatten auf der NAS bei Inaktivität verhindern."
+    "message": "Hält eine bestehende NAS-Sitzung durch regelmäßige Abfragen im Hintergrund aktiv. Das kann den Ruhezustand der NAS-Festplatten verhindern."
   },
   "defaultDestination": { "message": "Standard-Zielordner (optional)" },
   "destinationHint": {
     "message": "Pfad einschließlich Freigabenamen, ohne führenden Schrägstrich (z. B. „downloads/series“, nicht „/downloads/series“ oder „/volume1/downloads/series“). Leer lassen, um den bereits auf der NAS eingestellten Standardordner zu verwenden (DSM → Download Station → Einstellungen → Allgemein)."
   },
-  "addNotListed": { "message": "Die NAS antwortet, führt den Download aber nicht — er ist nicht angekommen." },
+  "addNotListed": { "message": "Die NAS hat geantwortet, der Download wurde aber nicht in ihrer Aufgabenliste gefunden." },
   "addNasUnreachable": { "message": "Die NAS ist nicht erreichbar, daher ließ sich nicht prüfen, ob der Download angekommen ist." },
   "resetAll": { "message": "Alle Einstellungen zurücksetzen" },
   "appVersion": { "message": "Version $VERSION$", "placeholders": { "VERSION": { "content": "$1" } } },
@@ -202,9 +211,11 @@
   "notifyPausedCount": { "message": "$COUNT$ pausiert",       "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Fehlgeschlagen" },
   "notifyError": { "message": "Download Station — Fehler" },
+  "notifyAddUnconfirmed": { "message": "Download unbestätigt – zuerst Aufgaben prüfen" },
+  "notifyCertificate": { "message": "Sichere Verbindung zur NAS fehlgeschlagen. Der Grund steht unter Einstellungen → Verbindung.", "description": "Notification body. Deliberately short: a notification shows one line and cuts off the rest, and the browser's own reason is regularly longer than that." },
   "notifyPartial": { "message": "Download Station — Teilweise fehlgeschlagen" },
   "notifyWaking": { "message": "Die Verbindung zur NAS konnte noch nicht hergestellt werden. Ein weiterer Versuch folgt." },
-  "notifyUncertain": { "message": "Die NAS hat nicht geantwortet. Ob der Download angekommen ist, ist unbekannt — vor einem neuen Versuch unter Aufgaben nachsehen." },
+  "notifyUncertain": { "message": "Das Hinzufügen wurde nicht bestätigt. Prüfe die Aufgabenliste, bevor du den Link erneut hinzufügst." },
   "notifyBulkUncertainCount": { "message": "$COUNT$ ungewiss — vor einem neuen Versuch unter Aufgaben nachsehen.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "$COUNT$ Link(s) hinzugefügt",
@@ -279,12 +290,12 @@
 
   "errTask400": { "message": "Die NAS konnte diese Datei oder diesen Link nicht annehmen." },
   "errTask401": { "message": "Maximale Anzahl an Download-Aufgaben auf der NAS erreicht." },
-  "errTask402": { "message": "Zugriff auf den Zielordner verweigert — prüfen Sie, ob dieses Konto Lese-/Schreibrechte darauf hat." },
-  "errTask403": { "message": "Zielordner nicht gefunden — prüfen Sie den Ordnernamen (Reiter „Einstellungen“) und ob dieses Konto Zugriff darauf hat." },
-  "errTask403NoDest": { "message": "Der auf der NAS selbst eingestellte Standard-Zielordner existiert nicht oder ist für dieses Konto nicht sichtbar. Tragen Sie unter Einstellungen → Standard-Zielordner einen gültigen Ordner ein, oder korrigieren Sie ihn in DSM unter Download Station → Einstellungen → Allgemein." },
+  "errTask402": { "message": "Zugriff auf den Zielordner verweigert — prüfe, ob dieses Konto Lese-/Schreibrechte darauf hat." },
+  "errTask403": { "message": "Zielordner nicht gefunden — prüfe den Ordnernamen (Reiter „Einstellungen“) und ob dieses Konto Zugriff darauf hat." },
+  "errTask403NoDest": { "message": "Der auf der NAS selbst eingestellte Standard-Zielordner existiert nicht oder ist für dieses Konto nicht sichtbar. Trage im Reiter „Einstellungen“ unter „Standard-Zielordner“ einen gültigen Ordner ein, oder korrigiere ihn in DSM unter Download Station → Einstellungen → Allgemein." },
   "errTask404": { "message": "Aufgabe nicht gefunden (möglicherweise wurde sie auf der NAS bereits entfernt)." },
   "errTask405": { "message": "Diese Aktion ist für diese Aufgabe derzeit nicht möglich." },
-  "errTask406": { "message": "Es ist kein Standard-Zielordner festgelegt. Legen Sie einen in DSM unter Download Station → Einstellungen → Allgemein fest, oder tragen Sie „Standard-Zielordner“ im Reiter „Einstellungen“ dieser Erweiterung ein." },
+  "errTask406": { "message": "Es ist kein Standard-Zielordner festgelegt. Lege einen in DSM unter Download Station → Einstellungen → Allgemein fest, oder trage im Reiter „Einstellungen“ dieser Erweiterung unter „Standard-Zielordner“ einen Ordner ein." },
   "errTask407": { "message": "Der Zielordner konnte nicht gesetzt werden." },
   "errTask408": { "message": "Quelldatei nicht gefunden." }
 

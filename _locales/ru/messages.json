@@ -2,8 +2,9 @@
   "htmlLang": { "message": "ru" },
   "portInvalid": { "message": "Порт должен быть целым числом от 1 до 65535." },
   "protocolInsecure": { "message": "HTTP передаёт пароль и идентификатор сессии в открытом виде. Рекомендуется использовать HTTPS, чтобы данные передавались в зашифрованном виде." },
+  "hostIpCert": { "message": "По HTTPS сертификат должен соответствовать указанному адресу. Если сертификат вашего NAS выдан только на имя узла, укажите это имя вместо IP-адреса." },
   "extensionName": { "message": "Synology - Download Station Manager" },
-  "extensionDescription": { "message": "Отправляйте ссылки, magnet- и torrent-ссылки в Synology Download Station и управляйте загрузками прямо в Firefox — без DSM." },
+  "extensionDescription": { "message": "Отправляйте ссылки, magnet- и torrent-ссылки в Synology Download Station и управляйте загрузками прямо в Firefox — не открывая DSM." },
   "contextMenuTitle": { "message": "Скачать через Download Station" },
 
   "loading": { "message": "Загрузка…" },
@@ -23,6 +24,7 @@
   },
   "retryLinkKeptUnsent": { "message": "NAS не подтвердил удаление, поэтому ничего не добавлялось заново. Ссылка возвращена в список ссылок — проверьте задачи на NAS, прежде чем добавлять её." },
   "retryLinkKeptUnknown": { "message": "Исходная задача удалена. Была ли создана новая, неизвестно — проверьте список задач, прежде чем добавлять снова. Ссылка возвращена в список ссылок." },
+  "retryLinkKeptSwitched": { "message": "Исходная задача удалена. Новая задача не создана, так как соответствующее подключение было изменено или завершено. Ссылка возвращена в список ссылок." },
   "actionResultUnknown": { "message": "NAS не подтвердил результат — проверьте список задач, прежде чем пробовать снова." },
   "retryOriginalFolder": {
     "message": "Исходная папка: $FOLDER$",
@@ -41,6 +43,13 @@
   },
   "connectionFailed": { "message": "Не удалось подключиться" },
   "errNasUnreachable": { "message": "NAS не ответил. Возможно, он спит или недоступен." },
+  "errCertificate": { "message": "Защищённое соединение с NAS не удалось. Firefox сообщает: «$REASON$» Проверьте адрес NAS и сертификат.", "placeholders": { "REASON": { "content": "$1", "example": "Запрошенное доменное имя не совпадает с сертификатом сервера." } } },
+  "connProblemSecure": { "message": "Защищённое соединение не удалось", "description": "Heading of the connection panel in the popup when the browser itself turned the connection down." },
+  "connProblemAddress": { "message": "Адрес: $ADDRESS$", "description": "The address the failure happened at, scheme, host and port only.", "placeholders": { "ADDRESS": { "content": "$1", "example": "https://192.168.1.2:5001" } } },
+  "connProblemLastAttempt": { "message": "Последняя попытка: NAS не ответил.", "description": "Shown when the most recent attempt was an ordinary network failure and the reason below it is kept from an earlier one." },
+  "connProblemReason": { "message": "Firefox сообщает: «$REASON$»", "description": "The browser's own wording, already translated, quoted rather than restated.", "placeholders": { "REASON": { "content": "$1", "example": "Запрошенное доменное имя не совпадает с сертификатом сервера." } } },
+  "connProblemEarlier": { "message": "При более ранней попытке Firefox сообщил: «$REASON$»", "description": "The same wording, named as older news so it does not read as a cause confirmed again just now.", "placeholders": { "REASON": { "content": "$1", "example": "Запрошенное доменное имя не совпадает с сертификатом сервера." } } },
+  "connProblemAdvice": { "message": "Проверьте адрес NAS и сертификат." },
   "extensionError": { "message": "Ошибка расширения" },
   "backgroundUnavailable": { "message": "Фоновая служба недоступна" },
   "backgroundUnreachable": { "message": "Не удалось связаться с фоновой службой." },
@@ -66,14 +75,14 @@
   "linksFailed": { "message": "Не удалось добавить ссылок: $COUNT$. Они остались в списке.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "Не удалось добавить ссылок: $COUNT$ — $REASON$ Они остались в списке.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
   "linkHasComma": { "message": "Ссылку с запятой отправить нельзя: NAS воспринимает запятые как разделитель между ссылками." },
-  "linksUncertain": { "message": "NAS не ответил, поэтому неизвестно, дошли ли эти ссылки ($COUNT$). Проверьте задачи, прежде чем пробовать снова.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksUncertain": { "message": "Добавление ссылок ($COUNT$) не подтверждено. Проверьте «Задачи», прежде чем добавлять их снова.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Завершённые" },
   "filterPaused": { "message": "На паузе" },
   "refresh": { "message": "Обновить" },
   "pauseAll": { "message": "Приостановить все" },
   "resumeAll": { "message": "Возобновить все" },
-  "clearFinished": { "message": "Очистить завершённые загрузки" },
+  "clearFinished": { "message": "Удалить завершённые задачи" },
   "deleteAll": { "message": "Удалить все задачи" },
   "confirmDeleteAll": { "message": "Удалить все задачи? Текущие загрузки будут отменены, отменить это действие нельзя." },
   "cancel": { "message": "Отмена" },
@@ -118,7 +127,7 @@
   "intervalManual": { "message": "Только вручную" },
 
   "sortTasksBy": { "message": "Сортировать задачи по" },
-  "sortStatus": { "message": "По статусу" },
+  "sortStatus": { "message": "Статус" },
   "sortAdded": { "message": "Дате добавления" },
   "sortName": { "message": "Имени" },
   "sortProgress": { "message": "Прогрессу" },
@@ -127,7 +136,7 @@
   "sortAscending": { "message": "По возрастанию" },
 
   "statusOrder": { "message": "Порядок статусов" },
-  "statusOrderHint": { "message": "Перетащите за маркер или используйте стрелки. То, что вверху, показывается первым — активные загрузки остаются на странице 1." },
+  "statusOrderHint": { "message": "Измените порядок маркером или стрелками. Группы статусов отображаются в заданном здесь порядке." },
   "reset": { "message": "Сбросить" },
   "moveUp": { "message": "Вверх" },
   "moveDown": { "message": "Вниз" },
@@ -154,8 +163,8 @@
   "settingsDownloads": { "message": "Загрузки" },
   "settingsNotifications": { "message": "Уведомления" },
   "autoCaptureMagnets": { "message": "Автоматически перехватывать magnet-ссылки" },
-  "extractArchives": { "message": "Автоматически распаковывать архивы" },
-  "extractArchivesHint": { "message": "Добавляет рядом со списком ссылок поле для пароля архива. Распаковку выполняет сам NAS: в DSM в разделе Download Station > Настройки > Автоматическая распаковка отметьте Включить автоматическую распаковку для загруженных файлов. Каждая учётная запись задаёт это для себя, и по умолчанию она выключена." },
+  "extractArchives": { "message": "Вводить пароль архива" },
+  "extractArchivesHint": { "message": "Добавляет рядом со списком ссылок поле для пароля архива. Распаковку выполняет сам NAS: в DSM откройте Download Station > Настройки > Автоматическая распаковка. Отметьте там «Включить автоматическую распаковку для загруженных файлов». Эта настройка задаётся отдельно для каждой учётной записи и по умолчанию отключена." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -172,13 +181,13 @@
   "statusHostWaiting": { "message": "Ожидание хостинга" },
   "keepaliveLabel": { "message": "Поддерживать сеанс в фоновом режиме" },
   "keepaliveHint": {
-    "message": "Опрашивает NAS каждые 3 минуты, чтобы окно сразу показывало «Подключено». Включение может помешать переходу жёстких дисков NAS в спящий режим при простое."
+    "message": "Поддерживает существующий сеанс NAS фоновыми запросами. Это может помешать жёстким дискам NAS перейти в спящий режим."
   },
   "defaultDestination": { "message": "Папка назначения по умолчанию (необязательно)" },
   "destinationHint": {
     "message": "Путь, начинающийся с имени общей папки, без ведущей косой черты (например, «downloads/series», а не «/downloads/series» или «/volume1/downloads/series»). Оставьте пустым, чтобы использовать папку назначения, уже настроенную на самом NAS (DSM → Download Station → Настройки → Общие)."
   },
-  "addNotListed": { "message": "NAS ответил, но не показывает загрузку — она не добавлена." },
+  "addNotListed": { "message": "NAS ответил, но загрузка не найдена в его списке задач." },
   "addNasUnreachable": { "message": "NAS недоступен, поэтому не удалось проверить, дошла ли загрузка." },
   "resetAll": { "message": "Сбросить все настройки" },
   "appVersion": { "message": "Версия $VERSION$", "placeholders": { "VERSION": { "content": "$1" } } },
@@ -202,9 +211,11 @@
   "notifyPausedCount": { "message": "на паузе: $COUNT$",   "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Ошибка" },
   "notifyError": { "message": "Download Station — Ошибка" },
+  "notifyAddUnconfirmed": { "message": "Загрузка не подтверждена — проверьте задачи" },
+  "notifyCertificate": { "message": "Защищённое соединение с NAS не удалось. Причина — в разделе Настройки → Подключение.", "description": "Notification body. Deliberately short: a notification shows one line and cuts off the rest, and the browser's own reason is regularly longer than that." },
   "notifyPartial": { "message": "Download Station — Частичная ошибка" },
   "notifyWaking": { "message": "Подключиться к NAS пока не удалось. Будет ещё одна попытка." },
-  "notifyUncertain": { "message": "NAS не ответил. Дошла ли загрузка, неизвестно — проверьте «Задачи», прежде чем добавлять её снова." },
+  "notifyUncertain": { "message": "Добавление не подтверждено. Проверьте «Задачи», прежде чем добавлять ссылку снова." },
   "notifyBulkUncertainCount": { "message": "$COUNT$ с неясным результатом — проверьте «Задачи», прежде чем добавлять снова.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "Добавлено ссылок: $COUNT$",

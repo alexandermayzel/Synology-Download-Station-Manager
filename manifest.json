@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extensionName__",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "__MSG_extensionDescription__",
   "default_locale": "en",
   "icons": {
@@ -23,6 +23,7 @@
       "js": [
         "content.js"
       ],
+      "all_frames": true,
       "run_at": "document_start"
     }
   ],
@@ -30,7 +31,8 @@
     "alarms",
     "contextMenus",
     "storage",
-    "notifications"
+    "notifications",
+    "webRequest"
   ],
   "host_permissions": [
     "*://*/*"
@@ -53,7 +55,8 @@
       "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": [
-          "none"
+          "authenticationInfo",
+          "websiteContent"
         ],
         "optional": []
       }

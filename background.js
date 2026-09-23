@@ -98,6 +98,23 @@ async function notify(category, title, message) {
   notifyAlways(title, message);
 }
 
+/**
+ * What a notification says about a failure.
+ *
+ * A notification has room for one short line and Firefox cuts off the rest —
+ * and for a refused certificate the part that disappeared was the browser's own
+ * reason, which is the part worth reading. Quoting it here was doing the user
+ * no good at all. So the long form is not sent to a notification any more: this
+ * says what happened and where the whole of it stands, and the connection panel
+ * in the popup carries the reason in full, where it can also be copied.
+ *
+ * Only the certificate case is shortened. Everything else already fits.
+ */
+function shortReason(err, fallback = null) {
+  if (err?.certificateError === true) return msg('notifyCertificate');
+  return err?.message ?? fallback;
+}
+
 function notifyAlways(title, message) {
   browser.notifications.create({
     type:    'basic',
@@ -193,7 +210,7 @@ async function getSettings() {
 }
 
 function buildBaseUrl(protocol, host, port) {
-  return `${protocol}://${host}:${port}/webapi`;
+  return `${buildConnectionUrl(protocol, host, port)}/webapi`;
 }
 
 /**
@@ -240,41 +257,650 @@ const MAX_ATTEMPTS = 4;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * What the browser refused, recorded so it can be read back.
+ *
+ * fetch collapses every network failure into one opaque TypeError — the Fetch
+ * standard requires it, so that a page cannot use failures to probe the
+ * network. An expired certificate, one issued for a different name, and a NAS
+ * that is genuinely asleep therefore reach the catch in fetchOnce
+ * indistinguishable from one another, and all three are reported as "the NAS
+ * did not answer" and tried three more times.
+ *
+ * webRequest.onErrorOccurred is the one place Firefox names the real reason.
+ * MDN calls details.error an internal string with no promise to stay the same
+ * between releases, so nothing is classified from it here yet: this records
+ * what actually arrives, so the classification can be built on an observed
+ * value instead of a guess.
+ */
+/** Match patterns the listener is registered for. Added to, never pruned. */
+const watchedPatterns = new Set();
+/**
+ * Addresses this extension has out right now, without their query strings.
+ *
+ * Each entry counts the requests to that address and remembers whether two
+ * were ever out together. The flag has to outlive the overlap: the second
+ * request often finishes first, and by the time the first one asks, a count
+ * taken at that moment says one and looks unambiguous. It is cleared when the
+ * address falls quiet, which is when the entry goes.
+ */
+const inFlight = new Map();
+/** Refusals seen but not yet claimed by the request they belong to. */
+const transportFailures = [];
+/** Long enough to bridge a slow turn, short enough that nothing stale is used. */
+const TRANSPORT_MEMORY_MS = 60000;
+
+/**
+ * How long to go on asking for the browser's reason once a request has failed.
+ *
+ * fetch's rejection and the error event are raised independently, and the order
+ * measured in Firefox is the unhelpful one: the rejection first, the reason a
+ * turn or more later. The first build of this yielded exactly once and then
+ * gave up, which is why a refused certificate was named on one attempt at best
+ * and reported as an unreachable NAS on every one after it — the reason landed
+ * when the request had already been struck off, and the listener dropped it as
+ * belonging to nobody.
+ *
+ * A budget rather than a fixed pause: the wait ends the moment the reason
+ * arrives, so the full half second is only ever paid where no reason is coming
+ * at all. Our own timeout aborting a request is one such case, and simply
+ * waiting longer is no answer on its own — it moves the point at which the
+ * message is lost again rather than removing it.
+ */
+const TRANSPORT_WAIT_MS = 500;
+const TRANSPORT_WAIT_STEP_MS = 25;
+
+/**
+ * The individual requests this extension has out right now.
+ *
+ * `inFlight` counts addresses; this holds the attempts themselves, so the
+ * browser's reason can be handed to the one request that met it rather than to
+ * an address several requests share. Firefox stamps every event of one request
+ * with the same requestId, and onBeforeRequest is where that id can be learnt
+ * early enough to be of use — see noteRequestStart.
+ *
+ * An entry goes the moment its request is released, and that is what keeps a
+ * late reason off the next attempt: it carries the id of an attempt that is no
+ * longer here, so it is recorded and claimed by nobody.
+ */
+const openAttempts = new Set();
+
+/**
+ * Ids of requests that are over, and when they ended.
+ *
+ * A reason can still arrive after its request has been given up on. Handed to
+ * nobody it would fall through to the shared list below, and the next request
+ * to that address — one that has not yet learnt an id of its own, so still
+ * decides by address — would take it as its own. That is precisely what the id
+ * is here to prevent, so an id known to be finished with is enough to keep the
+ * reason out of that list altogether.
+ *
+ * Pruned on the same window as the list: the entries go in ordered by time, so
+ * the walk stops at the first one still young enough to matter.
+ */
+const retiredRequests = new Map();
+
+function retireRequest(attempt) {
+  if (attempt.requestId === null) return;
+  const at = Date.now();
+  retiredRequests.set(attempt.requestId, at);
+  for (const [id, when] of retiredRequests) {
+    if (at - when <= TRANSPORT_MEMORY_MS) break;
+    retiredRequests.delete(id);
+  }
+}
+
+/**
+ * An address without its query string, in the one spelling both sides can agree
+ * on.
+ *
+ * The query string is not part of an endpoint's identity, and this is what the
+ * in-flight bookkeeping is keyed on. Nothing secret is being kept out of it:
+ * every request that carries a session id puts it in the POST body, never in
+ * the URL — see apiListTasks and the log-keeping note at wakeNas.
+ *
+ * The settings always name a port, so a NAS on 443 is asked for
+ * "https://nas:443/webapi/…" while the browser reports the same request as
+ * "https://nas/webapi/…": the URL standard drops a scheme's default port.
+ * Compared as raw text those are two different addresses, and a genuine
+ * certificate refusal was thrown away as belonging to nobody. `origin` does
+ * that normalisation for us, and the same for host case and a stray "..".
+ */
+const addressOf = (url) => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return String(url).split('?')[0];
+  }
+};
+
+/**
+ * Listen for the hosts this extension is talking to.
+ *
+ * Driven from the requests themselves rather than from the stored settings: the
+ * filter is then right by construction for discovery, sign-in and every later
+ * call, and it follows a changed address without plumbing of its own. On an
+ * event page the registration goes when the page does, which costs nothing —
+ * the set goes with it, so the next request registers again.
+ *
+ * A pattern names scheme and host only: Firefox cannot express a port in one
+ * (bug 1362809) and does not refuse one either — a pattern carrying a port is
+ * accepted, registered, and then matches nothing at all. The first build of
+ * this asked for `https://host:5001/*` and recorded a watch that could never
+ * fire, which looked exactly like a NAS with nothing wrong.
+ *
+ * The listener therefore re-registers with the *union* of every pattern seen.
+ * Holding only the newest would drop errors from a sign-in at a new NAS while
+ * a farewell to the old one is still on its way — the two overlap, and the
+ * later registration would silently unwatch the earlier host. Nothing is
+ * pruned: this is a coarse sieve, and what it lets through is still measured
+ * against the addresses actually in flight.
+ *
+ * Two events are watched for, not one. onErrorOccurred carries the reason;
+ * onBeforeRequest carries nothing worth reading, and is here only for the
+ * requestId that ties the two together — see noteRequestStart. Neither is
+ * registered as blocking, so nothing can be held up, changed or cancelled.
+ */
+function watchTransportErrors(input) {
+  let url;
+  try {
+    url = new URL(input);
+  } catch {
+    return;
+  }
+  const pattern = `${url.protocol}//${url.hostname}/*`;
+  if (watchedPatterns.has(pattern)) return;
+  watchedPatterns.add(pattern);
+  browser.webRequest.onErrorOccurred.removeListener(recordTransportError);
+  browser.webRequest.onErrorOccurred.addListener(recordTransportError, { urls: [...watchedPatterns] });
+  browser.webRequest.onBeforeRequest.removeListener(noteRequestStart);
+  browser.webRequest.onBeforeRequest.addListener(noteRequestStart, { urls: [...watchedPatterns] });
+  // Kept so that a reading can tell "nothing went wrong" apart from "nothing
+  // was ever listening" — an empty record looks the same either way.
+  browser.storage.session.set({ transportWatch: { patterns: [...watchedPatterns], at: Date.now() } });
+}
+
+/**
+ * Whether an event is about a request this extension made itself.
+ *
+ * Asked of both watched events, so the two cannot drift apart: an id learnt
+ * from a request that was never ours would tie the wrong reason to one of
+ * these attempts, which is worse than learning no id at all.
+ */
+function ourRequest(details) {
+  // What the filter itself could not say. It carries no port and covers every
+  // host seen in this page's life, so an address this extension has out right
+  // now is what actually decides — that is both narrower than the pattern and
+  // free of its blind spots.
+  if (!inFlight.has(addressOf(details.url))) return false;
+  // And only what this extension asked for itself. The NAS's own web interface,
+  // open in a tab, fails against the very same certificate — and adopting its
+  // failure would put a message on screen about a request nobody here made. A
+  // request belonging to a tab carries that tab's id; ours belong to no tab.
+  if (details.tabId !== -1) return false;
+  // originUrl names what triggered the request. Where it is given it has to be
+  // this extension; where it is not, its absence is no reason to discard —
+  // requiring it would silently throw away every event if a build left it out.
+  if (details.originUrl && !details.originUrl.startsWith(browser.runtime.getURL(''))) return false;
+  return true;
+}
+
+/**
+ * Tie a request's id to the attempt that made it, while that is still knowable.
+ *
+ * Firefox stamps every event of one request with the same requestId, and it is
+ * the only thing that tells two requests to the same address apart. By the time
+ * the refusal arrives it is far too late to work out whose it is: address and
+ * time cannot do it — `create` and `list` go to the same endpoint and are
+ * regularly out together — and until now a refusal that met either of them was
+ * given up on rather than risk blaming the wrong one.
+ *
+ * The oldest attempt still without an id is the one this belongs to: requests
+ * to one address go out in the order they were started, and the browser reports
+ * their starts in that same order.
+ *
+ * Nothing here depends on the id arriving. An attempt that never gets one falls
+ * back to the address, exactly as before.
+ */
+function noteRequestStart(details) {
+  if (!ourRequest(details)) return;
+  // An id that is not given is no id at all. Binding an attempt to `undefined`
+  // would mark it identified and so deaf to the address-based claim as well,
+  // which is worse than never having been identified in the first place.
+  // An id that is not given is no id at all. Binding an attempt to `undefined`
+  // would mark it identified and so deaf to the address-based claim as well,
+  // which is worse than never having been identified in the first place.
+  // An id that is not given is no id at all. Binding an attempt to `undefined`
+  // would mark it identified and so deaf to the address-based claim as well,
+  // while the reason it waits for is filed under an id it never learnt.
+  if (details.requestId === undefined || details.requestId === null) return;
+  const address = addressOf(details.url);
+  for (const attempt of openAttempts) {
+    if (attempt.address !== address || attempt.requestId !== null) continue;
+    attempt.requestId = details.requestId;
+    return;
+  }
+}
+
+function recordTransportError(details) {
+  if (!ourRequest(details)) return;
+
+  // Deliberately not narrowed by request type. If these requests do not carry
+  // the type expected of them, a type filter would drop the very event being
+  // measured — so the type is recorded instead. The query string is dropped
+  // because it is not part of the address this is filed under — see addressOf.
+  const seen = {
+    error: details.error,
+    type:  details.type,
+    url:   addressOf(details.url),
+    at:    Date.now(),
+  };
+  browser.storage.session.set({ lastTransportError: seen });
+
+  // Handed straight to the attempt whose id this carries. That attempt is still
+  // waiting for it, and being named outright it needs none of the caution below
+  // — two requests to the same address no longer make each other's reason
+  // unusable, because neither is guessing which one it is.
+  const owner = [...openAttempts].find(attempt => attempt.requestId !== null
+    && attempt.requestId === details.requestId);
+  if (owner) {
+    owner.seen = seen;
+    return;
+  }
+
+  // An id we know belonged to a request that is over. Nobody here can claim it,
+  // and in the shared list it would be handed to whatever asks next at that
+  // address — the one thing the id exists to prevent. Written down above, kept
+  // out of the list here.
+  const requestId = details.requestId ?? null;
+  if (requestId !== null && retiredRequests.has(requestId)) return;
+
+  // No id to go by, or one belonging to an attempt still waiting that has not
+  // learnt it yet. Held in memory as well as written down, because fetchOnce
+  // asks for it in the same breath, where a storage read would be a turn too
+  // late. The id travels with the copy in the list, so an attempt that learns
+  // its own late can still recognise its reason here; it stays out of what is
+  // stored, which nothing reads it from.
+  transportFailures.push({ ...seen, requestId });
+  while (transportFailures.length && seen.at - transportFailures[0].at > TRANSPORT_MEMORY_MS) {
+    transportFailures.shift();
+  }
+}
+
+/**
+ * The refusal belonging to this request — only when it can be said which one
+ * that is.
+ *
+ * An address and a time do not identify a request. `create` and `list` go to
+ * the same endpoint and are regularly in flight together, and taking the
+ * failure out of the list stops it serving twice without making the one use
+ * correct. So the claim is made only where it is unambiguous: exactly one
+ * matching refusal, and no second request to the same address alongside this
+ * one. Anything else is left alone, and the caller keeps the general answer —
+ * which, unlike a wrong verdict, still says that the outcome is uncertain.
+ *
+ * `startedAt` keeps a failure from an earlier attempt out: after a retry the
+ * same address comes round again.
+ */
+function takeTransportFailure(address, startedAt) {
+  if (inFlight.get(address)?.contended) return null;
+  const matches = transportFailures.filter(seen => seen.url === address && seen.at >= startedAt);
+  if (matches.length !== 1) return null;
+  transportFailures.splice(transportFailures.indexOf(matches[0]), 1);
+  return matches[0];
+}
+
+/**
+ * The refusal carrying this request's own id, wherever it ended up.
+ *
+ * A reason can land while its attempt is still unidentified — the start event
+ * and the error event are two separate deliveries — and it then goes to the
+ * shared list rather than to the attempt. Once the id does arrive, the attempt
+ * can name its own reason there, and needs neither the address nor the timing
+ * to do it.
+ */
+function takeFailureById(requestId) {
+  const index = transportFailures.findIndex(seen => seen.requestId === requestId);
+  return index === -1 ? null : transportFailures.splice(index, 1)[0];
+}
+
+/**
+ * An ordinary network failure and a refusal by the security layer, told apart
+ * without knowing a single word of any language.
+ *
+ * Measured against Firefox 156 on 2026-09-22: an ordinary failure arrives as a
+ * symbolic name — NS_ERROR_NET_TIMEOUT, NS_ERROR_CONNECTION_REFUSED — while the
+ * security layer answers in prose, already translated for the reader ("Angefor-
+ * derter Domainname stimmt nicht mit dem Zertifikat des Servers überein"). The
+ * shape is therefore what gets asked, not the wording. This was worth measuring
+ * first: matching SSL_ERROR_BAD_CERT_DOMAIN and its relatives, which is the
+ * obvious thing to write, would have matched nothing at all here.
+ *
+ * Symbolic security names are accepted too, for a build that reports them.
+ */
+const SYMBOLIC_ERROR = /^[A-Z][A-Z0-9_]*$/;
+const SECURITY_ERROR_NAME = /^(?:SEC_ERROR|SSL_ERROR|MOZILLA_PKIX_ERROR)_/;
+
+function securityRefusal(error, secure) {
+  if (typeof error !== 'string' || error === '') return false;
+  if (SECURITY_ERROR_NAME.test(error)) return true;
+  // Prose rather than a name means the security layer spoke, and only a TLS
+  // request can have reached it. Over http the general message stands — which
+  // is also what anything unrecognised falls back to, rather than claiming a
+  // certificate is at fault.
+  return secure && !SYMBOLIC_ERROR.test(error);
+}
+
+/**
+ * The NAS address a failure is about, in the browser's own spelling.
+ *
+ * Scheme, host and port and nothing else: that is what a certificate is checked
+ * against and what the user typed into the connection fields, and it is the
+ * identity the kept message below lives under. `origin` drops a scheme's
+ * default port, so the settings' "https://nas:443" and the browser's
+ * "https://nas" come out as one address rather than two.
+ */
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The last connection failure at an address, kept for the popup to show in
+ * full.
+ *
+ * A notification shows one short line and cuts off the rest, and the browser's
+ * reason is regularly longer than that line — so it is written down here
+ * instead, and the notification only says where to read it.
+ *
+ * Two things are kept, because they answer different questions. `certificate`
+ * says what the *last* attempt ran into, and `reason` is the last reason the
+ * browser actually gave, which outlives the attempt that got it: after a
+ * refused certificate the attempts that follow usually come back as a plain
+ * unreachable NAS, and dropping the reason there would take away the one thing
+ * the user can act on. Shown as what it is — the last precise reason, not a
+ * fresh verdict — so neither is presented as more than it is.
+ *
+ * Nothing is written for a plain failure at an address with no reason on
+ * record: the general message already says that much, and a panel repeating it
+ * would be noise. That also keeps this off the ordinary path — a NAS that is
+ * simply asleep writes nothing at all.
+ */
+let connectionProblem;
+const connectionResults = new Map();
+let connectionProblemWrites = Promise.resolve();
+
+/** Order results before diagnostic lookups or storage can delay their handling. */
+function noteConnectionResult(url, epoch) {
+  const origin = originOf(url);
+  if (origin === null || epoch !== sessionEpoch) return null;
+  const result = { origin, epoch };
+  connectionResults.set(origin, result);
+  return result;
+}
+
+function currentConnectionResult(result) {
+  return result !== null && result.epoch === sessionEpoch
+    && connectionResults.get(result.origin) === result;
+}
+
+/** Persist every accepted cache change in order, including a queued clear. */
+function writeConnectionProblem(value) {
+  const write = connectionProblemWrites.then(() => {
+    // Validated before the cache changed. A newer result may leave that cache
+    // unchanged, so it must not cancel the write that brings storage up to date.
+    return value === null
+      ? browser.storage.session.remove('connectionProblem')
+      : browser.storage.session.set({ connectionProblem: value });
+  });
+  connectionProblemWrites = write.catch(() => {});
+  return write;
+}
+
+async function readConnectionProblem() {
+  if (connectionProblem !== undefined) return connectionProblem;
+  const stored = await browser.storage.session.get({ connectionProblem: null });
+  // Another request may have loaded and updated the record during this read.
+  // Its newer value, including a deliberate clear, must survive the snapshot.
+  if (connectionProblem === undefined) connectionProblem = stored.connectionProblem;
+  return connectionProblem;
+}
+
+async function rememberConnectionProblem(url, reason, epoch = sessionEpoch,
+  result = noteConnectionResult(url, epoch)) {
+  const origin = originOf(url);
+  if (!currentConnectionResult(result)) return;
+  // Only ever about the address configured now. A request to the NAS just
+  // switched away from can still fail after the switch, and its reason would
+  // take the place of the one belonging to the NAS actually in use — which the
+  // popup then shows nothing at all for, because the address no longer matches
+  // its own. Nothing is kept for an address nobody is using: there is nowhere
+  // it could be shown, and a single record cannot serve two of them.
+  const { protocol, host, port } = await getSettings();
+  if (!currentConnectionResult(result)
+    || origin !== originOf(buildConnectionUrl(protocol, host, port))) return;
+  const before = await readConnectionProblem();
+  // A newer answer at this same address retires the old diagnosis too, even
+  // when the settings have not changed and the epoch therefore still matches.
+  if (!currentConnectionResult(result)) return;
+  const kept = before?.origin === origin ? before : null;
+  if (reason === null && !kept?.reason) return;
+  const at = Date.now();
+  connectionProblem = {
+    origin,
+    certificate: reason !== null,
+    reason:      reason ?? kept?.reason ?? null,
+    reasonAt:    reason !== null ? at : (kept?.reasonAt ?? null),
+    at,
+  };
+  await writeConnectionProblem(connectionProblem);
+}
+
+async function forgetConnectionProblem(url, epoch = sessionEpoch,
+  result = noteConnectionResult(url, epoch)) {
+  if (!currentConnectionResult(result)) return;
+  const problem = await readConnectionProblem();
+  if (!currentConnectionResult(result) || problem === null || problem.origin !== originOf(url)) return;
+  connectionProblem = null;
+  await writeConnectionProblem(null);
+}
+
+/**
+ * The browser's own reason for turning this request down, when that reason was
+ * the secure connection itself — otherwise null.
+ *
+ * fetch's rejection and the error event are raised independently, so the event
+ * is usually still on its way when the catch runs. It is waited for here, for
+ * TRANSPORT_WAIT_MS at the outside, and the request stays registered for the
+ * whole of that wait — released any earlier, the listener has nothing to file
+ * the reason under and drops it.
+ *
+ * An attempt whose id is known is answered by name or not at all. The shared
+ * list is for attempts that never learnt one: a reason in it is known only to
+ * belong to this address and to have arrived within this attempt's lifetime,
+ * and both of those can be true of a reason that is really the previous
+ * request's, arriving after that request was struck off. Which is the whole
+ * hazard — a lost message is an inconvenience, one pinned on the wrong request
+ * is a wrong answer. The id is read on every turn rather than once, because it
+ * can still be on its way when the request has already failed.
+ */
+async function certificateRefusal(input, attempt) {
+  let secure;
+  try {
+    secure = new URL(input).protocol === 'https:';
+  } catch {
+    return null;
+  }
+  const until = Date.now() + TRANSPORT_WAIT_MS;
+  for (;;) {
+    const seen = attempt.requestId !== null
+      ? attempt.seen ?? takeFailureById(attempt.requestId)
+      : attempt.seen ?? takeTransportFailure(attempt.address, attempt.startedAt);
+    if (seen) return securityRefusal(seen.error, secure) ? seen.error : null;
+    if (Date.now() >= until) return null;
+    await sleep(TRANSPORT_WAIT_STEP_MS);
+  }
+}
+
+/**
  * One request, with "did not answer" told apart from "answered no".
  * fetch itself only rejects when nothing came back at all: refused connection,
  * DNS failure, TLS handshake gone wrong, or our own timeout.
  */
-async function fetchOnce(input, init, timeoutMs = REQUEST_TIMEOUT_MS) {
-  let resp;
+/**
+ * Keep the address in flight until the body has been read.
+ *
+ * fetch settles as soon as the headers are in — the body is still arriving,
+ * and the security layer can refuse it after that. Releasing at that point
+ * left the address free, so the next request to the same endpoint started
+ * uncontended and adopted the refusal belonging to the earlier one, losing its
+ * own retries in the bargain. Held until the first read either way, so the
+ * newcomer is marked contended and claims nothing.
+ *
+ * The refusal that arrives during a body is still not classified — by then the
+ * catch in fetchOnce is long past, and it surfaces at the caller's read as it
+ * always has. It is recorded, claimed by nobody, and ages out.
+ */
+/**
+ * Read a body nobody wants, so its address stays occupied until it has
+ * genuinely finished.
+ *
+ * Two answers are never read — sign-out and the wake probe, which care only
+ * that something replied — and neither is one thrown out on its status. Freeing
+ * those at the headers left the address open while their body was still on its
+ * way: the wake probe's body failing after discovery had started on the same
+ * query.cgi handed discovery a refusal that was never its own, and discovery
+ * broke off on it. Draining costs one read of an answer already paid for.
+ */
+function releaseAfterBody(resp, release) {
+  Promise.resolve()
+    .then(() => (typeof resp.text === 'function' ? resp.text() : resp.json?.()))
+    .catch(() => {})
+    .finally(release);
+}
+
+function holdUntilRead(resp, release) {
+  let released = false;
+  const done = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  return {
+    ok: resp.ok,
+    status: resp.status,
+    async json() {
+      try {
+        return await resp.json();
+      } finally {
+        done();
+      }
+    },
+  };
+}
+
+async function fetchOnce(input, init, timeoutMs = REQUEST_TIMEOUT_MS, { holdBody = true } = {}) {
+  const epoch = sessionEpoch;
+  // Before the request, so the browser's own reason for refusing it is caught.
+  watchTransportErrors(input);
+  const address = addressOf(input);
+  const attempt = { address, startedAt: Date.now(), requestId: null, seen: null };
+  const flight = inFlight.get(address) ?? { count: 0, contended: false };
+  flight.count += 1;
+  if (flight.count > 1) flight.contended = true;
+  inFlight.set(address, flight);
+  openAttempts.add(attempt);
+  let handedOver = false;
+  const release = () => {
+    retireRequest(attempt);
+    openAttempts.delete(attempt);
+    flight.count -= 1;
+    if (flight.count <= 0) inFlight.delete(address);
+  };
   try {
-    // Never follow a redirect. Every request from here carries something
-    // private — the account password, a two-factor code, or the session id —
-    // and 307 and 308 keep the method *and* the body, so a NAS, or anything
-    // answering in its place, could have those re-sent to an address of its
-    // choosing. Refusing afterwards would be too late: the body has gone.
-    // `redirect` sits after the spread so no caller can soften it.
-    resp = await fetch(input, {
-      ...init, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch {
-    const err = new Error(msg('errNasUnreachable'));
-    err.nasUnreachable = true;
-    // Fetch does not say whether a network error happened before or after the
-    // request reached the NAS. TypeError is not proof that nothing was sent.
-    err.deliveryUnknown = true;
-    throw err;
-  }
-  if (!resp.ok) {
-    const err = new Error(`HTTP ${resp.status}`);
-    // A NAS that is still starting its services answers 502/503 for a while.
-    if (resp.status >= 500) {
+    let resp, connectionResult;
+    try {
+      // Never follow a redirect. Every request from here carries something
+      // private — the account password, a two-factor code, or the session id —
+      // and 307 and 308 keep the method *and* the body, so a NAS, or anything
+      // answering in its place, could have those re-sent to an address of its
+      // choosing. Refusing afterwards would be too late: the body has gone.
+      // `redirect` sits after the spread so no caller can soften it.
+      resp = await fetch(input, {
+        ...init, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+      });
+      connectionResult = noteConnectionResult(input, epoch);
+    } catch {
+      connectionResult = noteConnectionResult(input, epoch);
+      const refusal = await certificateRefusal(input, attempt);
+      // Kept where the popup can show it in full, and kept after this attempt
+      // is over: a notification has room for one line, and the reason is worth
+      // more than that.
+      await rememberConnectionProblem(input, refusal, epoch, connectionResult);
+      if (refusal) {
+        // Two statements that have to be kept apart: what was refused, and
+        // whether anything was sent.
+        //
+        // The wording can be confident, because the browser is quoted rather
+        // than second-guessed, and repeating is pointless either way: this
+        // connection was answered and turned down, so waiting for a NAS to
+        // wake is no remedy. `nasUnreachable` is therefore left unset — that
+        // flag is what earns a retry.
+        //
+        // The delivery cannot be confident. A handshake that fails before any
+        // application data goes out sends nothing, but the security layer also
+        // speaks up *after* a request has gone — a bad MAC on a reply, say —
+        // and the two are not distinguishable from what arrives here. So this
+        // stays as uncertain as every other transport failure, and an add that
+        // may have landed is still reconciled against the task list.
+        const err = new Error(msg('errCertificate', refusal));
+        err.certificateError = true;
+        err.deliveryUnknown = true;
+        throw err;
+      }
+      const err = new Error(msg('errNasUnreachable'));
       err.nasUnreachable = true;
-      // It reached something. Whether that something passed it on is unknowable.
+      // Fetch does not say whether a network error happened before or after the
+      // request reached the NAS. TypeError is not proof that nothing was sent.
       err.deliveryUnknown = true;
+      throw err;
     }
-    throw err;
+    // Something answered, so whatever was refused at this address before has
+    // been answered with it — including a certificate the user has since dealt
+    // with. Its status is beside the point here: a 401 is the NAS talking, and
+    // nothing reaches the NAS through a handshake that failed.
+    await forgetConnectionProblem(input, epoch, connectionResult);
+    if (!resp.ok) {
+      const err = new Error(`HTTP ${resp.status}`);
+      // A NAS that is still starting its services answers 502/503 for a while.
+      if (resp.status >= 500) {
+        err.nasUnreachable = true;
+        // It reached something. Whether that something passed it on is unknowable.
+        err.deliveryUnknown = true;
+      }
+      // Refused on its status, but its body is still arriving and nobody here
+      // will read it — so it is drained rather than abandoned.
+      handedOver = true;
+      releaseAfterBody(resp, release);
+      throw err;
+    }
+    handedOver = true;
+    if (!holdBody) {
+      releaseAfterBody(resp, release);
+      return resp;
+    }
+    return holdUntilRead(resp, release);
+  } finally {
+    // After the catch above has asked, never before it. The error event is
+    // raised independently of fetch's rejection and may still be a turn away;
+    // dropping the address first would have the listener discard it as
+    // belonging to nothing. On the way out with a body still to come, the
+    // release goes with the response instead — see holdUntilRead.
+    if (!handedOver) release();
   }
-  return resp;
 }
 
 /**
@@ -386,7 +1012,7 @@ async function discoverApiPaths(protocol, host, port) {
     const query = encodeURIComponent(
       'SYNO.API.Auth,SYNO.DownloadStation.Task'
     );
-    const url = `${protocol}://${host}:${port}/webapi/query.cgi` +
+    const url = `${buildBaseUrl(protocol, host, port)}/query.cgi` +
       `?api=SYNO.API.Info&version=1&method=query&query=${query}`;
 
     // No retry here on purpose: the well-known fallback paths are right for
@@ -415,7 +1041,11 @@ async function discoverApiPaths(protocol, host, port) {
       browser.storage.session.set({ apiPaths: discovered });
     }
     return discovered;
-  } catch {
+  } catch (err) {
+    // A refused certificate is the one failure the fallback paths cannot work
+    // around: every later request goes to the same address and is turned down
+    // the same way. Passing it on turns a wall hit four times into one answer.
+    if (err?.certificateError) throw err;
     return fallback;
   }
 }
@@ -560,10 +1190,24 @@ function queueSettingsWrite(fn) {
   return run;
 }
 
-function checkSessionEpoch(epoch) {
+function checkSessionEpoch(epoch, { sent = false, confirmed = false } = {}) {
   if (epoch === sessionEpoch) return;
   const error = new Error(msg('connectionFailed'));
   error.connectionChanged = true;
+  // Whether the call this interrupts had already gone out, and what the NAS
+  // said about it. A connection change discovered *after* a delete was carried
+  // out is not "nothing happened": the task is gone, and with it the only copy
+  // of the link it was created from. Without these marks the retry treated
+  // every change as a step that never ran and let the link go.
+  //
+  // `confirmed` has three answers, not two: true when the NAS carried the call
+  // out, false when it plainly turned it down, null when its reply does not
+  // say. It used to be `result.success === true`, which is the envelope alone —
+  // a reply of "call accepted" carrying a refusal for this very task, or no
+  // task result at all, both counted as a confirmed deletion. The caller then
+  // announced a task it had not removed. See taskActionVerdict.
+  error.sent = sent;
+  error.confirmed = confirmed;
   throw error;
 }
 
@@ -622,6 +1266,12 @@ function acceptLogin(result, settings, apis, epoch) {
     // Cleared here rather than only where a test is run, so a sign-in the
     // background made on its own counts too.
     await browser.storage.session.remove('lastConnect');
+    // The same answer for a refusal kept somewhere else: an add's outcome waits
+    // in session storage for a popup that may open long afterwards, and it used
+    // to bar the very session that has just been established. Nothing in the
+    // settings changed, so the connection alone could not tell them apart — it
+    // takes an attempt to. See readConnectionVersion.
+    await bumpConnectionVersion();
     if (result.deviceToken) await browser.storage.local.set({ deviceToken: result.deviceToken });
     return cachedSid;
   });
@@ -642,6 +1292,7 @@ function blockedSignIn() {
     {
       connectBlocked: true,
       authFailed: true,
+      certificateError: cachedConnectFailure?.certificateError === true,
       startedAt: signInsAccepted,
       otpRequired: cachedConnectFailure?.otpRequired === true,
       otpWrong: cachedConnectFailure?.otpWrong === true,
@@ -700,8 +1351,17 @@ function clearSession() {
  * next poll ended the watch for lack of a session. Dropped first, anything that
  * starts in the meantime signs in afresh.
  */
-async function apiLogout() {
+async function apiLogout({ epoch = null, signIns = null } = {}) {
   await stateReady;
+  // Asked for by a watcher that may have been overtaken while it read the
+  // settings. The session in hand now is not the one it meant to give back if
+  // the connection has changed or any sign-in has been accepted since — and
+  // handing back a session that something else is using signs the user out
+  // from under their own popup. Checked here, immediately before the id is
+  // taken out of circulation, rather than at the call site where another turn
+  // could still slip in between.
+  if (epoch !== null && epoch !== sessionEpoch) return;
+  if (signIns !== null && signIns !== signInsAccepted) return;
   const sid = cachedSid;
   if (!sid) return;
   const connection = cachedConnection;
@@ -735,14 +1395,48 @@ async function logoutSession(sid, settings, apis) {
         session: 'DownloadStation',
         _sid:    sid,
       }),
-    });
+    }, REQUEST_TIMEOUT_MS, { holdBody: false });
   } catch {
     // Network gone, NAS asleep — nothing useful to report.
   }
 }
 
+/**
+ * How far the connection has moved on, counted in a way that outlives this
+ * script: it rises when the configured NAS or account changes, and again
+ * whenever a sign-in is accepted.
+ *
+ * Both, because both retire a kept refusal. connectionKey deliberately leaves
+ * the password out — changing one does not change whose tasks these are — so a
+ * sign-in refused with the old password looked to the popup exactly like news
+ * about the connection in front of it and shut the corrected one out. And a
+ * password that was never wrong to begin with is settled the same way: the
+ * account signs in, and a refusal older than that session has been answered,
+ * which is what acceptLogin has always done with the failure it keeps itself.
+ *
+ * sessionEpoch cannot do this job: it lives in a variable, and the event page is
+ * thrown away whenever it goes idle, so it is back at zero long before a
+ * recorded outcome is read. The number is kept where the records are kept, and
+ * the password itself stays out of it.
+ *
+ * The limit, deliberately accepted: the stamp says when an add was asked for,
+ * not when its refusal happened. A sign-in accepted early in an add whose later
+ * sign-in is then refused retires that refusal too. It costs one refused
+ * attempt until the next test; barring a session that works costs the user the
+ * connection.
+ */
+async function readConnectionVersion() {
+  const { connectionVersion } = await browser.storage.session.get({ connectionVersion: 0 });
+  return connectionVersion;
+}
+
+async function bumpConnectionVersion() {
+  // Only ever from the settings write queue, so this read and write are alone.
+  await browser.storage.session.set({ connectionVersion: await readConnectionVersion() + 1 });
+}
+
 /** Clear everything (call when host/port/protocol changes). */
-function clearAll() {
+async function clearAll() {
   cachedSid      = null;
   cachedApiPaths = null;
   cachedConnection = null;
@@ -750,6 +1444,8 @@ function clearAll() {
   // Anything still logging in was aimed at the old NAS — disown it.
   sessionEpoch++;
   loginInFlight = null;
+  // The same change, in the one form a popup can still check minutes later.
+  await bumpConnectionVersion();
   // Badge is intentionally NOT cleared here — active downloads may still be
   // running on the NAS. Only updateBadge() clears it when count reaches 0.
   // A kept sign-in failure belonged to the connection being left behind: it is
@@ -851,8 +1547,16 @@ async function nothingSent(signIn) {
 /**
  * Execute an API call, re-authenticating once if the session has expired.
  * `apiFn` receives `(settings, sid, apis)` and must return the parsed JSON body.
+ *
+ * `verdict` reads that body the way the caller reads it: true when the NAS
+ * carried the call out, false when it turned it down, null when the reply does
+ * not say. Only the caller can tell — this function sees an envelope, and a
+ * `success: true` envelope may still carry a refusal for the very task it was
+ * asked about. Without one, `success` alone answers, which is all a call with
+ * nothing inside it to refuse has to go on anyway.
  */
-async function withSession(apiFn, { epoch = sessionEpoch, create = false, deadline } = {}) {
+async function withSession(apiFn, { epoch = sessionEpoch, create = false, deadline,
+  verdict = null } = {}) {
   await stateReady;
   await settingsWriteQueue;
   checkSessionEpoch(epoch);
@@ -866,7 +1570,14 @@ async function withSession(apiFn, { epoch = sessionEpoch, create = false, deadli
   // happened: unbounded traffic to a NAS the extension had decided not to
   // contact.
   if (signInBlocked()) throw blockedSignIn();
-  const apis = await discoverApiPaths(settings.protocol, settings.host, settings.port);
+  // Discovery is preparation in exactly the same sense as the sign-in below,
+  // and gets the same treatment — see nothingSent. Left outside it, a refused
+  // certificate during discovery was passed on as an action whose result is
+  // unknown: with no cached paths, pausing a task asked query.cgi, got nothing,
+  // and the popup was told the pause might have happened. Only query.cgi had
+  // gone out, and the certificate message was lost behind the uncertainty.
+  const apis = await nothingSent(
+    discoverApiPaths(settings.protocol, settings.host, settings.port));
   checkSessionEpoch(epoch);
   // Signing in sends nothing at all — see nothingSent. This used to apply only
   // to creates, so a sign-in that got no answer ahead of a pause, resume or
@@ -897,7 +1608,7 @@ async function withSession(apiFn, { epoch = sessionEpoch, create = false, deadli
   // A parsed successful create is a known outcome even if the user changed
   // connections while its reply was on the way. Do not offer it again.
   if (create && result.success) return result;
-  checkSessionEpoch(epoch);
+  checkSessionEpoch(epoch, { sent: true, confirmed: judge(verdict, result) });
 
   if (!result.success && SESSION_ERROR_CODES.has(result.error?.code)) {
     if (cachedSid === sid) await clearSession();
@@ -907,10 +1618,15 @@ async function withSession(apiFn, { epoch = sessionEpoch, create = false, deadli
     result = await apiFn(settings, sid, apis);
     if (result.success) noteSessionUsed(sid);
     if (create && result.success) return result;
-    checkSessionEpoch(epoch);
+    checkSessionEpoch(epoch, { sent: true, confirmed: judge(verdict, result) });
   }
 
   return result;
+}
+
+/** What the caller makes of this reply, or the envelope where it says nothing. */
+function judge(verdict, result) {
+  return verdict ? verdict(result) : result.success === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -930,6 +1646,50 @@ function taskResultCode(value) {
     return Number.isFinite(code) ? code : null;
   }
   return null;
+}
+
+/**
+ * What the reply says about each task it mentions: id to code, or to null where
+ * the entry is there but unreadable.
+ *
+ * One reading, used twice — by the verdict the connection change is judged on
+ * and by the outcome the user is shown. Two readings of the same reply could
+ * disagree, and the one that disagreed would be the one nobody was looking at.
+ */
+function taskResultCodes(result) {
+  const codes = new Map();
+  // A null or non-object entry must not throw here: unreadable is unconfirmed.
+  for (const item of Array.isArray(result?.data) ? result.data : []) {
+    if (item && typeof item === 'object') codes.set(item.id, taskResultCode(item.error));
+  }
+  return codes;
+}
+
+/**
+ * Did the NAS do what it was asked, to every one of `ids`? true when it did,
+ * false when it plainly refused, null when its reply does not say.
+ *
+ * The envelope is not the answer. DSM replies `success: true` to a call it
+ * accepted and then refuses individual tasks inside it — and sometimes sends no
+ * task results at all. Both used to count as a confirmed deletion, so a retry
+ * interrupted by a connection change announced "the task was removed" over a
+ * task still sitting on the NAS, or over one whose fate nobody knew.
+ *
+ * 404 is not a refusal: it says the task is not there, and an earlier attempt
+ * whose answer was lost may have taken it — see apiRetryTask. Tasks that do not
+ * agree leave the whole thing unsaid; one id, the case this decides, is never
+ * ambiguous that way.
+ */
+function taskActionVerdict(result, ids) {
+  // A parsed error code turns the whole call down: nothing in it was carried out.
+  if (result?.success !== true) return false;
+  const codes = taskResultCodes(result);
+  const answers = new Set(ids.map(id => {
+    const code = codes.get(id) ?? null; // never mentioned reads the same as unreadable
+    if (code === 0) return true;
+    return code === null || code === 404 ? null : false;
+  }));
+  return answers.size === 1 ? [...answers][0] : null;
 }
 
 /**
@@ -963,7 +1723,10 @@ async function apiBulkTaskAction(method, ids, epoch = sessionEpoch) {
     // This action has been sent. A body that never finishes arriving says
     // nothing about whether the NAS carried it out — see readSentResponse.
     return readSentResponse(resp);
-  }, { epoch });
+    // What counts as carried out is what the NAS said about these very ids —
+    // not that it accepted the call. A connection change noticed in between is
+    // told which of the two happened, and says so.
+  }, { epoch, verdict: reply => taskActionVerdict(reply, ids) });
   if (!result.success) {
     // A parsed error code is a refusal of the whole call, not missing news.
     return { ...result, affected: 0, failed: [], unconfirmed: [], error: {
@@ -971,11 +1734,7 @@ async function apiBulkTaskAction(method, ids, epoch = sessionEpoch) {
     } };
   }
 
-  // A null or non-object entry must not throw here: unreadable is unconfirmed.
-  const responses = new Map();
-  for (const item of Array.isArray(result.data) ? result.data : []) {
-    if (item && typeof item === 'object') responses.set(item.id, taskResultCode(item.error));
-  }
+  const responses = taskResultCodes(result);
 
   const failed = [], unconfirmed = [];
   let affected = 0;
@@ -1074,9 +1833,13 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
   // Nothing has been touched yet. The error carries the "delivery unknown" mark
   // of any unanswered request, but here it would be false: nothing was sent.
   try {
+    // A kept sign-in failure also bars this add path. Even a successful wake
+    // would only clear its diagnostic before the delete meets the same block.
+    if (signInBlocked()) throw blockedSignIn();
     await wakeNas();
   } catch (err) {
-    return { success: false, deliveryUnknown: false, error: { message: err.message } };
+    return { success: false, deliveryUnknown: false,
+      certificateError: err.certificateError === true, error: { message: err.message } };
   }
   let removed;
   try {
@@ -1089,15 +1852,28 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
     // is worse than none.
     //
     // Only a delete that may actually have gone out leaves anything to rescue.
-    // A refused sign-in, a changed connection, and any failure before the
-    // request was sent — a sign-in that timed out, for instance — never reached
-    // the task API. Rescuing there put the link back and reported a deletion
-    // the NAS had not confirmed, describing a delete that never happened and
-    // burying the connection failure that was the real reason.
-    if (err?.connectionChanged || err?.authFailed || err?.deliveryUnknown !== true) throw err;
+    // A refused sign-in, and any failure before the request was sent — a
+    // sign-in that timed out, for instance — never reached the task API.
+    // Rescuing there put the link back and reported a deletion the NAS had not
+    // confirmed, describing a delete that never happened and burying the
+    // connection failure that was the real reason.
+    //
+    // A changed connection used to be counted with those, and that was wrong
+    // whenever the change was noticed *after* the delete had gone out: the task
+    // could already be gone, taking the only copy of this link with it, and the
+    // retry let both go. `sent` says the request had left; see checkSessionEpoch.
+    if (err?.authFailed) throw err;
+    if (err?.deliveryUnknown !== true && err?.sent !== true) throw err;
+    // The delete went out, and the NAS turned it down. The task is standing
+    // with its link in it, exactly as when a refusal arrives without any
+    // connection change — which is handed on as it is, keeping nothing. Before
+    // this, "the request had left" was the whole question and a refusal counted
+    // as a deletion: the retry announced a task it had not removed.
+    if (err?.confirmed === false) throw err;
     return keptLinkOutcome(
-      { success: false, deliveryUnknown: true },
-      uri, err?.message ?? msg('notifyUncertain'), destination, { resent: false });
+      { success: false, deliveryUnknown: err?.deliveryUnknown === true },
+      uri, err?.message ?? msg('notifyUncertain'), destination,
+      { resent: false, removed: err?.confirmed === true, cause: causeOf(err) });
   }
   if (!removed.success) {
     // A delete nobody confirmed may well have gone through, and the task it
@@ -1115,7 +1891,7 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
       removed.error?.message ?? msg('notifyUncertain'), destination, { resent: false });
   }
 
-  let outcome, reason;
+  let outcome, reason, cause = null;
   try {
     outcome = await apiAddTaskBatch([uri], unzipPassword, epoch, { destination });
     if (outcome.success) return outcome;
@@ -1124,9 +1900,12 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
   } catch (err) {
     outcome = { success: false, deliveryUnknown: err.deliveryUnknown === true };
     reason = err.deliveryUnknown ? msg('notifyUncertain') : err.message;
+    // The uncertainty above stands, but it is not all there is to say: where
+    // the browser named a cause, that is the one thing the user can act on.
+    cause = causeOf(err);
   }
 
-  return keptLinkOutcome(outcome, uri, reason, destination);
+  return keptLinkOutcome(outcome, uri, reason, destination, { cause });
 }
 
 /**
@@ -1146,23 +1925,35 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
  * nobody knows in the second, and invites a second Add beside a task that may
  * already be there.
  */
-async function keptLinkOutcome(outcome, uri, reason, destination, { resent = true } = {}) {
+async function keptLinkOutcome(outcome, uri, reason, destination,
+  { resent = true, removed = false, cause = null } = {}) {
   await keepLinkForLater(uri);
-  // Three endings, not two. A replacement whose answer never arrived is not a
+  // Four endings, not two. A replacement whose answer never arrived is not a
   // replacement that failed: the delete did go through, and the new task may be
   // standing. Saying "adding it again did not work" there sent people to press
-  // Add beside a task that already existed.
-  const message = !resent ? msg('retryLinkKeptUnsent')
+  // Add beside a task that already existed. And a NAS switched away from after
+  // the delete had been carried out is different again — the task really is
+  // gone, and nothing was created because there was no longer anywhere to
+  // create it. "The NAS did not confirm the deletion" would be untrue there.
+  const message = removed ? msg('retryLinkKeptSwitched')
+    : !resent ? msg('retryLinkKeptUnsent')
     : outcome.deliveryUnknown ? msg('retryLinkKeptUnknown')
     : msg('retryLinkKept', reason);
+  // What the browser refused, where it said so, carried alongside rather than
+  // in place of any of those: the link being kept is what the user must know,
+  // the reason is what they can act on, and neither replaces the other.
+  const full = [message, cause, destination ? msg('retryOriginalFolder', destination) : null]
+    .filter(Boolean).join(' ');
   return {
     ...outcome,
     linkKept: true,
-    error: {
-      ...outcome.error,
-      message: destination ? `${message} ${msg('retryOriginalFolder', destination)}` : message,
-    },
+    error: { ...outcome.error, message: full },
   };
+}
+
+/** The browser's own reason for a refusal, where it gave one. */
+function causeOf(err) {
+  return err?.certificateError ? err.message : null;
 }
 
 /*
@@ -1202,9 +1993,15 @@ async function reportAddOutcome(added, failed, reason, extra = {}) {
   const refused   = Math.max(failed - uncertain, 0);
 
   const title = failed === 0 ? msg('extensionName') : msg('notifyPartial');
+  // How the reason is said out loud, decided once for both places below.
+  // `certificateReason` marks a reason that *is* the browser's wording for a
+  // refused certificate, and that wording is regularly longer than the one line
+  // a notification shows — so it was the part that got cut off. The reason
+  // handed back to the popup keeps it in full.
+  const announced = extra.certificateReason ? msg('notifyCertificate') : (reason ?? '');
   const said  = failed === 0 || refused === 0
     ? msg('notifyBulkAdded', String(added))
-    : msg('notifyBulkPartial', String(added), String(refused), reason ?? '');
+    : msg('notifyBulkPartial', String(added), String(refused), announced);
 
   const parts = [said];
   // Always said out loud when there is any, whatever else the batch did.
@@ -1213,7 +2010,7 @@ async function reportAddOutcome(added, failed, reason, extra = {}) {
   // travelled nowhere at all. A create that went unanswered and a sign-in that
   // was then turned down announced itself as "0 added, 1 uncertain", with the
   // wrong password, the one thing anyone could act on, left out entirely.
-  if (refused === 0 && failed > 0 && extra.namedReason && reason) parts.push(reason);
+  if (refused === 0 && failed > 0 && extra.namedReason && reason) parts.push(announced);
   const body = parts.join(' ');
 
   // A broken destination stops everything, so it gets through regardless.
@@ -1236,6 +2033,7 @@ async function summariseAdd(added, failed, lookupRefused = null) {
   // could act on — the notification named a comma while the password was wrong.
   const first = failed.find(entry => entry.authFailed)
     ?? failed.find(entry => isConfigError(entry.code))
+    ?? failed.find(entry => entry.certificateError && !entry.unknown)
     ?? failed[0];
   const reason = failed.length === 0 ? null
     // The lookup could not sign in. That is the one thing the user can act on,
@@ -1249,6 +2047,10 @@ async function summariseAdd(added, failed, lookupRefused = null) {
     : first.unknown ? msg('notifyUncertain')
     : first.code !== undefined ? await describeTaskError(first.code, first.destinationUsed)
     : first.message;
+  // A named API refusal explains the failed lookup without turning a valid
+  // login into a blocked connection. Only authentication and TLS failures do that.
+  const blockConnection = lookupRefused?.authFailed === true
+    || lookupRefused?.certificateError === true;
 
   return reportAddOutcome(added.length, failed.length, reason, {
     // Counted apart, so the announcement can tell a refusal from a download
@@ -1258,10 +2060,17 @@ async function summariseAdd(added, failed, lookupRefused = null) {
     // during the lookup is the case: nothing was turned down outright, so the
     // reason had nothing to travel with and was dropped.
     namedReason:     !!lookupRefused,
+    blockConnection,
+    // The announcement says it short; the message handed back keeps the
+    // browser's wording, because the popup has room to show all of it.
+    certificateReason: lookupRefused
+      ? lookupRefused.certificateError === true
+      : first?.certificateError === true && !first.unknown,
     failedUrls:      failed.map(f => f.item),
     deliveryUnknown: failed.some(f => f.unknown),
     // A sign-in problem is reported even with notifications switched off.
-    configError:     !!lookupRefused || failed.some(f => f.authFailed || isConfigError(f.code)),
+    configError:     blockConnection || isConfigError(lookupRefused?.code)
+      || failed.some(f => f.authFailed || isConfigError(f.code)),
   });
 }
 
@@ -1314,8 +2123,9 @@ async function onNas(wanted, epoch, taskKeys) {
   // answer from the middle of it is no answer at all once the asks after it
   // went nowhere. Recorded afresh each time round rather than once and for all.
   let answered = false;
-  // A refused sign-in, kept so the caller can name the reason it stopped.
-  let authFailed = null;
+  // What turned the lookup away: an API refusal, a refused sign-in or a refused
+  // certificate. Repeating the lookup cannot resolve any of these.
+  let refusal = null;
   const deadline = Date.now() + CONFIRM_BUDGET_MS;
 
   for (;;) {
@@ -1325,6 +2135,13 @@ async function onNas(wanted, epoch, taskKeys) {
       // that had fifteen seconds, and block the add for all of it.
       const result = await apiListTasks(epoch, { deadline });
       answered = result.success === true;
+      if (result.success === false) {
+        // withSession already tried a fresh login where that could help. An
+        // API refusal after it is an answer about the lookup, not the create.
+        const code = result.error?.code ?? 'unknown';
+        const refusal = Object.assign(new Error(await describeTaskError(code)), { code });
+        return { found, answered, refusal };
+      }
       for (const task of (result.success ? result.data?.tasks ?? [] : [])) {
         for (const key of taskKeys(task)) {
           if (key && looking.has(key)) found.add(key);
@@ -1333,16 +2150,21 @@ async function onNas(wanted, epoch, taskKeys) {
     } catch (err) {
       answered = false;
       // A different NAS is configured now; this add was never about that one.
-      if (err?.connectionChanged) return { found, answered, authFailed };
+      if (err?.connectionChanged) return { found, answered, refusal };
       // A NAS that turned the sign-in down turns the next one down the same
       // way. Asking again only repeats a rejected password — or spends another
       // of the account's attempts on a wrong code — and buries the one thing
       // the user can act on behind "not reachable".
-      if (err?.authFailed) return { found, answered, authFailed: err };
+      //
+      // A refused certificate is the same kind of wall, and was not treated as
+      // one: the lookup kept asking for the whole budget and then reported the
+      // NAS as unreachable, throwing away the browser's own explanation. What
+      // the create did stays unknown either way — that is the caller's to keep.
+      if (err?.authFailed || err?.certificateError) return { found, answered, refusal: err };
       // Not answering this time. There may still be room for another ask.
     }
     if (found.size === looking.size || Date.now() + CONFIRM_GAP_MS >= deadline) {
-      return { found, answered, authFailed };
+      return { found, answered, refusal };
     }
     await sleep(CONFIRM_GAP_MS);
   }
@@ -1361,7 +2183,7 @@ async function settleUncertain(added, failed, epoch, match) {
   const uncertain = failed.filter(entry => entry.unknown);
   if (uncertain.length === 0) return null;
 
-  const { found, answered, authFailed } = await onNas(
+  const { found, answered, refusal } = await onNas(
     uncertain.map(entry => match.key(entry.item)), epoch, match.taskKeys);
 
   for (let i = failed.length - 1; i >= 0; i--) {
@@ -1379,11 +2201,12 @@ async function settleUncertain(added, failed, epoch, match) {
     if (!answered) continue;
     entry.unknown = false;
     entry.message = msg('addNotListed');
+    entry.certificateError = false;
   }
 
   // Handed up so the reason can be named. The add's own outcome stays unknown:
   // the lookup not getting in says nothing about what the create did.
-  return authFailed;
+  return refusal;
 }
 
 /**
@@ -1487,6 +2310,7 @@ async function addBatchWithDetail(batch, unzipPassword, added, failed, budget, e
   } catch (err) {
     for (const item of batch) failed.push({
       item, unknown: err.deliveryUnknown === true, authFailed: err.authFailed,
+      certificateError: err.certificateError === true,
       message: err.message,
     });
     return;
@@ -1511,12 +2335,16 @@ async function addBatchWithDetail(batch, unzipPassword, added, failed, budget, e
         destinationUsed: result.destinationUsed });
     } catch (err) {
       failed.push({ item, unknown: err.deliveryUnknown === true,
-        authFailed: err.authFailed, message: err.message });
+        authFailed: err.authFailed, certificateError: err.certificateError === true,
+        message: err.message });
       // Same reason as the loop over batches: the next sign-in meets the same
       // password. Asking one link at a time turned one refusal into fifty.
-      if (err.authFailed) {
+      // A certificate that blocked preparation is just as final; no create
+      // was sent, so the remaining links need neither a retry nor a lookup.
+      if (err.authFailed || (err.certificateError && err.deliveryUnknown !== true)) {
         for (const rest of batch.slice(i + 1)) {
-          failed.push({ item: rest, authFailed: true, message: err.message });
+          failed.push({ item: rest, authFailed: err.authFailed,
+            certificateError: err.certificateError === true, message: err.message });
         }
         return;
       }
@@ -1554,10 +2382,18 @@ async function addDownloadTasksBulk(urls, unzipPassword, { announce = false, epo
   // Nothing has been sent yet, so a NAS that cannot be woken is a clean
   // failure: every link stays in the list and none of them was half-added.
   try {
+    // A saved sign-in failure already prevents this add. A successful wake
+    // would clear its connection panel without allowing the blocked login.
+    if (signInBlocked()) throw blockedSignIn();
     await wakeNas({ announce });
   } catch (err) {
     return reportAddOutcome(0, urls.length, err.message, {
-      failedUrls: [...urls], deliveryUnknown: false, configError: false,
+      // The message handed back keeps the browser's wording for the popup; the
+      // announcement takes the short form — see shortReason. Without this the
+      // whole reason went into a notification again by this one route, and was
+      // cut off there exactly as before.
+      certificateReason: err.certificateError === true,
+      failedUrls: [...urls], deliveryUnknown: false, configError: err.authFailed === true,
     });
   }
 
@@ -1573,10 +2409,13 @@ async function addDownloadTasksBulk(urls, unzipPassword, { announce = false, epo
     // Two hundred and fifty links meant six refused logins, each one another
     // attempt against an account DSM is entitled to lock. The rest are reported
     // without being sent — which is what they are.
-    const refused = failed.find(entry => entry.authFailed);
+    // The same applies when the certificate refused discovery or sign-in.
+    const refused = failed.find(entry => entry.authFailed
+      || (entry.certificateError && !entry.unknown));
     if (!refused) continue;
     for (const item of batches.slice(i + 1).flat()) {
-      failed.push({ item, authFailed: true, message: refused.message });
+      failed.push({ item, authFailed: refused.authFailed,
+        certificateError: refused.certificateError === true, message: refused.message });
     }
     break;
   }
@@ -1680,6 +2519,9 @@ async function apiTestConnection(otpCode) {
       otpRequired:    err.otpRequired === true,
       otpWrong:       err.otpWrong === true,
       nasUnreachable: err.nasUnreachable === true,
+      // Carried so the announcement can be kept short — see shortReason. The
+      // message itself stays as it is: the popup has room for all of it.
+      certificateError: err.certificateError === true,
       error: { message: err.message },
     }, attempt);
   }
@@ -1792,7 +2634,9 @@ async function rememberConnectOutcome(outcome, attempt) {
   // notify(). Being asked for a code is not a refusal: DSM asks that of a
   // correct password too, and the popup puts the prompt back up on its own.
   if (!outcome.otpRequired) {
-    notifyAlways(msg('notifyError'), outcome.error?.message ?? msg('connectionFailed'));
+    notifyAlways(msg('notifyError'), outcome.certificateError
+      ? msg('notifyCertificate')
+      : (outcome.error?.message ?? msg('connectionFailed')));
   }
   return outcome;
 }
@@ -1846,7 +2690,7 @@ const WAKE_SETTLE_MS = 2000;
  */
 async function wakeNas({ announce = false } = {}) {
   const { protocol, host, port } = await getSettings();
-  const url = `${protocol}://${host}:${port}/webapi/query.cgi` +
+  const url = `${buildBaseUrl(protocol, host, port)}/query.cgi` +
     '?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth';
 
   const deadline = Date.now() + WAKE_BUDGET_MS;
@@ -1854,7 +2698,9 @@ async function wakeNas({ announce = false } = {}) {
 
   for (;;) {
     try {
-      await fetchOnce(url, {}, WAKE_PROBE_TIMEOUT_MS);
+      // holdBody: false — the answer's content is of no interest here, only
+      // that one arrived, so nothing would ever read it and release the hold.
+      await fetchOnce(url, {}, WAKE_PROBE_TIMEOUT_MS, { holdBody: false });
       break;
     } catch (err) {
       // It answered, just not with a 200 — waiting will not change that.
@@ -1994,11 +2840,22 @@ function exclusiveAdd(fn) {
  * the list in the popup, and writing its links there would put URLs in front of
  * someone who never typed them.
  */
-async function recordForPopup(result) {
+async function recordForPopup(result, connection, version = null) {
   // Nothing was attempted, and the popup finds an unconfigured connection on
   // its own — recording it would only produce a message about zero links.
   if (!result.setupRequired) {
-    const values = { lastAdd: { ...result, at: Date.now() } };
+    // Which NAS this outcome is about. The popup turns a refusal reported here
+    // into a block on signing in again, and an outcome that arrives after the
+    // user has switched NAS would otherwise block the new one — whose session
+    // is perfectly good. The key the popup took before the add began, not the
+    // connection configured by the time the answer turns up.
+    //
+    // The version beside it answers what the key cannot: it leaves the password
+    // out on purpose, so a password corrected while the add was running left a
+    // refusal that still looked current, and the popup shut the new sign-in out
+    // over credentials nobody was using any more. Taken when the add was asked
+    // for, for the same reason the key is.
+    const values = { lastAdd: { ...result, connection, connectionVersion: version, at: Date.now() } };
     if (Array.isArray(result.failedUrls)) {
       values.bulkDraft = result.success ? '' : result.failedUrls.join('\n');
     }
@@ -2059,10 +2916,14 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
   // unknown" mark of any unanswered request, and reporting that here told the
   // user to go and check for a download that was never sent.
   try {
+    // Keep the same pre-wake guard as the bulk path, including its diagnostic.
+    if (signInBlocked()) throw blockedSignIn();
     await wakeNas({ announce });
   } catch (err) {
-    notify('failed', msg('notifyError'), err.message);
-    return { success: false, deliveryUnknown: false, error: { message: err.message } };
+    if (err.authFailed) notifyAlways(msg('notifyError'), shortReason(err));
+    else notify('failed', msg('notifyError'), shortReason(err));
+    return { success: false, deliveryUnknown: false,
+      certificateError: err.certificateError === true, error: { message: err.message } };
   }
 
   try {
@@ -2082,7 +2943,7 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
   } catch (err) {
     // A sign-in failure gets through either way — see notify() above.
     if (err.authFailed) {
-      notifyAlways(msg('notifyError'), err.message);
+      notifyAlways(msg('notifyError'), shortReason(err));
     } else if (err.connectionChanged) {
       // Changed while the NAS was being woken; the create was never sent.
       notify('failed', msg('notifyFailed'), msg('addConnectionChanged'));
@@ -2092,7 +2953,7 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
       // Our own deadline ran out with the request already on its way. Ask the
       // NAS what became of it: leaving it to the user is what got the same
       // download queued twice, once by right-click and once by hand.
-      const { found, answered, authFailed } = await onNas([LINK_MATCH.key(url)], epoch, LINK_MATCH.taskKeys);
+      const { found, answered, refusal } = await onNas([LINK_MATCH.key(url)], epoch, LINK_MATCH.taskKeys);
       if (found.size > 0) {
         notify('added', msg('extensionName'), msg('notifyAdded'));
         startDownloadPolling();
@@ -2100,9 +2961,18 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
       }
       // The lookup could not get in. That reason is worth more to the user
       // than "not reachable", and what became of the create stays open.
-      if (authFailed) {
-        notifyAlways(msg('notifyError'), authFailed.message);
-        return { success: false, deliveryUnknown: true, error: { message: authFailed.message } };
+      if (refusal) {
+        // A page click has no popup displaying deliveryUnknown. Keep that
+        // uncertainty in the title, visible even when the reason is cut off.
+        const title = msg('notifyAddUnconfirmed');
+        if (refusal.authFailed || refusal.certificateError || isConfigError(refusal.code)) {
+          notifyAlways(title, shortReason(refusal));
+        } else {
+          notify('failed', title, shortReason(refusal));
+        }
+        return { success: false, deliveryUnknown: true,
+          certificateError: refusal.certificateError === true,
+          error: { code: refusal.code, message: refusal.message } };
       }
       // Same three outcomes as the bulk path — see settleUncertain. Only the
       // answering NAS has refused the download; without an answer the question
@@ -2111,11 +2981,12 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
       notify('failed', answered ? msg('notifyFailed') : msg('notifyError'), body);
       return { success: false, deliveryUnknown: !answered, error: { message: body } };
     } else {
-      notify('failed', msg('notifyError'), err.message);
+      notify('failed', msg('notifyError'), shortReason(err));
     }
     return {
       success: false,
       deliveryUnknown: err.deliveryUnknown === true,
+      certificateError: err.certificateError === true,
       error: { message: err.message },
     };
   }
@@ -2164,17 +3035,31 @@ function noteSessionUsed(sid) {
 
 async function runKeepalive() {
   await stateReady;
-  if (!cachedSid) return; // No active session — nothing to keep alive
+  // The session this tick is about, held on to for the answer. A newer one can
+  // be established while the list below is away — see the refusal branch.
+  const sid = cachedSid;
+  if (!sid) return; // No active session — nothing to keep alive
   // Only this session's own calls count — see sessionUsed.
-  if (sessionUsed.sid === cachedSid
+  if (sessionUsed.sid === sid
       && Date.now() - sessionUsed.at < KEEPALIVE_PERIOD_MINUTES * 60 * 1000) return;
 
   try {
     const result = await apiListTasks();
     if (result.success) {
+      // Same order check the poll makes, and for the same reason: a keepalive
+      // list is slow and infrequent, so a newer one — the popup's, typically —
+      // regularly answers first. Taken unconditionally, this stale and empty
+      // list wiped a badge that was correctly showing two running downloads.
+      if (newestListAnswered > result.listSeq) return;
       updateBadge(result.data?.tasks ?? []);
     } else if (SESSION_ERROR_CODES.has(result.error?.code)) {
-      clearSession();
+      // Only the session that was actually refused, the same question
+      // withSession asks before it clears one. A "Test connection" that went
+      // through while this tick was away leaves a working session in the cache,
+      // and taking this answer for it reported the NAS as disconnected over a
+      // session nobody was using any more. A session the NAS really has
+      // forgotten is cleared by the next call that runs into it.
+      if (cachedSid === sid) clearSession();
       // Badge preserved — session will be re-established on next wake
     }
   } catch {
@@ -2372,6 +3257,7 @@ function pollDownloads({ fresh = false } = {}) {
 
 async function runPoll() {
   await stateReady;
+  const epoch = sessionEpoch;
   // No session normally means the watch is over: signed out, switched NAS, or
   // handed back after the last download. Not after a failed poll. A session the
   // NAS turned down is dropped before signing in again, and when that sign-in
@@ -2392,9 +3278,11 @@ async function runPoll() {
   }
 
   try {
-    const result = await apiListTasks();
-    // A failure counts whatever happened meanwhile: it says the NAS is not
-    // answering, and that does not go out of date.
+    const result = await apiListTasks(epoch);
+    // The old watch ended when its connection changed. Neither its successes
+    // nor its failures may change the watch or failure count of the new NAS.
+    if (epoch !== sessionEpoch) return;
+    // On the same connection a failure still counts even if an add intervened.
     if (!result.success) { pollFailed(); return; }
     setPollFailures(0);
 
@@ -2407,7 +3295,7 @@ async function runPoll() {
     // Out of date if an add came in after this poll asked, or if a list asked
     // for later — typically the popup's — has already come back. That answer
     // knows better, whichever way it went.
-    const outdated = () => pollAgain || newestListAnswered > result.listSeq;
+    const outdated = () => epoch !== sessionEpoch || pollAgain || newestListAnswered > result.listSeq;
     if (outdated()) return;
 
     updateBadge(tasks);
@@ -2421,16 +3309,20 @@ async function runPoll() {
       // to hold the session, so hand it back instead of letting it time out —
       // unless something newer turned up or an add started while the settings
       // were read.
+      // Noted before the settings are read: the NAS can be changed and signed
+      // into while that await is out, and the session this watch meant to hand
+      // back is then long gone.
+      const signIns = signInsAccepted;
       const { keepaliveEnabled } = await getSettings();
       if (!keepaliveEnabled && !popupOpen && !outdated()
-          && addsPending === 0 && resumesPending === 0) await apiLogout();
+          && addsPending === 0 && resumesPending === 0) await apiLogout({ epoch, signIns });
     }
   } catch (err) {
     // A connection change has ended this watch already. A refused sign-in ends
     // it too: a minute later it meets the same password, and DSM blocks an
     // address after enough failed logins. Anything else is a NAS that did not
     // answer — try again next tick, but not indefinitely.
-    if (err?.connectionChanged) return;
+    if (epoch !== sessionEpoch || err?.connectionChanged) return;
     // Refused by a sign-in a later one has already overtaken. There is a
     // session again, so ending the watch here would throw away the tasks being
     // followed over a NAS that is answering perfectly well. Ask again with the
@@ -2553,8 +3445,13 @@ function respondWith(promise, sendResponse, uncertain) {
       connectBlocked: err?.connectBlocked === true,
       deliveryUnknown: err?.deliveryUnknown === true,
       error: {
+        // The uncertainty stands — but where the browser named a cause, that
+        // cause is worth more than the uncertainty alone and is carried with
+        // it. Pausing against a refused certificate used to reach the popup as
+        // nothing but "the result is unconfirmed", with the one thing the user
+        // could act on dropped on the way.
         message: uncertain && err?.deliveryUnknown && !err?.authFailed
-          ? msg(uncertain)
+          ? [msg(uncertain), err?.certificateError ? err.message : null].filter(Boolean).join(' ')
           : (err?.message ?? String(err)),
       },
     }));
@@ -2570,14 +3467,19 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       );
       return true;
 
-    case ACTIONS.ADD_TASKS_BULK:
+    case ACTIONS.ADD_TASKS_BULK: {
+      // Read now, with the connection this add is about still configured — not
+      // when its outcome is written, by which time the password it was refused
+      // over may already have been corrected. See readConnectionVersion.
+      const version = readConnectionVersion();
       respondWith(
         exclusiveAdd(async epoch => recordForPopup(
           await addDownloadTasksBulk(message.urls, message.unzipPassword,
-            { epoch, connection: message.connection }))),
+            { epoch, connection: message.connection }), message.connection, await version)),
         sendResponse, 'notifyUncertain',
       );
       return true;
+    }
 
     case ACTIONS.LIST_TASKS: {
       // Taken before asking: a list that was on its way while the connection

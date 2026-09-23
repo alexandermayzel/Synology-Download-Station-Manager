@@ -2,8 +2,9 @@
   "htmlLang": { "message": "fr" },
   "portInvalid": { "message": "Le port doit être un nombre entier compris entre 1 et 65535." },
   "protocolInsecure": { "message": "HTTP transmet le mot de passe et l'identifiant de session en clair. Il est recommandé d'utiliser HTTPS afin que les données soient chiffrées." },
+  "hostIpCert": { "message": "En HTTPS, le certificat doit correspondre à l'adresse saisie. Si le certificat de votre NAS ne couvre qu'un nom d'hôte, utilisez ce nom plutôt que l'adresse IP." },
   "extensionName": { "message": "Synology - Download Station Manager" },
-  "extensionDescription": { "message": "Envoyez liens, liens magnet et torrent vers Synology Download Station et gérez vos téléchargements directement dans Firefox, sans DSM." },
+  "extensionDescription": { "message": "Envoyez des liens, des liens magnet et torrent vers Synology Download Station et gérez vos téléchargements directement dans Firefox, sans ouvrir DSM." },
   "contextMenuTitle": { "message": "Télécharger avec Download Station" },
 
   "loading": { "message": "Chargement…" },
@@ -23,6 +24,7 @@
   },
   "retryLinkKeptUnsent": { "message": "Le NAS n'a pas confirmé la suppression, donc rien n'a été rajouté. Le lien a été remis dans la liste des liens : vérifiez les tâches sur le NAS avant de l'ajouter." },
   "retryLinkKeptUnknown": { "message": "La tâche d'origine a été supprimée. Impossible de savoir si la nouvelle a été créée : vérifiez la liste des tâches avant de la rajouter. Le lien a été remis dans la liste des liens." },
+  "retryLinkKeptSwitched": { "message": "La tâche d'origine a été supprimée. Aucune nouvelle tâche n'a été créée, car la connexion concernée a depuis été modifiée ou fermée. Le lien a été remis dans la liste des liens." },
   "actionResultUnknown": { "message": "Le NAS n'a pas confirmé le résultat : vérifiez la liste des tâches avant de réessayer." },
   "retryOriginalFolder": {
     "message": "Dossier d'origine : $FOLDER$",
@@ -41,6 +43,13 @@
   },
   "connectionFailed": { "message": "Échec de la connexion" },
   "errNasUnreachable": { "message": "Le NAS n'a pas répondu. Il est peut-être en veille ou injoignable." },
+  "errCertificate": { "message": "La connexion sécurisée au NAS a échoué. Firefox signale : « $REASON$ » Vérifiez l'adresse du NAS et le certificat.", "placeholders": { "REASON": { "content": "$1", "example": "Le nom de domaine demandé ne correspond pas au certificat du serveur." } } },
+  "connProblemSecure": { "message": "Échec de la connexion sécurisée", "description": "Heading of the connection panel in the popup when the browser itself turned the connection down." },
+  "connProblemAddress": { "message": "Adresse : $ADDRESS$", "description": "The address the failure happened at, scheme, host and port only.", "placeholders": { "ADDRESS": { "content": "$1", "example": "https://192.168.1.2:5001" } } },
+  "connProblemLastAttempt": { "message": "Dernière tentative : le NAS n'a pas répondu.", "description": "Shown when the most recent attempt was an ordinary network failure and the reason below it is kept from an earlier one." },
+  "connProblemReason": { "message": "Firefox signale : « $REASON$ »", "description": "The browser's own wording, already translated, quoted rather than restated.", "placeholders": { "REASON": { "content": "$1", "example": "Le nom de domaine demandé ne correspond pas au certificat du serveur." } } },
+  "connProblemEarlier": { "message": "Lors d'une tentative précédente, Firefox a signalé : « $REASON$ »", "description": "The same wording, named as older news so it does not read as a cause confirmed again just now.", "placeholders": { "REASON": { "content": "$1", "example": "Le nom de domaine demandé ne correspond pas au certificat du serveur." } } },
+  "connProblemAdvice": { "message": "Vérifiez l'adresse du NAS et le certificat." },
   "extensionError": { "message": "Erreur de l'extension" },
   "backgroundUnavailable": { "message": "Service en arrière-plan indisponible" },
   "backgroundUnreachable": { "message": "Impossible de joindre le service en arrière-plan." },
@@ -66,14 +75,14 @@
   "linksFailed": { "message": "$COUNT$ lien(s) n'ont pas pu être ajoutés. Ils sont toujours dans la liste.", "placeholders": { "COUNT": { "content": "$1" } } },
   "linksFailedReason": { "message": "$COUNT$ lien(s) n'ont pas pu être ajoutés : $REASON$ Ils sont toujours dans la liste.", "placeholders": { "COUNT": { "content": "$1" }, "REASON": { "content": "$2" } } },
   "linkHasComma": { "message": "Un lien contenant une virgule ne peut pas être envoyé : le NAS interprète les virgules comme le séparateur entre les liens." },
-  "linksUncertain": { "message": "Le NAS n'a pas répondu ; on ignore si ces $COUNT$ lien(s) sont arrivés. Vérifiez les tâches avant de réessayer.", "placeholders": { "COUNT": { "content": "$1" } } },
+  "linksUncertain": { "message": "L'ajout de $COUNT$ lien(s) n'a pas été confirmé. Vérifiez les tâches avant de les rajouter.", "placeholders": { "COUNT": { "content": "$1" } } },
 
   "filterFinished": { "message": "Terminées" },
   "filterPaused": { "message": "En pause" },
   "refresh": { "message": "Actualiser" },
   "pauseAll": { "message": "Tout mettre en pause" },
   "resumeAll": { "message": "Tout reprendre" },
-  "clearFinished": { "message": "Nettoyer les téléchargements terminés" },
+  "clearFinished": { "message": "Supprimer les tâches terminées" },
   "deleteAll": { "message": "Supprimer toutes les tâches" },
   "confirmDeleteAll": { "message": "Supprimer toutes les tâches ? Les téléchargements en cours sont annulés et cette action est irréversible." },
   "cancel": { "message": "Annuler" },
@@ -118,7 +127,7 @@
   "intervalManual": { "message": "Manuel uniquement" },
 
   "sortTasksBy": { "message": "Trier les tâches par" },
-  "sortStatus": { "message": "Par statut" },
+  "sortStatus": { "message": "Statut" },
   "sortAdded": { "message": "Date d'ajout" },
   "sortName": { "message": "Nom" },
   "sortProgress": { "message": "Progression" },
@@ -127,14 +136,14 @@
   "sortAscending": { "message": "Croissant" },
 
   "statusOrder": { "message": "Ordre des statuts" },
-  "statusOrderHint": { "message": "Faites glisser la poignée ou utilisez les flèches. Ce qui est en haut apparaît en premier, ainsi les tâches en cours restent sur la page 1." },
+  "statusOrderHint": { "message": "Modifiez l'ordre avec la poignée ou les flèches. Les groupes de statut apparaissent dans l'ordre défini ici." },
   "reset": { "message": "Réinitialiser" },
   "moveUp": { "message": "Monter" },
   "moveDown": { "message": "Descendre" },
   "statusDownloading": { "message": "En téléchargement" },
   "statusWaiting": { "message": "En attente" },
   "statusPaused": { "message": "En pause" },
-  "statusFinished": { "message": "Terminées" },
+  "statusFinished": { "message": "Terminée" },
   "tasksPerPage": { "message": "Tâches par page" },
 
   "otpRequired": { "message": "Code de vérification requis" },
@@ -154,8 +163,8 @@
   "settingsDownloads": { "message": "Téléchargements" },
   "settingsNotifications": { "message": "Notifications" },
   "autoCaptureMagnets": { "message": "Intercepter automatiquement les liens magnet" },
-  "extractArchives": { "message": "Extraire automatiquement les archives" },
-  "extractArchivesHint": { "message": "Ajoute un champ de mot de passe d'archive à côté de la liste de liens. L'extraction elle-même revient au NAS : dans DSM, sous Download Station > Paramètres > Extraction automatique, cochez Activer l'extraction automatique pour les fichiers téléchargés. Chaque compte le règle pour lui-même, et c'est désactivé par défaut." },
+  "extractArchives": { "message": "Saisir le mot de passe de l'archive" },
+  "extractArchivesHint": { "message": "Ajoute un champ de mot de passe d'archive à côté de la liste de liens. L'extraction elle-même revient au NAS : dans DSM, ouvrez Download Station > Paramètres > Extraction automatique. Cochez-y « Activer l'extraction automatique pour les fichiers téléchargés ». Chaque compte le règle pour lui-même, et c'est désactivé par défaut." },
   "totalSpeed": {
     "message": "↓ $DOWN$  ↑ $UP$",
     "placeholders": {
@@ -172,13 +181,13 @@
   "statusHostWaiting": { "message": "Attente de l'hébergeur" },
   "keepaliveLabel": { "message": "Maintenir la session active en arrière-plan" },
   "keepaliveHint": {
-    "message": "Interroge le NAS toutes les 3 minutes afin que la fenêtre affiche « Connecté » immédiatement. L'activer peut empêcher l'hibernation des disques durs du NAS en cas d'inactivité."
+    "message": "Maintient une session NAS existante active par des requêtes régulières en arrière-plan. Cela peut empêcher les disques durs du NAS de se mettre en veille."
   },
   "defaultDestination": { "message": "Dossier de destination par défaut (facultatif)" },
   "destinationHint": {
     "message": "Chemin commençant par le nom du dossier partagé, sans barre oblique initiale (p. ex. « downloads/series », et non « /downloads/series » ou « /volume1/downloads/series »). Laissez vide pour utiliser la destination par défaut déjà configurée sur le NAS lui-même (DSM → Download Station → Paramètres → Général)."
   },
-  "addNotListed": { "message": "Le NAS a répondu mais n'affiche pas le téléchargement : il n'est pas arrivé." },
+  "addNotListed": { "message": "Le NAS a répondu, mais le téléchargement n'a pas été trouvé dans sa liste de tâches." },
   "addNasUnreachable": { "message": "Le NAS n'est pas joignable, impossible de vérifier si le téléchargement est arrivé." },
   "resetAll": { "message": "Réinitialiser tous les paramètres" },
   "appVersion": { "message": "Version $VERSION$", "placeholders": { "VERSION": { "content": "$1" } } },
@@ -202,9 +211,11 @@
   "notifyPausedCount": { "message": "$COUNT$ en pause", "placeholders": { "count": { "content": "$1", "example": "3" } } },
   "notifyFailed": { "message": "Download Station — Échec" },
   "notifyError": { "message": "Download Station — Erreur" },
+  "notifyAddUnconfirmed": { "message": "Téléchargement non confirmé : vérifiez les tâches" },
+  "notifyCertificate": { "message": "Échec de la connexion sécurisée au NAS. La raison se trouve dans Paramètres → Connexion.", "description": "Notification body. Deliberately short: a notification shows one line and cuts off the rest, and the browser's own reason is regularly longer than that." },
   "notifyPartial": { "message": "Download Station — Échec partiel" },
   "notifyWaking": { "message": "La connexion au NAS n'a pas encore pu être établie. Une nouvelle tentative suit." },
-  "notifyUncertain": { "message": "Le NAS n'a pas répondu. Impossible de savoir si le téléchargement est arrivé : vérifiez Tâches avant de le rajouter." },
+  "notifyUncertain": { "message": "L'ajout n'a pas été confirmé. Vérifiez les tâches avant de rajouter le lien." },
   "notifyBulkUncertainCount": { "message": "$COUNT$ incertain(s) : vérifiez Tâches avant de les rajouter.", "placeholders": { "COUNT": { "content": "$1", "example": "2" } } },
   "notifyBulkAdded": {
     "message": "$COUNT$ lien(s) ajouté(s)",
