@@ -38,6 +38,19 @@ Add-on…* → pick `manifest.json`. Survives until Firefox closes and needs no
 signing. After an edit press *Reload* on that same page; automatic reloading is
 what `web-ext run` is for.
 
+**For the upcoming 1.1.6 release:** Firefox must allow access to the configured
+NAS address. If access is missing or has been revoked, use **Allow NAS access**
+under **Settings → Connection**. Its message explains why access is needed.
+Save new connection details first; the access button applies to the saved NAS.
+The button closes the toolbar popup so Firefox's own permission dialog is
+visible. After allowing access, reopen the extension to connect. An extension
+tab stays open and tests the connection directly. Automatic background requests do not
+open a permission dialog. Automatic magnet capture needs access to HTTP and
+HTTPS websites. Its switch saves your choice and requests access directly. The
+toolbar popup closes for a pending permission dialog. Approval activates capture
+automatically; you do not need to switch it on again.
+Pages already open when access was granted may need to be reloaded first.
+
 <details>
 <summary>Signing your own build (maintainers)</summary>
 
@@ -69,12 +82,17 @@ cannot; the setting exists there but is ignored.
 - **Right-click any link** → *Download with Download Station*. Works on selected
   text as well, for sites that fake links with JavaScript, and picks out
   **every** link in a multi-line selection rather than just the first.
+  The menu remains available without website access. In that case, selected
+  text can only be checked for links after clicking; ordinary text is ignored.
 - **Torrent and NZB files** by their link — right-click it and the NAS fetches
   the file itself. Uploading one from the disk is not offered; see *No file
   upload* below for why.
 - **Magnet links** can be intercepted automatically, so a click goes to the NAS
   instead of prompting for a torrent client, including links in embedded frames
-  and SVG graphics. Off by default.
+  and SVG graphics on HTTP and HTTPS pages. Off by default; if website access
+  is missing, the switch saves your choice and asks Firefox for permission.
+  Approval activates capture automatically, even if the popup has closed.
+  Local `file:` pages are outside its scope.
 - **The list survives** a closed popup, so links can be collected across several
   visits. Cleared after a successful add, by *Clear list*, or when Firefox
   closes.
@@ -103,6 +121,10 @@ cannot; the setting exists there but is ignored.
   full height. The house icon on each tab picks which one the popup opens on.
 - **A notification when the queue runs dry**, with what became of the downloads
   that were being watched: completed, failed, paused.
+
+Task results remain tied to the NAS that received the action. If the connection
+changes while Resume is finishing, its follow-up monitoring cannot start on the
+new NAS, even when only some tasks were resumed successfully.
 
 ### Under the hood
 
@@ -188,12 +210,23 @@ All settings live in the popup's **Settings** tab.
 Saved by its own button, not while typing. The Credentials block folds away on
 save and stays however you leave it after that.
 
+Firefox's website permission is separate from the DSM account permissions.
+**Save and test connection** saves the entered details before testing access.
+If permission is missing, this button, **Test** and two-factor submissions show
+the access panel without opening Firefox's permission dialog.
+When it is missing, a panel here names the NAS address, explains that access is
+needed to sign in and manage downloads, and offers **Allow NAS access**. Clicking
+it closes the toolbar popup for Firefox's own permission dialog. After allowing
+access, reopen the extension to connect. In an extension tab, the interface stays
+open and tests the connection after access is granted. Permission to access a
+host is not limited to the DSM port.
+
 ### Downloads
 
 | Option | Default | Notes |
 |---|---|---|
 | Default destination | *(empty)* | Applied on Enter or its own save button. See [Destination folder](#destination-folder) |
-| Auto-capture magnet links | **off** | Intercepts `magnet:` clicks on every page |
+| Auto-capture magnet links | **off** | Your choice stays saved; capture is active only while Firefox allows access to HTTP and HTTPS websites |
 | Enter archive password | **off** | Shows the archive-password field. Extraction itself is set in DSM — see [Automatic extraction](#automatic-extraction-happens-on-the-nas) |
 
 ### Notifications
@@ -234,8 +267,10 @@ the name of the shared folder and carries no leading slash** —
 
 Unlike the other options it is not applied as you type: it takes effect on Enter
 or its save button, which stays highlighted while the field differs from what is
-stored. Two errors point here — **406**, neither the NAS nor the extension has a
-destination set, and **403**, the folder is missing or the account cannot see it.
+stored. Saving uses the value entered at that moment; edits made while the save
+is finishing remain an unsaved draft. Two errors point here — **406**, neither
+the NAS nor the extension has a destination set, and **403**, the folder is
+missing or the account cannot see it.
 
 ### What notifications cannot be switched off
 
@@ -308,10 +343,15 @@ The following temporary data is cleared automatically:
 | An unsaved destination folder | `storage.session` | Firefox closes |
 | The pending link list | `storage.session` | Firefox closes |
 | Connection diagnostic panel | `storage.session` | anything answers at that address again, or Firefox closes |
+| Failed queued magnet-preference save | `storage.session` | the preference is saved successfully, settings are reset, or Firefox closes |
 | The archive password | memory only, for this popup and any submission still running | the popup closes and any submission in progress has finished |
 
 The drafts exist because Firefox closes the popup the moment you click anything
 outside it — reaching for a password manager's toolbar button included.
+Signing out or resetting clears the old connection draft in the background,
+even if the popup closes during the operation. Newer connection edits from
+another open view remain. Saving a destination also leaves a newer folder
+draft from this or another view intact.
 
 Nothing secret travels in a URL. The password and the session id go to the NAS in
 the body of a POST request rather than in the query string — the task list
@@ -342,7 +382,9 @@ gaps for up to a minute until the NAS answers, then a couple of seconds for
 Download Station to finish starting. A probe may be refused immediately or time
 out after five seconds, so each knock costs little either way. One that never
 answers is reported as unreachable after about a minute, with every link left in
-the box.
+the box. Changing the connection stops further wake checks for the old NAS and
+releases the add queue when the current probe or wait finishes; the old download
+is not sent automatically to the new NAS.
 
 **Then the add itself.** One attempt, and by now the NAS should be awake. The
 create gets 25 seconds plus 300 milliseconds per link in the batch. That is
@@ -419,14 +461,76 @@ for it again. A Manifest V3 extension cannot reliably run code as the browser
 shuts down, so a session still open at that moment — for any of these reasons —
 stays open until DSM times it out.
 
-### Why the broad permissions
+### Website permissions and NAS access
 
-Three entries, for three different reasons. `host_permissions` is `*://*/*`
-because the NAS address is whatever you type into the settings and cannot be
-narrowed at build time. The content script's `matches` is `<all_urls>`: it is
-loaded on every page, where it watches for clicks on `magnet:` links. With magnet
-capture off — the default — its listener returns immediately and nothing is
-intercepted.
+The manifest declares `host_permissions` as `*://*/*` because the NAS address
+can be any HTTP or HTTPS host. This declaration does not replace checking what
+Firefox currently allows: website access can be withheld or revoked. Before a
+NAS request, the extension checks the permission and reports missing access
+separately from network and certificate failures. Automatic work stops at that
+point without prompting or retrying. **Test**, **Save and test connection** and
+two-factor submissions check access and show the panel when it is missing.
+Save new connection details first, then use **Allow NAS access** under
+**Settings → Connection** to request access to the saved NAS host.
+**Allow NAS access** closes the toolbar popup
+for Firefox's permission dialog; after allowing access, reopen the extension
+to connect. An existing broad website grant also covers the NAS host.
+
+The NAS permission message explains why access is needed: signing in, sending
+downloads and managing tasks. A hint beside the magnet capture option explains
+its separate need for access to HTTP and HTTPS websites. Notifications about
+missing NAS access keep the explanation short and point to **Settings →
+Connection**, where the full reason and NAS address are shown.
+
+A right-click download reporting missing NAS access opens **Settings →
+Connection** automatically, whether you chose a link or selected text. Firefox
+opens the extension popup where possible; otherwise the same interface opens
+in a browser tab. Click **Allow NAS access** to grant permission. Reopen the
+popup to connect; in a tab, the connection is tested directly. If the download's
+outcome was unconfirmed, check the task list
+before sending it again: permission can be revoked after a request was sent.
+When another attempt is needed, send it from the context menu. The extension
+does not resend that download or add it to the existing Links list.
+
+With the popup and an extension tab open at the same time, a connection test
+stays bound to the connection it was started for. A NAS change in the other
+interface cannot send an old two-factor code to the new NAS. Repeated Enter
+presses while a two-factor submission is pending do not submit that code twice,
+and a delayed refusal cannot override access that has since been granted.
+A successful sign-in in either view also takes precedence over an older
+connection-test failure in the other. A newer failed test likewise takes
+precedence over a successful reply from an older test.
+Starting a two-factor submission also stops an older ordinary test that is still
+waiting to send, so it cannot add a sign-in without the code.
+
+Automatic magnet capture needs access to HTTP and HTTPS websites because a
+magnet link can appear on any of them. Enabling its switch saves your choice
+and requests any missing access directly from Firefox. The toolbar popup closes
+while the permission decision is pending; an existing extension tab stays open.
+If another extension window is still saving a connection, the background keeps
+the magnet preference queued and the toolbar popup can close for the prompt.
+If that queued save fails, its error appears in the red magnet panel when the
+popup is opened again; it does not produce a system notification. A permission
+change does not dismiss a save error. **Retry** repeats the choice that failed,
+including switching capture off.
+Approval activates capture automatically, including after the popup has closed.
+Pages already open when access was granted may need to be reloaded before
+capture works there.
+If access is already allowed, capture starts directly and the popup stays open.
+Declining leaves the preference on but capture inactive. A red panel immediately
+above the switch under **Settings → Downloads** explains this and offers
+**Allow website access** to try again. Missing access for this optional feature
+does not trigger a system notification. The content script's
+`matches` contains `http://*/*` and `https://*/*`; local `file:` pages are not
+included. It responds only to user clicks, and with magnet capture off — the
+default — it does not intercept links.
+
+Website access can be changed in Firefox's extension permissions. After
+revoking NAS access, test the connection to see the permission panel and grant
+access again there. After revoking access needed by magnet capture, grant it
+again using **Allow website access** above the switch.
+Revocation stops capture even if the popup is closed, but keeps your preference.
+Granting access again resumes capture automatically while the option remains on.
 
 `webRequest`, new in 1.1.4, is there to name one failure properly. `fetch`
 rejects every network failure with the same opaque `TypeError`, so a certificate
@@ -536,6 +640,41 @@ node --test tests/regression.test.cjs
 They use simulated browser storage, popup controls and NAS responses. No NAS
 credentials or network access are required. Test the packaged extension in
 Firefox with a NAS as well before publishing a release.
+
+For 1.1.6, test both a fresh installation and an update from the 1.1.5 rollback.
+Check the state Firefox actually grants on installation; temporary add-on
+loading alone is not a substitute for testing the signed package. With NAS
+access withheld or revoked, automatic requests must show the permission error
+without a prompt or repeated NAS requests. Check that **Allow NAS access**
+closes the toolbar popup and exposes Firefox's own permission dialog. Grant
+access, then reopen the popup and confirm the connection works. Check that
+**Test**, **Save and test connection** and two-factor submissions show missing
+access without a dialog, and that saving retains the entered connection first.
+Test the extension-tab flow too.
+Deny, grant and revoke website access for automatic magnet capture separately.
+With access missing, its switch must request permission directly and close the
+toolbar popup while a decision is pending. Approval must activate capture without
+reopening the popup or using the switch again. Refusal and revocation must leave
+the switch on but capture inactive, with a red panel above it and no system
+notification. Its **Allow website access** button must restore capture after
+approval. With access already granted, enabling capture must keep the toolbar
+popup open. An existing extension tab must stay open throughout.
+After permission is granted, a NAS with a mismatched certificate must still
+show Firefox's certificate reason rather than the permission error.
+
+Also try right-click downloads of both a link and selected text without NAS
+access. Check that the connection panel opens in the popup, and that the same
+interface opens in a tab when Firefox cannot open the popup. Granting access
+and then reopening the popup, or granting it in a tab, must connect without
+resending the download or changing an existing Links list. A download stopped
+before sending should work when sent again from
+the context menu. If access is revoked during a request and the outcome is
+unconfirmed, the instruction to check the task list must remain visible.
+
+Keep a popup and extension tab open together and change the NAS in one while
+a test or two-factor submission is pending in the other. The old attempt must
+not use the new NAS. Also press Enter twice while an OTP submission is pending,
+and check that a delayed access-check result cannot block a newer grant.
 
 **APIs used:** `SYNO.API.Info` (discovery) · `SYNO.API.Auth` (login incl.
 `otp_code` and device token, logout) · `SYNO.DownloadStation.Task` (list, create,

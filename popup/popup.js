@@ -68,6 +68,13 @@ const connProblemAddrEl   = $('connProblemAddress');
 const connProblemLastEl   = $('connProblemLast');
 const connProblemReasonEl = $('connProblemReason');
 const connProblemAdviceEl = $('connProblemAdvice');
+const nasPermissionEl = $('nasPermissionPanel');
+const nasPermissionMessageEl = $('nasPermissionMessage');
+const btnNasPermission = $('btnNasPermission');
+const magnetPermissionEl = $('magnetPermission');
+const magnetPermissionTitleEl = $('magnetPermissionTitle');
+const magnetPermissionMessageEl = $('magnetPermissionMessage');
+const btnMagnetPermission = $('btnMagnetPermission');
 const credentialsEl  = $('credentialsSection');
 const btnSaveDest    = $('btnSaveDest');
 const btnLogout      = $('btnLogout');
@@ -90,6 +97,7 @@ const btnDeleteYes   = $('btnDeleteAllYes');
 const btnDeleteNo    = $('btnDeleteAllNo');
 const totalSpeedEl   = $('totalSpeed');
 const otpField       = $('otpField');
+const otpMessageEl   = $('otpMessage');
 const otpCodeEl      = $('otpCode');
 const btnOtpSubmit   = $('btnOtpSubmit');
 const statusDot      = $('statusDot');
@@ -175,11 +183,23 @@ let settings = { ...DEFAULTS };
  * the old destination, and because it landed last, wrote it back.
  */
 let settingsSaves = Promise.resolve();
+let magnetBlockingSaves = 0;
 
-function queueSettingsSave(fn) {
+function queueSettingsSave(fn, { blockMagnet = false } = {}) {
+  // A settings write can wait for the previous NAS to sign out. Do not open
+  // a magnet permission prompt while its required preference write would wait
+  // behind that operation and keep the toolbar popup in front of the prompt.
+  if (blockMagnet) {
+    magnetBlockingSaves++;
+    syncMagnetControls();
+  }
   const run = settingsSaves.then(fn);
-  settingsSaves = run.catch(() => {});
-  return run;
+  const settled = blockMagnet ? run.finally(() => {
+    magnetBlockingSaves--;
+    syncMagnetControls();
+  }) : run;
+  settingsSaves = settled.catch(() => {});
+  return settled;
 }
 
 async function persistSettingsUpdate(changes) {
@@ -226,6 +246,8 @@ function applySettingsToForm() {
 
 async function loadSettings() {
   const s = await browser.storage.local.get(DEFAULTS);
+  const { connectionVersion } = await browser.storage.session.get({ connectionVersion: 0 });
+  latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, connectionVersion);
   settings = { ...DEFAULTS, ...s };
 
   // A stored order from an older version may be missing buckets we since added.
@@ -252,6 +274,9 @@ async function loadSettings() {
  * its original endpoint and removing the credentials and local device token.
  */
 async function logoutAccount() {
+  const previousDraft = connectionDraftOwnership();
+  const storedDraft = readConnDraftRevision();
+  invalidateConnectionView();
   btnLogout.disabled = true;
   try {
     forgetTasks();
@@ -260,21 +285,19 @@ async function logoutAccount() {
     // in after — another account, or another NAS entirely.
     unzipPassEl.value = '';
     await queueSettingsSave(async () => {
-      await persistSettingsUpdate({ signOut: true });
+      const { revision: draftRevision } = await storedDraft;
+      await persistSettingsUpdate({ signOut: true, draftRevision });
       settings = { ...settings, username: '', password: '' };
-    });
-
-    stopAutoRefresh();
-    forgetTasks(); // a refresh may have started while signing out
-    clearConnDraft();
-
-    usernameEl.value = '';
-    passwordEl.value = '';
-    otpCodeEl.value  = '';
-    showOtpPrompt(false);
-
-    // Marks the now-empty credential fields and opens their section.
-    promptForSetup();
+      const preserveDraft = newerConnectionDraft(previousDraft);
+      stopAutoRefresh();
+      forgetTasks(); // a refresh may have started while signing out
+      if (!preserveDraft) {
+        usernameEl.value = '';
+        passwordEl.value = '';
+      }
+      showOtpPrompt(false);
+      promptForSetup();
+    }, { blockMagnet: true });
   } catch (err) {
     connMessageEl.textContent = err.message;
     connMessageEl.hidden = false;
@@ -296,39 +319,50 @@ btnLogout.addEventListener('click', logoutAccount);
  * resets its drafts and controls.
  */
 async function resetAllSettings() {
+  const previousDraft = connectionDraftOwnership();
+  const storedDraft = readConnDraftRevision();
+  const previousDestination = destEl.value;
+  const storedDestination = readDestDraftRevision();
+  invalidateConnectionView();
+  ++magnetPermissionChange;
+  magnetPermissionPending = false;
+  syncMagnetControls();
   btnResetYes.disabled = true;
   try {
     forgetTasks();
     await queueSettingsSave(async () => {
-      await persistSettingsUpdate({ reset: true, options: DEFAULTS });
+      const { revision: draftRevision } = await storedDraft;
+      const { revision: destDraftRevision } = await storedDestination;
+      await persistSettingsUpdate({ reset: true, options: DEFAULTS, draftRevision, destDraftRevision });
+      clearMagnetSaveFailure();
+      const keptFields = newerConnectionDraft(previousDraft) ? CONN_FIELDS() : null;
+      const keptDestination = destEl.value !== previousDestination ? destEl.value : null;
       settings = { ...DEFAULTS, statusOrder: [...DEFAULT_STATUS_ORDER] };
       // Put the UI back the way a fresh install looks. The defaults for host,
       // username and password are empty strings, so this covers them too.
       // Inside the queue: a save waiting behind this one reads the form, and
       // must find the defaults there rather than the settings just wiped.
       applySettingsToForm();
-    });
+      if (keptFields) applyConnectionFields(keptFields);
+      if (keptDestination !== null) { destEl.value = keptDestination; syncDestSaveState(); }
+      // Retire the old UI before awaiting the final permission reads.
+      // A new connection can ask for a code during either wait; that newer
+      // prompt and anything typed for it must survive this reset finishing.
+      stopAutoRefresh();
+      otpCodeEl.value   = '';
+      bulkLinksEl.value = '';
+      unzipPassEl.value = '';
+      showOtpPrompt(false);
+      setActiveFilter('all', false);
+      forgetTasks();
+      setBulkStatus('');
+      clearLinksFailed();
+      clearActionResult();
+      promptForSetup();
+    }, { blockMagnet: true });
 
-    stopAutoRefresh();
-    await browser.storage.session.remove(['connDraft', 'destDraft', 'bulkDraft', 'lastAdd', 'lastTab', 'setupRequired']);
-
-    // Not settings, so not part of that: scratch fields with nothing stored
-    // behind them.
-    otpCodeEl.value   = '';
-    bulkLinksEl.value = '';
-    unzipPassEl.value = '';
-
-    showOtpPrompt(false);
-    setActiveFilter('all', false);
-    forgetTasks();
-    bulkStatusEl.textContent = '';
-    // Complaints about what was there before it was all wiped: the link list's
-    // own red marking, and the line that names a pause or a delete the NAS
-    // turned down. Both outlive the thing they were about.
-    clearLinksFailed();
-    clearActionResult();
-
-    promptForSetup();
+    await syncNasAccess();
+    await syncStoredMagnetPreference();
   } catch (err) {
     connMessageEl.textContent = err.message;
     connMessageEl.hidden = false;
@@ -372,6 +406,24 @@ function sameConnFields(a, b) {
   return CONN_FIELD_KEYS.every(key => (a?.[key] ?? '') === (b?.[key] ?? ''));
 }
 
+// A deliberate save can submit the same values again while a reset is away.
+// Compare both the visible draft and save order before clearing either one.
+let connectionSaveRevision = 0;
+
+function connectionDraftOwnership() {
+  return { fields: CONN_FIELDS(), revision: connectionSaveRevision };
+}
+
+function newerConnectionDraft(previous) {
+  return previous.revision !== connectionSaveRevision || !sameConnFields(previous.fields, CONN_FIELDS());
+}
+
+function applyConnectionFields(fields) {
+  for (const [key, el] of Object.entries({ protocol: protocolEl, host: hostEl,
+    port: portEl, username: usernameEl, password: passwordEl })) el.value = fields[key];
+  syncProtocolWarning();
+}
+
 /**
  * Deliberately storage.session, not storage.local: this holds a password that
  * was typed but never saved, and it has no business outliving the browser.
@@ -384,8 +436,24 @@ function sameConnFields(a, b) {
  * with it. The last thing typed was exactly the thing most likely to be lost,
  * which is the one case this draft exists for.
  */
+async function connectionDraftRequest(request) {
+  const result = await browser.runtime.sendMessage({ action: ACTIONS.CONNECTION_DRAFT, ...request });
+  if (!result?.ok) throw new Error(errText(result?.error, 'extensionError'));
+  return result;
+}
+
+/** Capture the shared draft before starting work that may outlive it. */
+function readConnDraftRevision() {
+  const reading = connectionDraftRequest({ operation: 'read' });
+  // An edited local draft can make cleanup unnecessary. Keep an unused failed
+  // snapshot handled; when cleanup is needed, its caller still sees the error.
+  reading.catch(() => {});
+  return reading;
+}
+
 function saveConnDraft() {
-  return browser.storage.session.set({ connDraft: CONN_FIELDS() });
+  // Dispatch now so the background owns the write even if this popup closes.
+  return connectionDraftRequest({ operation: 'write', draft: CONN_FIELDS() });
 }
 
 /**
@@ -395,7 +463,19 @@ function saveConnDraft() {
  * away a folder that was typed and not yet saved.
  */
 function saveDestDraft() {
-  return browser.storage.session.set({ destDraft: destEl.value });
+  return destinationDraftRequest({ operation: 'write', draft: destEl.value });
+}
+
+async function destinationDraftRequest(request) {
+  const result = await browser.runtime.sendMessage({ action: ACTIONS.DESTINATION_DRAFT, ...request });
+  if (!result?.ok) throw new Error(errText(result?.error, 'extensionError'));
+  return result;
+}
+
+function readDestDraftRevision() {
+  const reading = destinationDraftRequest({ operation: 'read' });
+  reading.catch(() => {});
+  return reading;
 }
 
 /**
@@ -448,20 +528,18 @@ async function loadConnDraft() {
  * the meantime, and the next open came back without it. `saved` is the snapshot
  * the save took before it began.
  *
- * Measured against the fields as they stand at this instant, not against the
- * stored copy. Reading storage took a turn of its own, and a keystroke landing
- * inside that turn wrote a newer draft that the older answer still matched —
- * the remove below then took it. The fields need no reading and cannot be out
- * of date: anything newly typed is already in them.
+ * The local fields protect this view's newer input. The shared revision also
+ * protects input in another view, including an identical value typed again.
+ * The background serializes the comparison and removal with every draft write.
  */
-function clearConnDraft(saved = null) {
+function clearConnDraft(saved = null, snapshot = readConnDraftRevision()) {
   if (saved && !sameConnFields(CONN_FIELDS(), saved)) return Promise.resolve();
-  return browser.storage.session.remove('connDraft');
+  return snapshot.then(({ revision }) => connectionDraftRequest({ operation: 'clear', revision }));
 }
 
-function clearDestDraft(saved = null) {
+function clearDestDraft(saved = null, snapshot = readDestDraftRevision()) {
   if (saved !== null && destEl.value !== saved) return Promise.resolve();
-  return browser.storage.session.remove('destDraft');
+  return snapshot.then(({ revision }) => destinationDraftRequest({ operation: 'clear', revision }));
 }
 
 for (const el of [hostEl, portEl, usernameEl, passwordEl]) {
@@ -516,6 +594,239 @@ function currentOrigin() {
   }
 }
 
+let nasAccessMissing = false;
+let nasPermissionRead = 0;
+let hostPermissionsChanged = 0;
+let permissionAttempt = 0;
+
+function connectionTestBinding() {
+  return { connection: connectionKey(settings),
+    connectionVersion: latestConnectionVersion ?? 0,
+    connectionSnapshot: connectionSettings(settings) };
+}
+
+function sameTestConnection(binding) {
+  return CONNECTION_KEYS.every(key => binding.connectionSnapshot[key] === settings[key]);
+}
+
+/** A permission event can overtake the reply from an earlier contains call. */
+async function currentNasAccess(origin) {
+  for (;;) {
+    const changed = hostPermissionsChanged;
+    const granted = await browser.permissions.contains(hostPermissionForUrl(origin));
+    if (changed === hostPermissionsChanged) return granted;
+  }
+}
+
+/** Called before the first await in a click handler, while Firefox permits a prompt. */
+function requestNasAccess(target = settings) {
+  ++permissionAttempt;
+  try {
+    return browser.permissions.request(hostPermissionForUrl(
+      buildConnectionUrl(target.protocol, target.host.trim(), target.port),
+    )).catch(() => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+/** Test/save/code actions reveal the access button instead of opening a hidden prompt. */
+function checkNasAccess(target = settings) {
+  ++permissionAttempt;
+  try {
+    const origin = new URL(buildConnectionUrl(target.protocol, target.host.trim(), target.port)).origin;
+    return currentNasAccess(origin).catch(() => false);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+function showNasAccessMissing(reveal = false) {
+  const origin = currentOrigin();
+  if (origin === null) return false;
+  nasAccessMissing = true;
+  nasPermissionEl.hidden = false;
+  nasPermissionMessageEl.textContent = msg('errNasPermission', origin);
+  connProblemEl.hidden = true;
+  setStatus('error', msg('nasPermissionTitle'), nasPermissionMessageEl.textContent);
+  stopAutoRefresh();
+  if (reveal) {
+    activateTab('settings', { remember: false });
+    document.getElementById('connectionSection').open = true;
+  }
+  return false;
+}
+
+/** Recheck live grants; a saved session does not imply permission to use it. */
+async function syncNasAccess({ reveal = false } = {}) {
+  const read = ++nasPermissionRead;
+  const origin = currentOrigin();
+  if (origin === null) {
+    nasAccessMissing = false;
+    nasPermissionEl.hidden = true;
+    return true;
+  }
+  const granted = await currentNasAccess(origin);
+  if (origin !== currentOrigin()) return false;
+  if (read !== nasPermissionRead) return granted && !nasAccessMissing;
+  nasAccessMissing = !granted;
+  nasPermissionEl.hidden = granted;
+  if (granted && statusText.textContent === msg('nasPermissionTitle')) {
+    setStatus('idle', msg('notConnected'));
+  }
+  return granted || showNasAccessMissing(reveal);
+}
+
+let magnetPermissionChange = 0;
+let magnetPermissionPending = false;
+let magnetPermissionRead = 0;
+let magnetPreferenceRead = 0;
+let magnetRetryPreference = null;
+let magnetSaveFailure = null;
+
+/** Permission changes cannot settle a failed preference write. */
+function clearMagnetSaveFailure() {
+  magnetSaveFailure = null;
+  magnetRetryPreference = null;
+}
+
+function showMagnetProblem(message, failedPreference = null) {
+  magnetRetryPreference = failedPreference;
+  const savingFailed = failedPreference !== null;
+  magnetPermissionTitleEl.textContent = msg(savingFailed ? 'magnetSaveFailedTitle' : 'magnetPermissionTitle');
+  btnMagnetPermission.textContent = msg(savingFailed ? 'retry' : 'allowMagnetPermission');
+  magnetPermissionMessageEl.textContent = message;
+  magnetPermissionEl.hidden = false;
+}
+
+function syncMagnetControls() {
+  const disabled = magnetPermissionPending || magnetBlockingSaves > 0;
+  autoMagnetEl.disabled = disabled;
+  btnMagnetPermission.disabled = disabled;
+}
+
+/** Save the user's choice independently of Firefox's website permission. */
+async function runMagnetChange(enabled) {
+  if (magnetPermissionPending) return;
+  if (magnetBlockingSaves > 0) {
+    autoMagnetEl.checked = settings.autoCaptureMagnets;
+    return;
+  }
+  const change = ++magnetPermissionChange;
+  autoMagnetEl.checked = enabled;
+  magnetPermissionPending = true;
+  syncMagnetControls();
+  if (!enabled) magnetPermissionEl.hidden = true;
+  const toolbar = browser.extension.getViews({ type: 'popup' }).includes(window);
+  let decision = Promise.resolve(null);
+  if (enabled) {
+    const permission = { origins: [...MAGNET_ORIGINS] };
+    // Start in the click handler. Even a refused request must not discard the
+    // preference; the background separately gates actual capture on access.
+    try {
+      const requested = browser.permissions.request(permission)
+        .then(granted => ({ granted, decided: true }), () => ({ granted: false, decided: true }));
+      decision = toolbar ? Promise.race([
+        requested,
+        browser.permissions.contains(permission)
+          .then(granted => ({ granted, decided: false }), () => ({ granted: false, decided: true })),
+      ]) : requested;
+    } catch {
+      decision = Promise.resolve({ granted: false, decided: true });
+    }
+  }
+  let saveFailed = false;
+  let queuedForClose = false;
+  try {
+    // Only a still-open Firefox prompt needs an early acknowledgement. The
+    // background then owns the queued preference write even after this popup
+    // closes; another view's slow NAS logout must not cover the native prompt.
+    const result = toolbar ? await decision : null;
+    const closeForPermission = toolbar && result && !result.decided && !result.granted;
+    await queueSettingsSave(async () => {
+      if (change !== magnetPermissionChange) return;
+      if (closeForPermission) {
+        const queued = await browser.runtime.sendMessage({ action: ACTIONS.QUEUE_MAGNET_PREFERENCE, enabled });
+        if (!queued?.accepted) throw new Error(errText(queued?.error, 'extensionError'));
+        queuedForClose = true;
+      } else {
+        await persistSettingsUpdate({ options: { autoCaptureMagnets: enabled } });
+        clearMagnetSaveFailure();
+        settings = { ...settings, autoCaptureMagnets: enabled };
+      }
+    });
+    if (change !== magnetPermissionChange) return;
+    if (queuedForClose) { window.close(); return; }
+    if (!toolbar) await decision;
+    if (change !== magnetPermissionChange) return;
+  } catch (err) {
+    if (change !== magnetPermissionChange) return;
+    saveFailed = true;
+    autoMagnetEl.checked = settings.autoCaptureMagnets;
+    magnetSaveFailure = { message: err.message || msg('extensionError'), enabled };
+    showMagnetProblem(magnetSaveFailure.message, enabled);
+  } finally {
+    if (change === magnetPermissionChange) {
+      magnetPermissionPending = false;
+      syncMagnetControls();
+      if (!saveFailed && !queuedForClose) await syncStoredMagnetPreference();
+    }
+  }
+}
+
+function changeMagnetCapture() { return runMagnetChange(autoMagnetEl.checked); }
+function allowMagnetAccess() { return runMagnetChange(magnetRetryPreference ?? true); }
+
+/** Explain missing access without changing the user's saved preference. */
+async function syncMagnetAccess() {
+  const read = ++magnetPermissionRead;
+  if (magnetPermissionPending) return;
+  const change = magnetPermissionChange;
+  const { magnetPreferenceError } = await browser.storage.session.get({ magnetPreferenceError: null });
+  if (read !== magnetPermissionRead || change !== magnetPermissionChange || magnetPermissionPending) return;
+  if (magnetSaveFailure) {
+    showMagnetProblem(magnetSaveFailure.message, magnetSaveFailure.enabled);
+    return;
+  }
+  if (magnetPreferenceError) {
+    showMagnetProblem(errText(magnetPreferenceError, 'extensionError'), magnetPreferenceError.enabled === true);
+    return;
+  }
+  if (!settings.autoCaptureMagnets) { magnetPermissionEl.hidden = true; return; }
+  let granted;
+  for (;;) {
+    const changed = hostPermissionsChanged;
+    granted = await browser.permissions.contains({ origins: [...MAGNET_ORIGINS] }).catch(() => false);
+    if (read !== magnetPermissionRead || change !== magnetPermissionChange || magnetPermissionPending) return;
+    if (changed === hostPermissionsChanged) break;
+  }
+  showMagnetProblem(msg('errMagnetPermission'));
+  magnetPermissionEl.hidden = !settings.autoCaptureMagnets || granted;
+}
+
+async function syncStoredMagnetPreference() {
+  if (magnetPermissionPending) return;
+  const read = ++magnetPreferenceRead, change = magnetPermissionChange;
+  const stored = await browser.storage.local.get({ autoCaptureMagnets: false });
+  if (read !== magnetPreferenceRead || change !== magnetPermissionChange || magnetPermissionPending) return;
+  settings = { ...settings, autoCaptureMagnets: stored.autoCaptureMagnets === true };
+  autoMagnetEl.checked = settings.autoCaptureMagnets;
+  await syncMagnetAccess();
+}
+
+async function syncHostPermissions() {
+  if (!popupReady) return;
+  await syncNasAccess();
+  await syncMagnetAccess();
+}
+
+function hostPermissionsUpdated() {
+  ++hostPermissionsChanged;
+  syncHostPermissions().catch(() => {});
+}
+browser.permissions.onAdded.addListener(hostPermissionsUpdated);
+browser.permissions.onRemoved.addListener(hostPermissionsUpdated);
+
 /**
  * The last connection failure at this address, written out where the address
  * is set up.
@@ -538,9 +849,11 @@ let connectionProblemRead = 0;
 
 async function syncConnectionProblem(isCurrent = () => true) {
   if (!isCurrent()) return false;
+  if (nasAccessMissing) { connProblemEl.hidden = true; return false; }
   const read = ++connectionProblemRead;
   const { connectionProblem } = await browser.storage.session.get({ connectionProblem: null });
   if (read !== connectionProblemRead || !isCurrent()) return false;
+  if (nasAccessMissing) { connProblemEl.hidden = true; return false; }
   const origin = currentOrigin();
   const problem = origin !== null && connectionProblem?.origin === origin ? connectionProblem : null;
   connProblemEl.hidden = problem === null;
@@ -569,10 +882,10 @@ async function syncConnectionProblem(isCurrent = () => true) {
  * under the user's hands because a keepalive went wrong would be the extension
  * rearranging the furniture.
  */
-async function revealConnectionProblem(seq) {
+async function revealConnectionProblem(seq, currentConnection = () => true) {
   // A later test can succeed while the stored reason is being read. Check
   // before changing the panel as well as before changing the active tab.
-  const isCurrent = () => seq === newestConnectAnswered;
+  const isCurrent = () => seq === newestConnectAnswered && currentConnection();
   await syncConnectionProblem(isCurrent);
   // A storage update may have rendered the panel while this read waited. The
   // current test still reveals that panel even if its own read was superseded.
@@ -690,37 +1003,44 @@ const LAYOUT_KEYS = Object.freeze(['sortBy', 'sortDir', 'statusOrder', 'tasksPer
 
 async function commitSettings({
   forceTest = false, feedbackOn = null, commitDest = false, commitConn = false,
+  permissionRequest = null, permissionAttemptId = null, connectionToSave = null,
+  otpAttempt = null,
 } = {}) {
+  if (commitConn) connectionSaveRevision++;
+  // Save the folder chosen by this click or Enter press, even when a previous
+  // connection save keeps the queue waiting. Later typing remains a draft.
+  const savedDest = commitDest ? destEl.value : null;
+  const storedDraft = commitConn ? readConnDraftRevision() : null;
+  const storedDestination = commitDest ? readDestDraftRevision() : null;
   const {
-    credentialsChanged, perPageBefore, layoutChanged, savedConn, savedDest,
+    credentialsChanged, perPageBefore, layoutChanged, savedConn,
   } = await queueSettingsSave(async () => {
     const base = settings;
     // The drafts as they stand at this instant, before anything is awaited.
     // Checked again when they are dropped, so typing that happened while this
     // save was still waiting on the NAS is not thrown away with them.
-    const savedConn = commitConn ? CONN_FIELDS() : null;
-    const savedDest = commitDest ? destEl.value : null;
+    const savedConn = commitConn ? (connectionToSave ?? CONN_FIELDS()) : null;
 
     // A device token belongs to one NAS and one account — if either changes,
     // the background has to throw it away. Only ever true on a deliberate save.
     const credentialsChanged = commitConn && (
-      base.host     !== hostEl.value.trim() ||
-      base.username !== usernameEl.value.trim() ||
-      base.password !== passwordEl.value ||
-      base.protocol !== protocolEl.value ||
-      base.port     !== (readPort() ?? base.port)
+      base.host     !== savedConn.host.trim() ||
+      base.username !== savedConn.username.trim() ||
+      base.password !== savedConn.password ||
+      base.protocol !== savedConn.protocol ||
+      base.port     !== (readPort(savedConn.port) ?? base.port)
     );
 
     const nextSettings = {
       ...base,
-      protocol:           commitConn ? protocolEl.value                          : base.protocol,
-      host:               commitConn ? hostEl.value.trim()                       : base.host,
+      protocol:           commitConn ? savedConn.protocol                         : base.protocol,
+      host:               commitConn ? savedConn.host.trim()                      : base.host,
       // A port that is not a port leaves the stored one alone — see readPort.
-      port:               commitConn ? (readPort() ?? base.port)                 : base.port,
-      username:           commitConn ? usernameEl.value.trim()                   : base.username,
-      password:           commitConn ? passwordEl.value                          : base.password,
+      port:               commitConn ? (readPort(savedConn.port) ?? base.port)    : base.port,
+      username:           commitConn ? savedConn.username.trim()                  : base.username,
+      password:           commitConn ? savedConn.password                         : base.password,
       autoCaptureMagnets: autoMagnetEl.checked,
-      defaultDestination: commitDest ? destEl.value.trim() : base.defaultDestination,
+      defaultDestination: commitDest ? savedDest.trim() : base.defaultDestination,
       keepaliveEnabled:   keepaliveEl.checked,
       notificationsEnabled: notifyEl.checked,
       notifyOnAdded:        notifyAddedEl.checked,
@@ -747,6 +1067,7 @@ async function commitSettings({
     if (credentialsChanged) {
       // Changed credentials supersede the pending code check, including password-only edits.
       otpPendingFor = null;
+      newestConnectAnswered = ++connectSeq;
       forgetTasks();
       unzipPassEl.value = '';
       // The code prompt belonged to the connection being replaced, and the test
@@ -759,6 +1080,10 @@ async function commitSettings({
       connection: commitConn ? connectionSettings(nextSettings) : undefined,
       options: changedOptions,
     });
+    if (commitConn) {
+      const { connectionVersion } = await browser.storage.session.get({ connectionVersion: 0 });
+      latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, connectionVersion);
+    }
     if (credentialsChanged) forgetTasks();
     // Merged into `settings` as it is now rather than replacing it with the
     // snapshot: the start tab is stored on its own and may have changed.
@@ -770,16 +1095,15 @@ async function commitSettings({
       perPageBefore: base.tasksPerPage,
       layoutChanged: LAYOUT_KEYS.some(key => key in changedOptions),
       savedConn,
-      savedDest,
     };
-  });
+  }, { blockMagnet: true });
   // Only when the connection details were actually written. This used to run on
   // every save, and every option toggle is a save — so flipping any switch threw
   // away a password that had been typed but not yet saved, and the field came
   // back empty on the next open. The draft exists precisely to survive that.
   // Each draft goes with its own save only.
-  if (commitConn) await clearConnDraft(savedConn);
-  if (commitDest) await clearDestDraft(savedDest);
+  if (commitConn) await clearConnDraft(savedConn, storedDraft);
+  if (commitDest) await clearDestDraft(savedDest, storedDestination);
 
   // Saving the connection is also what folds the credentials away: they are
   // done with, and the block is long. It is an ordinary fold, so the state is
@@ -794,7 +1118,7 @@ async function commitSettings({
 
   syncArchiveField();
   syncNotifySubOptions();
-  syncDestSaveState(); // the field now matches what's stored
+  syncDestSaveState(); // later edits still differ from the value just saved
   if (layoutChanged) renderTasks();
   syncRefreshTimer(); // the refresh interval may have just changed
   // A kept failure belongs to the address it happened at. Saving a different
@@ -806,13 +1130,26 @@ async function commitSettings({
   // Try the new details straight away rather than letting the first download
   // be the thing that discovers they are wrong.
   if (credentialsChanged || forceTest) {
-    if (connFieldsFilled()) {
+    // Saving is allowed even if access is refused. The saved details remain usable,
+    // and automatic requests will explain the missing grant on the next open.
+    if (permissionRequest !== null) {
+      const granted = await permissionRequest;
+      const target = { ...savedConn, host: savedConn.host.trim(),
+        username: savedConn.username.trim(), port: readPort(savedConn.port) };
+      if (!CONNECTION_KEYS.every(key => String(settings[key]) === String(target[key]))) return;
+      if (permissionAttemptId !== null && permissionAttemptId !== permissionAttempt) return;
+      if (!granted) { await syncNasAccess({ reveal: true }); return; }
+    }
+    if (otpAttempt && otpPendingFor !== otpAttempt.owner) return;
+    if (isConfigured()) {
       for (const el of REQUIRED_FIELDS) el.classList.remove('invalid');
       // If a verification code is on screen and filled in, this button does
       // the same as the one next to it — no reason to make people find that.
       connMessageEl.hidden = true;
-      const otp = otpField.hidden ? '' : otpCodeEl.value.trim();
-      await attemptConnect(otp || undefined, { deliberate: true });
+      const otp = otpAttempt?.code ?? (otpField.hidden ? '' : otpCodeEl.value.trim());
+      await attemptConnect(otp || undefined, { deliberate: true,
+        binding: otpAttempt?.binding ?? (otp ? otpPromptBinding ?? connectionTestBinding() : connectionTestBinding()),
+        owner: otpAttempt?.owner ?? null });
     } else {
       promptForSetup();
     }
@@ -905,8 +1242,8 @@ function isConfigured() {
  * notices the number. The input's own min/max only bind the arrows, not what
  * can be typed or pasted into it.
  */
-function readPort() {
-  const typed = portEl.value.trim();
+function readPort(value = portEl.value) {
+  const typed = String(value).trim();
   if (!/^\d+$/.test(typed)) return null;
   const port = Number(typed);
   return port >= 1 && port <= 65535 ? port : null;
@@ -1155,10 +1492,15 @@ function errText(error, fallbackKey) {
  * device: the login that carries a code also asks for a device token, which
  * the background stores and reuses.
  */
+let otpPromptBinding = null;
+
 function showOtpPrompt(show, wrong = false) {
   otpField.hidden = !show;
+  otpMessageEl.hidden = !show || !wrong;
+  otpMessageEl.textContent = show && wrong ? msg('otpWrong') : '';
   codePending = show;
-  if (!show) { otpCodeEl.value = ''; return; }
+  if (!show) { otpCodeEl.value = ''; otpPromptBinding = null; return; }
+  otpPromptBinding = connectionTestBinding();
 
   activateTab('settings', { remember: false });
   document.getElementById('connectionSection').open = true;
@@ -1189,6 +1531,13 @@ function showOtpPrompt(show, wrong = false) {
  */
 let otpPendingFor = null;
 
+function otpBusyFor(target = settings) {
+  if (!otpPendingFor) return false;
+  return otpPendingFor.snapshot
+    ? CONNECTION_KEYS.every(key => otpPendingFor.snapshot[key] === target[key])
+    : otpPendingFor.connection === connectionKey(target);
+}
+
 /**
  * Sign-in attempts in the order they were started, and the newest one to have
  * answered. The gate above only holds in one direction: a check with a code
@@ -1203,6 +1552,52 @@ let otpPendingFor = null;
  */
 let connectSeq = 0;
 let newestConnectAnswered = 0;
+let testButtonsOwner = null;
+
+/** Cancel work and codes owned by the connection this view has just left. */
+function invalidateConnectionView() {
+  ++permissionAttempt;
+  newestConnectAnswered = ++connectSeq;
+  otpPendingFor = null;
+  testButtonsOwner = null;
+  btnOtpSubmit.disabled = false;
+  btnTest.disabled = false;
+  btnNasPermission.disabled = false;
+  showOtpPrompt(false);
+  stopAutoRefresh();
+  forgetTasks();
+  unzipPassEl.value = '';
+  connectBlocked = false;
+  keptConnect = null;
+  keptConnectShown = false;
+  nasAccessMissing = false;
+  ++nasPermissionRead;
+  nasPermissionEl.hidden = true;
+  setStatus('idle', msg('notConnected'));
+}
+
+/** A toolbar popup and an extension tab share saved connection settings. */
+async function syncStoredConnection() {
+  const changed = await queueSettingsSave(async () => {
+    const stored = await browser.storage.local.get(SETTINGS_DEFAULTS);
+    if (CONNECTION_KEYS.every(key => stored[key] === settings[key])) return false;
+    const previous = settings;
+    settings = { ...settings, ...connectionSettings(stored) };
+    const fields = { protocol: protocolEl, host: hostEl, port: portEl,
+      username: usernameEl, password: passwordEl };
+    for (const key of CONNECTION_KEYS) {
+      // An unsaved edit is a draft, not an outdated copy of another view's save.
+      if (fields[key].value === String(previous[key])) fields[key].value = String(settings[key]);
+    }
+    invalidateConnectionView();
+    syncProtocolWarning();
+    return true;
+  });
+  if (!changed || !popupReady) return;
+  if (!isConfigured()) promptForSetup();
+  else await syncNasAccess();
+  await syncConnectionProblem();
+}
 
 /**
  * Whether a sign-in started later has already had its say.
@@ -1221,17 +1616,19 @@ function outdatedConnect(seq, { recorded = false } = {}) {
   return false;
 }
 
-async function attemptConnect(otpCode, { deliberate = false } = {}) {
+async function attemptConnect(otpCode, { deliberate = false, binding = connectionTestBinding(),
+  owner = null } = {}) {
   // Nothing signs in to a NAS while a code for that same NAS is being checked:
   // that spends the same code twice, and DSM refuses whichever arrives second.
-  const connection = connectionKey(settings);
-  if (otpPendingFor?.connection === connection) return false;
+  const connection = binding.connection;
+  if (!sameTestConnection(binding)) return false;
+  if (otpBusyFor(binding.connectionSnapshot) && otpPendingFor !== owner) return false;
   // A distinct owner also protects a newer check after switching back to this NAS.
-  const claimed = otpCode ? { connection } : null;
+  const claimed = owner ?? (otpCode ? { connection, snapshot: binding.connectionSnapshot } : null);
   if (claimed !== null) otpPendingFor = claimed;
   const seq = ++connectSeq;
   try {
-    return await runConnect(otpCode, seq, deliberate);
+    return await runConnect(otpCode, seq, deliberate, binding, claimed);
   } finally {
     // Only while it is still ours. A check for another NAS started meanwhile
     // holds the gate now, and opening that one would let a second code go out
@@ -1248,6 +1645,7 @@ async function attemptConnect(otpCode, { deliberate = false } = {}) {
  * had already closed. Two of them would drift apart.
  */
 function showConnectFailure(result) {
+  if (result.permissionMissing) return showNasAccessMissing();
   // However it reached us, the NAS is not to be talked to until this is dealt
   // with — otherwise the close watch rearms itself straight over the top.
   connectBlocked = true;
@@ -1264,20 +1662,94 @@ function showConnectFailure(result) {
   return false;
 }
 
-async function runConnect(otpCode, seq, deliberate = false) {
+/** Storage events can arrive after a reply, so verify the shared sign-in count directly. */
+async function readLatestConnectionVersion() {
+  const { connectionVersion } = await browser.storage.session.get({ connectionVersion: 0 });
+  latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, connectionVersion);
+  return latestConnectionVersion;
+}
+
+let latestConnectionTestRevision = 0;
+
+/** Test refusals have an order too, even though they accept no new session. */
+async function readLatestConnectionTestRevision() {
+  const { connectionTestRevision } = await browser.storage.session.get({ connectionTestRevision: 0 });
+  latestConnectionTestRevision = Math.max(latestConnectionTestRevision, connectionTestRevision);
+  return latestConnectionTestRevision;
+}
+
+/** Another view may have answered this test already. Read that state, never resend its code. */
+async function reconcileConnectionTest(seq, binding) {
+  const ownsStatus = () => seq === connectSeq && seq === newestConnectAnswered
+    && sameTestConnection(binding);
+  while (ownsStatus()) {
+    const version = await readLatestConnectionVersion();
+    const revision = await readLatestConnectionTestRevision();
+    if (!ownsStatus()) return false;
+    const status = await browser.runtime.sendMessage({ action: ACTIONS.GET_STATUS });
+    if (!ownsStatus()) return false;
+    const { lastConnect } = await browser.storage.session.get({ lastConnect: null });
+    if (!ownsStatus()) return false;
+    if (version !== latestConnectionVersion) continue;
+    if (!await syncNasAccess() || !ownsStatus()) return false;
+    if (version !== await readLatestConnectionVersion()) continue;
+    if (revision !== await readLatestConnectionTestRevision()) continue;
+    if (!ownsStatus()) return false;
+    if (lastConnect && !lastConnect.permissionMissing) return showConnectFailure(lastConnect);
+    if (status.connected) {
+      releaseConnectBar();
+      showOtpPrompt(false);
+      setStatus('connected', msg('connected'));
+      refreshTasks();
+      startAutoRefresh();
+      return true;
+    }
+    setStatus('idle', msg('notConnected'));
+    return false;
+  }
+  return false;
+}
+
+async function runConnect(otpCode, seq, deliberate = false, binding = connectionTestBinding(), owner = null) {
+  // Waiting for permission or storage must not let an older test leave after
+  // a newer one starts. A code check owns its gate even before its permission
+  // read finishes and attemptConnect gives it a sequence number.
+  const mayDispatch = () => seq === connectSeq && sameTestConnection(binding)
+    && (!otpBusyFor(binding.connectionSnapshot) || otpPendingFor === owner);
   // Asked for deliberately, so the bar comes down: this is the one thing that
   // is meant to try the NAS again after a kept failure.
   connectBlocked = false;
   keptConnect = null;
   setStatus('checking', msg('connecting'));
+  let revisionBeforeRequest = null;
+  let dispatched = false;
   try {
-    const result = await browser.runtime.sendMessage({ action: ACTIONS.TEST_CONNECTION, otpCode });
+    const allowed = await syncNasAccess({ reveal: deliberate });
+    if (!mayDispatch()) return false;
+    if (!allowed) {
+      outdatedConnect(seq);
+      return false;
+    }
+    revisionBeforeRequest = await readLatestConnectionTestRevision();
+    if (!mayDispatch()) return false;
+    dispatched = true;
+    const result = await browser.runtime.sendMessage({ action: ACTIONS.TEST_CONNECTION, otpCode, ...binding });
     // Overtaken while it was away; whatever it has to say is out of date.
     if (outdatedConnect(seq)) return false;
 
     // Overtaken in the background rather than here: the connection changed, or
     // a newer test has already answered. Our own counter cannot see either.
-    if (result.connectionChanged || result.outdated) return false;
+    if (result.connectionChanged || result.outdated) return await reconcileConnectionTest(seq, binding);
+    const resultRevision = result.testRevision ?? revisionBeforeRequest;
+    if (await readLatestConnectionTestRevision() > resultRevision) {
+      return await reconcileConnectionTest(seq, binding);
+    }
+    if (outdatedConnect(seq, { recorded: true })) return false;
+    if (result.permissionMissing) {
+      await syncNasAccess({ reveal: deliberate });
+      return false;
+    }
+    if (nasAccessMissing) return showNasAccessMissing(deliberate);
 
     if (result.success) {
       // A refusal that arrived while this test was away is older news than a
@@ -1294,18 +1766,50 @@ async function runConnect(otpCode, seq, deliberate = false) {
       startAutoRefresh();
       return true;
     }
+    // A response may already have left the background when another view signs
+    // in. Its earlier "outdated" flag cannot know about that later success.
+    if (await readLatestConnectionVersion() > binding.connectionVersion) {
+      return await reconcileConnectionTest(seq, binding);
+    }
+    if (outdatedConnect(seq, { recorded: true })) return false;
     // Asked for by hand, so the whole reason belongs on screen rather than the
     // one line the header has room for. Reading it is an await of its own, and
     // a newer test can go through inside it — so this attempt's verdict is only
     // pronounced afterwards, and only if it is still the current one.
-    if (deliberate) await revealConnectionProblem(seq);
+    if (deliberate) await revealConnectionProblem(seq,
+      () => latestConnectionVersion === binding.connectionVersion
+        && latestConnectionTestRevision <= resultRevision);
+    if (await readLatestConnectionVersion() > binding.connectionVersion) {
+      return await reconcileConnectionTest(seq, binding);
+    }
+    if (await readLatestConnectionTestRevision() > resultRevision) {
+      return await reconcileConnectionTest(seq, binding);
+    }
     if (outdatedConnect(seq, { recorded: true })) return false;
     return showConnectFailure(result);
   } catch (err) {
+    if (!dispatched && !mayDispatch()) return false;
     // A failure from an overtaken attempt is as out of date as its success
     // would have been, and would stop the refresh a newer one just started.
     if (outdatedConnect(seq)) return false;
-    if (deliberate) await revealConnectionProblem(seq);
+    if (revisionBeforeRequest !== null
+      && await readLatestConnectionTestRevision() > revisionBeforeRequest) {
+      return await reconcileConnectionTest(seq, binding);
+    }
+    if (await readLatestConnectionVersion() > binding.connectionVersion) {
+      return await reconcileConnectionTest(seq, binding);
+    }
+    if (outdatedConnect(seq, { recorded: true })) return false;
+    if (deliberate) await revealConnectionProblem(seq,
+      () => latestConnectionVersion === binding.connectionVersion
+        && (revisionBeforeRequest === null || latestConnectionTestRevision <= revisionBeforeRequest));
+    if (await readLatestConnectionVersion() > binding.connectionVersion) {
+      return await reconcileConnectionTest(seq, binding);
+    }
+    if (revisionBeforeRequest !== null
+      && await readLatestConnectionTestRevision() > revisionBeforeRequest) {
+      return await reconcileConnectionTest(seq, binding);
+    }
     if (outdatedConnect(seq, { recorded: true })) return false;
     const why = err.message || msg('extensionError');
     setStatus('error', msg('connectionFailed'), why);
@@ -1315,24 +1819,85 @@ async function runConnect(otpCode, seq, deliberate = false) {
   }
 }
 
-async function testConnection() {
+async function testConnection({ requestPermission = false } = {}) {
+  if (!isConfigured()) { promptForSetup(); return; }
+  if (otpBusyFor()) return;
+  const binding = connectionTestBinding();
+  const permissionRequest = requestPermission ? requestNasAccess() : checkNasAccess();
+  const attempt = permissionAttempt;
+  const buttonsOwner = {};
+  testButtonsOwner = buttonsOwner;
   btnTest.disabled = true;
+  btnNasPermission.disabled = true;
   try {
-    await attemptConnect(undefined, { deliberate: true });
+    const granted = await permissionRequest;
+    if (attempt !== permissionAttempt || !sameTestConnection(binding)) return;
+    if (!granted) {
+      await syncNasAccess({ reveal: true });
+      return;
+    }
+    await attemptConnect(undefined, { deliberate: true, binding });
   } finally {
-    btnTest.disabled = false;
+    if (testButtonsOwner === buttonsOwner) {
+      testButtonsOwner = null;
+      btnTest.disabled = false;
+      btnNasPermission.disabled = false;
+    }
   }
+}
+
+/** Leave Firefox's permission prompt visible after the explicit access click. */
+async function allowNasAccess() {
+  // The context-menu fallback is a normal extension tab. Keep its existing
+  // test flow: it does not cover the browser's permission prompt.
+  if (!browser.extension.getViews({ type: 'popup' }).includes(window)) {
+    return testConnection({ requestPermission: true });
+  }
+  if (!isConfigured()) { promptForSetup(); return; }
+  if (otpBusyFor() || btnNasPermission.disabled) return;
+  btnNasPermission.disabled = true;
+  // Firefox requires the request in this click handler, before any await.
+  // Do not await its answer: the popup is precisely what hides that answer's
+  // buttons. Firefox owns the grant; the next popup reads it afresh and tests
+  // the connection. No continuation in this disappearing view is needed.
+  const permissionRequest = requestNasAccess();
+  // A second call across the permission API lets Firefox dispatch the
+  // request before this view is destroyed, without waiting for a decision.
+  const dispatched = browser.permissions.contains(hostPermissionForUrl(currentOrigin()))
+    .then(() => null);
+  const decision = await Promise.race([permissionRequest, dispatched]).catch(() => false);
+  if (decision === false) {
+    // If Firefox has already refused, keep the explanation and button
+    // available. An access grant from another view still takes precedence.
+    btnNasPermission.disabled = false;
+    await syncNasAccess({ reveal: true }).catch(() => showNasAccessMissing(true));
+    return;
+  }
+  window.close();
 }
 
 async function submitOtp() {
   const code = otpCodeEl.value.trim();
   if (!code) { otpCodeEl.focus(); return; }
+  if (otpBusyFor()) return;
+  const binding = otpPromptBinding ?? connectionTestBinding();
+  if (!sameTestConnection(binding)) { showOtpPrompt(false); return; }
+  const owner = { connection: binding.connection, snapshot: binding.connectionSnapshot };
+  otpPendingFor = owner;
+  const permissionRequest = checkNasAccess();
+  const attempt = permissionAttempt;
   btnOtpSubmit.disabled = true;
   try {
-    // attemptConnect holds the gate — see otpPendingFor.
-    await attemptConnect(code, { deliberate: true });
+    const granted = await permissionRequest;
+    if (attempt !== permissionAttempt || !sameTestConnection(binding) || otpPendingFor !== owner) return;
+    if (!granted) {
+      await syncNasAccess({ reveal: true });
+      return;
+    }
+    await attemptConnect(code, { deliberate: true, binding, owner });
   } finally {
-    btnOtpSubmit.disabled = false;
+    if (otpPendingFor === owner) otpPendingFor = null;
+    if (!otpPendingFor) btnOtpSubmit.disabled = false;
   }
 }
 
@@ -1520,7 +2085,7 @@ function syncRefreshTimer() {
     activeTab !== 'tasks' || codePending              ? 0 :
     // A kept sign-in failure bars the NAS until it is dealt with: every tick
     // here would be another login against a password already refused.
-    connectBlocked                                    ? 0 :
+    connectBlocked || nasAccessMissing                ? 0 :
     isBursting()                                      ? BURST_INTERVAL_MS :
     refreshWanted && settings.refreshInterval > 0     ? settings.refreshInterval * 1000 :
     0;                                                // 0 means "Manual only"
@@ -1901,6 +2466,9 @@ let refreshFailures = 0;
 function forgetTasks() {
   tasksGeneration++;
   tasksConnection = null;
+  // An already visible failure still belongs to the list being left behind.
+  // Keep its reason, including uncertainty, but identify its original NAS.
+  renderTaskActionProblem();
   // A "Delete all" still waiting for its Yes was asked about the old list.
   deleteAllBar.hidden = true;
   deleteAllConnection = null;
@@ -1914,11 +2482,35 @@ function forgetTasks() {
   renderTasks([]);
 }
 
+/** An older list must not demand a code for a session another view has replaced. */
+async function adoptNewerTaskSession(version, binding, isCurrent) {
+  const current = await browser.storage.session.get({ connectionVersion: 0,
+    sid: null, sessionConnection: null, lastConnect: null });
+  latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, current.connectionVersion);
+  if (!isCurrent()) return true;
+  if (current.connectionVersion <= version) return false;
+  if (current.sessionConnection && CONNECTION_KEYS.some(key =>
+    current.sessionConnection[key] !== binding.connectionSnapshot[key])) return false;
+  if (current.lastConnect && !current.lastConnect.permissionMissing) {
+    showConnectFailure(current.lastConnect);
+    return true;
+  }
+  // A list can sign in successfully itself, then lose that session and get a
+  // real OTP refusal. Its higher version alone must not hide that refusal.
+  if (!current.sid) return false;
+  releaseConnectBar();
+  showOtpPrompt(false);
+  setStatus('connected', msg('connected'));
+  refreshAgain = true;
+  startAutoRefresh();
+  return true;
+}
+
 async function refreshTasks({ queue = false } = {}) {
   // Barred by a kept sign-in failure. The timer is already off for it, but a
   // stored add result asks for one list straight away, and that one request
   // signs in just as readily as a timer tick would.
-  if (connectBlocked) return;
+  if (connectBlocked || nasAccessMissing) return;
   // `queue` marks a refresh that has something new to show — one that follows
   // an action. Those cannot simply be dropped; see refreshAgain.
   if (refreshInFlight) {
@@ -1939,11 +2531,21 @@ async function refreshTasks({ queue = false } = {}) {
   // flight exactly while the newest one started has yet to have its say.
   const signIns = connectSeq;
   const signInRunning = connectSeq > newestConnectAnswered;
+  const binding = connectionTestBinding();
   try {
+    // Read before dispatch: a delayed version event must not make a current
+    // refusal look older than the session this request actually used.
+    const version = await readLatestConnectionVersion();
+    if (generation !== tasksGeneration || nasAccessMissing || connectBlocked) return;
     const result = await browser.runtime.sendMessage({ action: ACTIONS.LIST_TASKS });
     // Asked before the connection changed, so the answer is about the old one.
-    if (generation !== tasksGeneration) return;
+    if (generation !== tasksGeneration || nasAccessMissing) return;
     const ownsStatus = connectSeq === signIns && !signInRunning;
+    if (ownsStatus && (result.connectBlocked || result.otpRequired || result.otpWrong)) {
+      const isCurrent = () => generation === tasksGeneration && !nasAccessMissing
+        && connectSeq === signIns && sameTestConnection(binding);
+      if (await adoptNewerTaskSession(version, binding, isCurrent)) return;
+    }
     if (result.success) {
       refreshFailures = 0;
       // The header outlived what it described: after a failed refresh it went
@@ -1965,6 +2567,8 @@ async function refreshTasks({ queue = false } = {}) {
       // started. Saying both halves out loud fixes that by itself.
       if (tasks.some(isWorkingTask)) startAutoRefresh();
       else stopAutoRefresh();
+    } else if (result.permissionMissing) {
+      if (ownsStatus) await syncNasAccess();
     } else if (result.connectBlocked) {
       if (ownsStatus) showConnectFailure(result);
     } else if (result.otpRequired || result.otpWrong) {
@@ -1974,9 +2578,14 @@ async function refreshTasks({ queue = false } = {}) {
       // stayed hidden and the header could go on saying "Connected". A prompt
       // already on screen stays put, rather than pulling anyone back to
       // Settings every time they look at the list.
+      if (!ownsStatus) return;
       stopAutoRefresh();
       if (otpField.hidden) showOtpPrompt(true, result.otpWrong);
-      else if (ownsStatus) setStatus('error', msg(result.otpWrong ? 'otpWrong' : 'otpRequired'));
+      else {
+        setStatus('error', msg(result.otpWrong ? 'otpWrong' : 'otpRequired'));
+        otpMessageEl.hidden = !result.otpWrong;
+        otpMessageEl.textContent = result.otpWrong ? msg('otpWrong') : '';
+      }
     } else {
       refreshFailed(errText(result.error, 'connectionFailed'), ownsStatus);
     }
@@ -2103,7 +2712,7 @@ btnClearList.addEventListener('click', () => {
   if (bulkLinksEl.readOnly) return;
   clearDraft();
   clearLinksFailed();
-  bulkStatusEl.textContent = '';
+  setBulkStatus('');
   bulkLinksEl.focus();
 });
 
@@ -2164,7 +2773,7 @@ async function applyAddOutcome(result, currentVersion = null) {
   const added  = result.added ?? 0;
 
   if (result.success) {
-    bulkStatusEl.textContent = msg('linksAdded', String(added));
+    setBulkStatus(msg('linksAdded', String(added)));
     clearLinksFailed();
     bulkLinksEl.value = '';
   } else if (failed.length) {
@@ -2174,7 +2783,7 @@ async function applyAddOutcome(result, currentVersion = null) {
     showLinksFailed(failed.length, result.errorMessage, {
       uncertain: result.uncertain ?? 0, namedReason: result.namedReason === true,
     });
-    bulkStatusEl.textContent = added > 0 ? msg('linksAdded', String(added)) : '';
+    setBulkStatus(added > 0 ? msg('linksAdded', String(added)) : '');
     bulkLinksEl.value = failed.join('\n');
     // A sign-in refused while the outcome was being checked says something about
     // the connection, not just about these links — and the same thing a refused
@@ -2203,10 +2812,11 @@ async function applyAddOutcome(result, currentVersion = null) {
     if ((result.blockConnection ?? result.namedReason) === true && result.connection === connectionKey(settings)
       && result.connectionVersion === currentVersion
       && (latestConnectionVersion === null || currentVersion >= latestConnectionVersion)) {
-      showConnectFailure({ error: { message: result.errorMessage } });
+      if (result.permissionMissing) await syncNasAccess();
+      else showConnectFailure({ error: { message: result.errorMessage } });
     }
   } else {
-    bulkStatusEl.textContent = errText(result.error, 'addLinksFailed');
+    setBulkStatus(errText(result.error, 'addLinksFailed'), true);
   }
 
   if (added === 0) return;
@@ -2280,10 +2890,11 @@ let connectBlocked = false;
  * Split from showing it on purpose: the add result is displayed first, and it
  * must not be able to start a sign-in behind this one's back.
  */
-async function loadKeptConnectFailure() {
+async function loadKeptConnectFailure(isCurrent = () => true) {
   const { lastConnect } = await browser.storage.session.get({ lastConnect: null });
+  if (!isCurrent()) return false;
   keptConnect = lastConnect;
-  if (lastConnect) connectBlocked = true;
+  if (lastConnect && !lastConnect.permissionMissing) connectBlocked = true;
   return !!lastConnect;
 }
 
@@ -2300,10 +2911,15 @@ async function loadKeptConnectFailure() {
  * connection that is changed, signed out of, or reset. "Already shown" is a
  * different question, and a popup only ever asks it of itself.
  */
-async function showKeptConnectFailure() {
+async function showKeptConnectFailure(isCurrent = () => true) {
+  if (!isCurrent()) return false;
   if (keptConnectShown) return false;
-  if (!keptConnect) await loadKeptConnectFailure();
-  if (!keptConnect) return false;
+  if (!keptConnect) await loadKeptConnectFailure(isCurrent);
+  if (!isCurrent() || !keptConnect) return false;
+  if (keptConnect.permissionMissing) {
+    await syncNasAccess();
+    return nasAccessMissing;
+  }
   keptConnectShown = true;
   showConnectFailure(keptConnect);
   return true;
@@ -2341,9 +2957,20 @@ function releaseConnectBar() {
  * starts the list up again.
  */
 async function resumeAfterKeptFailure() {
+  const seq = connectSeq;
+  const binding = connectionTestBinding();
+  const stillCurrent = () => seq === connectSeq && sameTestConnection(binding) && !connectBlocked;
   if (!releaseConnectBar()) return;
   const { sid } = await browser.storage.session.get({ sid: null });
-  if (!sid) return;
+  if (!sid || !stillCurrent()) return;
+  if (!await syncNasAccess() || !stillCurrent()) return;
+  // acceptLogin removes the old failure before it increments the version, so
+  // that increment alone cannot make this recovery stale. Check the current
+  // session and any newer refusal as well as the view's own attempt order.
+  const current = await browser.storage.session.get({ sid: null, sessionConnection: null, lastConnect: null });
+  if (!stillCurrent() || !current.sid || current.lastConnect) return;
+  if (current.sessionConnection && !CONNECTION_KEYS.every(key =>
+    current.sessionConnection[key] === binding.connectionSnapshot[key])) return;
   showOtpPrompt(false);
   setStatus('connected', msg('connected'));
   refreshTasks();
@@ -2351,9 +2978,22 @@ async function resumeAfterKeptFailure() {
 }
 
 browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && 'autoCaptureMagnets' in changes) {
+    clearMagnetSaveFailure();
+    syncStoredMagnetPreference().catch(() => {});
+  }
+  if (area === 'local' && CONNECTION_KEYS.some(key => key in changes)) {
+    syncStoredConnection().catch(() => {});
+  }
   if (area !== 'session') return;
+  if ('magnetPreferenceError' in changes) syncMagnetAccess().catch(() => {});
   if ('connectionVersion' in changes) {
     latestConnectionVersion = Math.max(latestConnectionVersion ?? 0, changes.connectionVersion.newValue ?? 0);
+    if (otpPromptBinding && latestConnectionVersion > otpPromptBinding.connectionVersion) showOtpPrompt(false);
+  }
+  if ('connectionTestRevision' in changes) {
+    latestConnectionTestRevision = Math.max(latestConnectionTestRevision,
+      changes.connectionTestRevision.newValue ?? 0);
   }
   if ('addInFlight' in changes) {
     if (changes.addInFlight.newValue === true) setAddBusy(true);
@@ -2396,21 +3036,26 @@ browser.storage.onChanged.addListener((changes, area) => {
  * configured since — taken when the message went out instead, an add prepared
  * while a new connection was saved went to the new NAS.
  */
+function setBulkStatus(text, isError = false) {
+  bulkStatusEl.textContent = text;
+  bulkStatusEl.classList.toggle('error', isError && !!text);
+}
+
 async function sendAdd(status, prepare) {
   localAddsPending++;
   syncAddControls();
-  bulkStatusEl.textContent = status;
+  setBulkStatus(status);
   try {
     // A save that was already under way decides where this goes.
     await settingsSaves;
     const connection = connectionKey(settings);
     const result = await browser.runtime.sendMessage({ ...await prepare(), connection });
     if (result.setupRequired) {
-      bulkStatusEl.textContent = msg('setupRequired');
+      setBulkStatus(msg('setupRequired'), true);
       promptForSetup();
     } else if (result.busy) {
       // Another popup, or this one before it was closed, already started this.
-      bulkStatusEl.textContent = msg('addBusy');
+      setBulkStatus(msg('addBusy'));
     } else {
       // The storage listener has almost certainly done this already. Asking
       // again costs one read and means a popup that is still here does not
@@ -2420,7 +3065,7 @@ async function sendAdd(status, prepare) {
       await consumeLastAdd();
     }
   } catch (err) {
-    bulkStatusEl.textContent = err.message || msg('addLinksFailed');
+    setBulkStatus(err.message || msg('addLinksFailed'), true);
   } finally {
     // The background owns the flag, so read it back rather than assume this
     // call was the one holding it — a refused add leaves someone else's still
@@ -2435,7 +3080,7 @@ async function addBulkLinks() {
   // Nothing can be added before the NAS is configured — send the user there
   // instead of firing off a request that is bound to fail.
   if (!isConfigured()) {
-    bulkStatusEl.textContent = msg('setupRequired');
+    setBulkStatus(msg('setupRequired'), true);
     promptForSetup();
     return;
   }
@@ -2446,7 +3091,7 @@ async function addBulkLinks() {
     .filter(s => s.length > 0);
 
   if (urls.length === 0) {
-    bulkStatusEl.textContent = msg('noLinksEntered');
+    setBulkStatus(msg('noLinksEntered'), true);
     return;
   }
 
@@ -2484,16 +3129,18 @@ btnAddBulk.addEventListener('click', addBulkLinks);
  * pause, a delete or a retry and the only visible result was a list that
  * redrew unchanged — indistinguishable from a button that does nothing.
  */
+let taskActionProblem = null;
+
 function clearActionResult() {
+  taskActionProblem = null;
   taskStatusEl.hidden = true;
   taskStatusEl.textContent = '';
 }
 
-function reportActionResult(result) {
+function reportActionResult(result, source = taskActionSource(tasksConnection)) {
   const failed = !result || result.success === false;
   if (!failed) { clearActionResult(); return true; }
-  taskStatusEl.hidden = false;
-  taskStatusEl.textContent = errText(result?.error, 'taskActionFailed');
+  rememberTaskActionProblem(result, source);
   return false;
 }
 
@@ -2506,18 +3153,60 @@ function mayHaveTakenEffect(result) {
   return (result?.unconfirmed?.length ?? 0) > 0 || result?.deliveryUnknown === true;
 }
 
+function taskActionSource(connection) {
+  let address = currentOrigin() ?? settings.host;
+  try {
+    const [protocol, host, port] = JSON.parse(connection);
+    address = new URL(buildConnectionUrl(protocol, host, port)).origin;
+  } catch { /* Older lists may not carry a connection key. */ }
+  return { connection, generation: tasksGeneration, address };
+}
+
+function currentTaskAction(source) {
+  return source.generation === tasksGeneration && source.connection === tasksConnection;
+}
+
+function rememberTaskActionProblem(result, source) {
+  taskActionProblem = {
+    source,
+    reason: errText(result?.error,
+      mayHaveTakenEffect(result) ? 'actionResultUnknown' : 'taskActionFailed'),
+  };
+  renderTaskActionProblem();
+}
+
+/** Re-evaluate a displayed result whenever the task list loses its connection. */
+function renderTaskActionProblem() {
+  if (!taskActionProblem) return;
+  const { source, reason } = taskActionProblem;
+  taskStatusEl.hidden = false;
+  taskStatusEl.textContent = currentTaskAction(source) ? reason
+    : msg('taskActionPreviousConnection', source.address, reason);
+}
+
+/** Keep an uncertain old action visible without attributing it to the new NAS. */
+function reportTaskAction(result, source) {
+  if (currentTaskAction(source)) return reportActionResult(result, source);
+  if (!result || result.success === false || mayHaveTakenEffect(result)) {
+    rememberTaskActionProblem(result, source);
+  }
+  return false;
+}
+
 async function runBulkAction(action, button, connection = tasksConnection) {
+  const source = taskActionSource(connection);
   button.disabled = true;
   try {
     // The list's origin travels along: "Delete all" confirmed while looking at
     // the old NAS must not clear out a newly configured one.
     const result = await browser.runtime.sendMessage({ action, connection });
-    const ok = reportActionResult(result);
+    const ok = reportTaskAction(result, source);
+    if (!currentTaskAction(source)) return;
     await refreshTasks({ queue: true });
-    if ((ok || mayHaveTakenEffect(result)) && action === ACTIONS.RESUME_ALL) startAutoRefresh();
+    if (currentTaskAction(source) && (ok || mayHaveTakenEffect(result))
+      && action === ACTIONS.RESUME_ALL) startAutoRefresh();
   } catch (err) {
-    taskStatusEl.hidden = false;
-    taskStatusEl.textContent = err.message || msg('taskActionFailed');
+    reportTaskAction({ success: false, error: err.message }, source);
   } finally {
     button.disabled = false;
   }
@@ -2584,24 +3273,25 @@ taskListEl.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const { action, taskId, uri, destination } = btn.dataset;
+  const source = taskActionSource(tasksConnection);
   btn.disabled = true;
   try {
     const result = await browser.runtime.sendMessage({
       action, id: taskId, uri, destination,
       // Task ids are only unique on one NAS; the background refuses the action
       // unless this still names the configured connection.
-      connection: tasksConnection,
+      connection: source.connection,
       // A retried archive needs the same password the original add used.
       unzipPassword: extractEl.checked ? unzipPassEl.value : '',
     });
-    const ok = reportActionResult(result);
+    const ok = reportTaskAction(result, source);
+    if (!currentTaskAction(source)) return;
     await refreshTasks({ queue: true });
     // Resuming or retrying makes a task active again — re-arm the timer.
-    if ((ok || mayHaveTakenEffect(result))
+    if (currentTaskAction(source) && (ok || mayHaveTakenEffect(result))
       && (action === ACTIONS.RESUME_TASK || action === ACTIONS.RETRY_TASK)) startAutoRefresh();
   } catch (err) {
-    taskStatusEl.hidden = false;
-    taskStatusEl.textContent = err.message || msg('taskActionFailed');
+    reportTaskAction({ success: false, error: err.message }, source);
   } finally {
     // btn may already be replaced by refreshTasks re-render; safe to ignore
     btn.disabled = false;
@@ -2629,7 +3319,20 @@ btnSaveConn.addEventListener('click', () => {
     portEl.focus();
     return;
   }
-  saveSettings({ forceTest: true, feedbackOn: btnSaveConn, commitConn: true });
+  const connectionToSave = CONN_FIELDS();
+  const target = { ...connectionToSave, host: connectionToSave.host.trim(),
+    username: connectionToSave.username.trim(), port: readPort(connectionToSave.port) };
+  if (otpBusyFor(target)) return;
+  const code = !otpField.hidden && CONNECTION_KEYS.every(key => target[key] === settings[key])
+    ? otpCodeEl.value.trim() : '';
+  const binding = otpPromptBinding ?? connectionTestBinding();
+  const owner = code ? { connection: binding.connection, snapshot: binding.connectionSnapshot } : null;
+  if (owner) otpPendingFor = owner;
+  const otpAttempt = owner ? { code, binding, owner } : null;
+  const permissionRequest = checkNasAccess(connectionToSave);
+  return saveSettings({ forceTest: true, feedbackOn: btnSaveConn, commitConn: true,
+    permissionRequest, permissionAttemptId: permissionAttempt, connectionToSave, otpAttempt })
+    .finally(() => { if (owner && otpPendingFor === owner) otpPendingFor = null; });
 });
 // The destination is the one option that is not applied while you type it:
 // it takes effect on this button or on Enter, and nowhere else.
@@ -2640,6 +3343,9 @@ destEl.addEventListener('keydown', (e) => {
   saveSettings({ feedbackOn: btnSaveDest, commitDest: true });
 });
 btnTest.addEventListener('click', testConnection);
+btnNasPermission.addEventListener('click', allowNasAccess);
+btnMagnetPermission.addEventListener('click', allowMagnetAccess);
+autoMagnetEl.addEventListener('change', changeMagnetCapture);
 // A manual refresh also re-arms the timer that refreshTasks stops once
 // everything has finished.
 btnRefresh.addEventListener('click', async () => {
@@ -2654,7 +3360,7 @@ btnClear.addEventListener('click', () => runBulkAction(ACTIONS.CLEAR_COMPLETED, 
 // accept, and applying it halfway through typing would send downloads to a
 // folder nobody meant. It waits for Enter or its own button; until then it is
 // only a draft.
-for (const el of [autoMagnetEl, keepaliveEl, notifyEl,
+for (const el of [keepaliveEl, notifyEl,
                   notifyAddedEl, notifyFailedEl, notifyDoneEl, extractEl,
                   refreshIntEl, sortDirEl, perPageEl]) {
   el.addEventListener('change', () => saveSettings());
@@ -2794,6 +3500,14 @@ browser.runtime.connect({ name: 'popup' });
     // After loadSettings too, because which address a kept failure belongs to
     // is decided against the saved connection.
     await syncConnectionProblem();
+    await syncMagnetAccess();
+
+    // The interface is about to become interactive. A deliberate sign-in or
+    // connection change from this point owns its status, even while startup
+    // is still waiting for a storage or background reply.
+    const seq = connectSeq;
+    const binding = connectionTestBinding();
+    const isCurrent = () => seq === connectSeq && sameTestConnection(binding);
 
     // The interface is complete and translated at this point, so show it.
     // Everything below this line talks to the NAS, and a sleeping one can take
@@ -2805,17 +3519,18 @@ browser.runtime.connect({ name: 'popup' });
     // Where you left off this session, otherwise the tab the little house
     // marks. Overridden below when the connection is not set up yet.
     const { lastTab } = await browser.storage.session.get({ lastTab: null });
-    activateTab(TABS.includes(lastTab) ? lastTab : settings.startTab);
+    if (isCurrent()) activateTab(TABS.includes(lastTab) ? lastTab : settings.startTab);
 
     // An add that finished while the popup was closed left its result behind.
     // After the tab is chosen, so a fresh one may override it; after loadDraft,
     // so the box it prunes is the restored one.
     // Before the add result: applying that one starts the refresh and the close
     // watch, and both sign in. Read here, shown further down.
-    await loadKeptConnectFailure();
+    await loadKeptConnectFailure(isCurrent);
 
     popupReady = true;
     await loadAddBusy();
+    if (!isCurrent()) return;
 
     // A download attempted before setup flags the popup to land on Settings.
     let cameFromFailedDownload = false;
@@ -2825,6 +3540,7 @@ browser.runtime.connect({ name: 'popup' });
     } catch {
       // Background not ready — the isConfigured() check below still covers us.
     }
+    if (!isCurrent()) return;
 
     // Nothing works without host + credentials, so Settings wins over the
     // chosen start tab until they exist.
@@ -2837,40 +3553,57 @@ browser.runtime.connect({ name: 'popup' });
       // Configured but the attempt still failed setup — show Settings anyway.
       activateTab('settings');
     }
+    if (!await syncNasAccess({ reveal: true }) || !isCurrent()) return;
 
     // Ask the background whether it already has a live session — an instant
     // memory check, and at the same time what wakes a suspended event page.
-    let status;
-    try {
-      status = await sendWithRetry(ACTIONS.GET_STATUS, 5, 150);
-    } catch {
-      setStatus('error', msg('backgroundUnavailable'));
-      showMessage(msg('noTasks'));
+    while (isCurrent()) {
+      const version = latestConnectionVersion;
+      const currentStatus = () => isCurrent() && version === latestConnectionVersion;
+      let status;
+      try {
+        status = await sendWithRetry(ACTIONS.GET_STATUS, 5, 150);
+      } catch {
+        if (!isCurrent()) return;
+        if (!currentStatus()) continue;
+        setStatus('error', msg('backgroundUnavailable'));
+        showMessage(msg('backgroundUnavailable'), true);
+        return;
+      }
+      if (!isCurrent()) return;
+      // A successful sign-in in another view changes the session without
+      // starting a local attempt. Read its status instead of testing again.
+      if (!currentStatus()) continue;
+      if (status.permissionMissing) {
+        if (!await syncNasAccess({ reveal: true }) || !isCurrent()) return;
+        if (!currentStatus()) continue;
+      }
+      if (status.connected) {
+        // A live session answers a failure kept from before it, so the bar that
+        // reading it just raised has to come down here too. Left standing, it
+        // barred the very list this branch asks for: the header read "Connected"
+        // over a task list that never loaded, and Refresh sent nothing.
+        releaseConnectBar();
+        setStatus('connected', msg('connected'));
+        refreshTasks();
+        startAutoRefresh();
+        return;
+      }
+
+      // No session yet — but a sign-in may have failed while this popup was
+      // closed, and its reason is worth more than another attempt. Shown instead
+      // of signing in again: with a wrong password every reopen would spend one
+      // more of DSM's attempts, and DSM locks the account out on enough of them.
+      // The Test button is right there once the reason has been read.
+      if (await showKeptConnectFailure(currentStatus)) return;
+      if (!isCurrent()) return;
+      if (!currentStatus()) continue;
+
+      // attemptConnect logs in and puts its own reason in the list area on
+      // failure — including a two-step prompt if DSM asks for one.
+      await attemptConnect();
       return;
     }
-
-    if (status.connected) {
-      // A live session answers a failure kept from before it, so the bar that
-      // reading it just raised has to come down here too. Left standing, it
-      // barred the very list this branch asks for: the header read "Connected"
-      // over a task list that never loaded, and Refresh sent nothing.
-      releaseConnectBar();
-      setStatus('connected', msg('connected'));
-      refreshTasks();
-      startAutoRefresh();
-      return;
-    }
-
-    // No session yet — but a sign-in may have failed while this popup was
-    // closed, and its reason is worth more than another attempt. Shown instead
-    // of signing in again: with a wrong password every reopen would spend one
-    // more of DSM's attempts, and DSM locks the account out on enough of them.
-    // The Test button is right there once the reason has been read.
-    if (await showKeptConnectFailure()) return;
-
-    // attemptConnect logs in and puts its own reason in the list area on
-    // failure — including a two-step prompt if DSM asks for one.
-    await attemptConnect();
   } finally {
     overlay.style.display = 'none';
   }

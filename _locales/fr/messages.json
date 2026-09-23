@@ -1,4 +1,15 @@
 {
+  "magnetSaveFailedTitle": {"message":"Impossible d’enregistrer le réglage des liens magnet"},
+  "taskActionPreviousConnection": {"message":"Résultat pour la connexion précédente au NAS ($ADDRESS$) : $REASON$ Vérifiez les tâches sur ce NAS avant de réessayer.","description":"Result for an action started on an earlier NAS connection.","placeholders":{"ADDRESS":{"content":"$1","example":"https://nas.example:5001"},"REASON":{"content":"$2","example":"The action result could not be confirmed."}}},
+  "errNasPermission": {"message":"Firefox n'autorise pas l'accès à $ADDRESS$. L'extension en a besoin pour se connecter et gérer les téléchargements. Autorisez l'accès au NAS dans Paramètres → Connexion.","description":"Firefox host permission is missing; $ADDRESS$ is the NAS origin.","placeholders":{"ADDRESS":{"content":"$1","example":"https://192.168.1.2:5001"}}},
+  "magnetPermissionHint": {"message":"Pour détecter les clics sur des liens magnet sur n'importe quel site et envoyer ces liens à votre NAS, l'extension a besoin d'accéder aux sites HTTP et HTTPS. Cette fonction est facultative. Votre choix est enregistré ; la capture s'active automatiquement dès que Firefox autorise l'accès. Il peut être nécessaire de recharger les pages déjà ouvertes au moment de l’autorisation.","description":"Persistent explanation next to the optional magnet-capture switch, visible before requesting website access."},
+  "notifyNasPermission": {"message":"Connexion et téléchargements : accès au NAS manquant. Autorisez-le dans Paramètres → Connexion.","description":"Short missing-NAS-permission notification: explains the purpose and points to the grant control. No variable address, to keep the notification brief."},
+  "notConnected": {"message":"Non connecté"},
+  "allowNasAccess": {"message":"Autoriser l'accès au NAS"},
+  "nasPermissionTitle": {"message":"Accès au NAS non autorisé"},
+  "errMagnetPermission": {"message":"Votre choix est enregistré, mais la capture automatique des liens magnet reste inactive car Firefox n'a pas autorisé l'accès aux sites HTTP et HTTPS. Autorisez l'accès avec le bouton ci-dessous pour l'activer."},
+  "magnetPermissionTitle": {"message":"Capture des liens magnet inactive"},
+  "allowMagnetPermission": {"message":"Autoriser l'accès aux sites web"},
   "htmlLang": { "message": "fr" },
   "portInvalid": { "message": "Le port doit être un nombre entier compris entre 1 et 65535." },
   "protocolInsecure": { "message": "HTTP transmet le mot de passe et l'identifiant de session en clair. Il est recommandé d'utiliser HTTPS afin que les données soient chiffrées." },
@@ -132,6 +143,7 @@
   "sortName": { "message": "Nom" },
   "sortProgress": { "message": "Progression" },
   "sortSize": { "message": "Taille" },
+  "sortDirection": {"message":"Sens du tri"},
   "sortDescending": { "message": "Décroissant" },
   "sortAscending": { "message": "Croissant" },
 

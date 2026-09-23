@@ -1,4 +1,15 @@
 {
+  "magnetSaveFailedTitle": {"message":"No se pudo guardar la opción de enlaces magnet"},
+  "taskActionPreviousConnection": {"message":"Resultado para la conexión anterior al NAS ($ADDRESS$): $REASON$ Revisa las tareas de ese NAS antes de volver a intentarlo.","description":"Result for an action started on an earlier NAS connection.","placeholders":{"ADDRESS":{"content":"$1","example":"https://nas.example:5001"},"REASON":{"content":"$2","example":"The action result could not be confirmed."}}},
+  "errNasPermission": {"message":"Firefox no ha permitido el acceso a $ADDRESS$. La extensión necesita este acceso para iniciar sesión y gestionar descargas. Permite el acceso al NAS en Ajustes → Conexión.","description":"Firefox host permission is missing; $ADDRESS$ is the NAS origin.","placeholders":{"ADDRESS":{"content":"$1","example":"https://192.168.1.2:5001"}}},
+  "magnetPermissionHint": {"message":"Para reconocer los enlaces magnet que pulses en cualquier sitio web y enviarlos a tu NAS, la extensión necesita acceso a sitios HTTP y HTTPS. Esta función es opcional. Tu elección se guarda; la captura se activa automáticamente cuando Firefox permite el acceso. Puede que tengas que recargar las páginas que ya estaban abiertas al conceder el acceso.","description":"Persistent explanation next to the optional magnet-capture switch, visible before requesting website access."},
+  "notifyNasPermission": {"message":"Falta acceso al NAS para iniciar sesión y descargar. Permítelo en Ajustes → Conexión.","description":"Short missing-NAS-permission notification: explains the purpose and points to the grant control. No variable address, to keep the notification brief."},
+  "notConnected": {"message":"Sin conexión"},
+  "allowNasAccess": {"message":"Permitir acceso al NAS"},
+  "nasPermissionTitle": {"message":"Acceso al NAS no permitido"},
+  "errMagnetPermission": {"message":"Tu preferencia se ha guardado, pero la captura automática de enlaces magnet está inactiva porque Firefox no ha permitido el acceso a sitios HTTP y HTTPS. Permite el acceso con el botón de abajo para activarla."},
+  "magnetPermissionTitle": {"message":"Captura de enlaces magnet inactiva"},
+  "allowMagnetPermission": {"message":"Permitir acceso a sitios web"},
   "htmlLang": { "message": "es" },
   "portInvalid": { "message": "El puerto debe ser un número entero entre 1 y 65535." },
   "protocolInsecure": { "message": "HTTP envía la contraseña y el identificador de sesión sin cifrar. Se recomienda usar HTTPS para que los datos viajen cifrados." },
@@ -132,6 +143,7 @@
   "sortName": { "message": "Nombre" },
   "sortProgress": { "message": "Progreso" },
   "sortSize": { "message": "Tamaño" },
+  "sortDirection": {"message":"Sentido de ordenación"},
   "sortDescending": { "message": "Descendente" },
   "sortAscending": { "message": "Ascendente" },
 

@@ -1,4 +1,15 @@
 {
+  "magnetSaveFailedTitle": {"message":"Magnet-Einstellung konnte nicht gespeichert werden"},
+  "taskActionPreviousConnection": {"message":"Ergebnis für die vorherige NAS-Verbindung ($ADDRESS$): $REASON$ Prüfe vor einem neuen Versuch die Aufgaben auf dieser NAS.","description":"Result for an action started on an earlier NAS connection.","placeholders":{"ADDRESS":{"content":"$1","example":"https://nas.example:5001"},"REASON":{"content":"$2","example":"The action result could not be confirmed."}}},
+  "errNasPermission": {"message":"Firefox hat den Zugriff auf $ADDRESS$ nicht erlaubt. Die Erweiterung benötigt ihn für die Anmeldung und Download-Verwaltung. Erlaube den NAS-Zugriff unter Einstellungen → Verbindung.","description":"Firefox host permission is missing; $ADDRESS$ is the NAS origin.","placeholders":{"ADDRESS":{"content":"$1","example":"https://192.168.1.2:5001"}}},
+  "magnetPermissionHint": {"message":"Damit die Erweiterung angeklickte Magnet-Links auf beliebigen Webseiten erkennen und an deine NAS senden kann, benötigt sie Zugriff auf HTTP- und HTTPS-Websites. Diese Funktion ist optional. Deine Auswahl bleibt gespeichert; nach der Freigabe durch Firefox startet die Übernahme automatisch. Webseiten, die bei der Freigabe bereits geöffnet waren, musst du gegebenenfalls neu laden.","description":"Persistent explanation next to the optional magnet-capture switch, visible before requesting website access."},
+  "notifyNasPermission": {"message":"Für Anmeldung und Downloads fehlt der NAS-Zugriff. Erlaube ihn unter Einstellungen → Verbindung.","description":"Short missing-NAS-permission notification: explains the purpose and points to the grant control. No variable address, to keep the notification brief."},
+  "notConnected": {"message":"Nicht verbunden"},
+  "allowNasAccess": {"message":"NAS-Zugriff erlauben"},
+  "nasPermissionTitle": {"message":"NAS-Zugriff nicht erlaubt"},
+  "errMagnetPermission": {"message":"Deine Einstellung ist gespeichert, aber die automatische Magnet-Übernahme ist ohne Firefox-Zugriff auf HTTP- und HTTPS-Websites inaktiv. Erlaube den Zugriff unten, um sie zu aktivieren."},
+  "magnetPermissionTitle": {"message":"Magnet-Übernahme inaktiv"},
+  "allowMagnetPermission": {"message":"Website-Zugriff erlauben"},
   "htmlLang": { "message": "de" },
   "portInvalid": { "message": "Der Port muss eine ganze Zahl zwischen 1 und 65535 sein." },
   "protocolInsecure": { "message": "HTTP überträgt Passwort und Sitzungs-ID unverschlüsselt. Es wird empfohlen HTTPS zu nutzen, um die Daten verschlüsselt zu übertragen." },
@@ -132,6 +143,7 @@
   "sortName": { "message": "Name" },
   "sortProgress": { "message": "Fortschritt" },
   "sortSize": { "message": "Größe" },
+  "sortDirection": {"message":"Sortierrichtung"},
   "sortDescending": { "message": "Absteigend" },
   "sortAscending": { "message": "Aufsteigend" },
 

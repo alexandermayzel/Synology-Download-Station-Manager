@@ -26,9 +26,11 @@
 const ACTIONS = Object.freeze({
   // From the content script, which is the one place that cannot use this list:
   // it runs on every page, and loading this file beside it would put a second
-  // file on all of them for one string. content.js repeats the value verbatim
+  // file on all of them for these strings. content.js repeats the values verbatim
   // and says so — change it here and it has to change there too.
   MAGNET_CLICKED:     'magnetClicked',
+  GET_MAGNET_CAPTURE_STATE: 'getMagnetCaptureState',
+  MAGNET_CAPTURE_CHANGED:   'magnetCaptureChanged',
 
   // Adding. Files have no entry: a .torrent is added by its link, through the
   // context menu — see the hint in the popup's Files section.
@@ -55,6 +57,9 @@ const ACTIONS = Object.freeze({
   // Settings
   TEST_CONNECTION:    'testConnection',
   SETTINGS_UPDATED:   'settingsUpdated',
+  CONNECTION_DRAFT:   'connectionDraft',
+  DESTINATION_DRAFT:  'destinationDraft',
+  QUEUE_MAGNET_PREFERENCE: 'queueMagnetPreference',
 });
 
 /**
@@ -92,6 +97,18 @@ function buildConnectionUrl(protocol, host, port) {
   const urlHost = typeof host === 'string' && host.includes(':') && !host.startsWith('[')
     ? `[${host}]` : host;
   return `${protocol}://${urlHost}:${port}`;
+}
+
+const MAGNET_ORIGINS = Object.freeze(['http://*/*', 'https://*/*']);
+
+/** Firefox host permissions cover every port on a host, but never a file URL. */
+function hostPermissionForUrl(input) {
+  const url = new URL(input);
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname
+      || url.hostname.includes('*') || url.username || url.password) {
+    throw new Error('Invalid NAS address');
+  }
+  return { origins: [`${url.protocol}//${url.hostname}/*`] };
 }
 
 /**

@@ -1,4 +1,15 @@
 {
+  "magnetSaveFailedTitle": {"message":"Could not save magnet setting"},
+  "taskActionPreviousConnection": {"message":"Result for the previous NAS connection ($ADDRESS$): $REASON$ Check the tasks on that NAS before trying again.","description":"Result for an action started on an earlier NAS connection.","placeholders":{"ADDRESS":{"content":"$1","example":"https://nas.example:5001"},"REASON":{"content":"$2","example":"The action result could not be confirmed."}}},
+  "errNasPermission": {"message":"Firefox has not allowed access to $ADDRESS$. The extension needs it to sign in and manage downloads. Allow NAS access under Settings → Connection.","description":"Firefox host permission is missing; $ADDRESS$ is the NAS origin.","placeholders":{"ADDRESS":{"content":"$1","example":"https://192.168.1.2:5001"}}},
+  "magnetPermissionHint": {"message":"To recognise clicked magnet links on any website and send them to your NAS, the extension needs access to HTTP and HTTPS websites. This feature is optional. Your choice is saved; capture starts automatically once Firefox allows access. You may need to reload pages that were already open when you granted access.","description":"Persistent explanation next to the optional magnet-capture switch, visible before requesting website access."},
+  "notifyNasPermission": {"message":"NAS access is missing for sign-in and downloads. Allow it under Settings → Connection.","description":"Short missing-NAS-permission notification: explains the purpose and points to the grant control. No variable address, to keep the notification brief."},
+  "notConnected": {"message":"Not connected"},
+  "allowNasAccess": {"message":"Allow NAS access"},
+  "nasPermissionTitle": {"message":"NAS access not allowed"},
+  "errMagnetPermission": {"message":"Your preference is saved, but automatic magnet link capture is inactive because Firefox has not allowed access to HTTP and HTTPS websites. Allow access below to activate it."},
+  "magnetPermissionTitle": {"message":"Magnet capture inactive"},
+  "allowMagnetPermission": {"message":"Allow website access"},
   "htmlLang": { "message": "en", "description": "BCP 47 tag of this file's own language, used for the document's lang attribute. Not a translation: set it to this locale's own code." },
   "portInvalid": { "message": "The port has to be a whole number between 1 and 65535." },
   "protocolInsecure": { "message": "HTTP sends your password and session id unencrypted. Using HTTPS is recommended, so the data travels encrypted.", "description": "Shown under the protocol selector while HTTP is chosen." },
@@ -141,6 +152,7 @@
   "sortName": { "message": "Name" },
   "sortProgress": { "message": "Progress" },
   "sortSize": { "message": "Size" },
+  "sortDirection": {"message":"Sort direction"},
   "sortDescending": { "message": "Descending" },
   "sortAscending": { "message": "Ascending" },
 

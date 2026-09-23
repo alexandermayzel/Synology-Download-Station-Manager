@@ -133,7 +133,9 @@ summary::-webkit-details-marker{display:none}
    actually got, so the panel below always ends where the window does. */
 .shell{
   position:relative;padding:12px;display:flex;flex-direction:column;gap:12px;
-  height:100vh;box-sizing:border-box;overflow:hidden;
+  /* Only the panels scroll. Unlike hidden, clip also prevents a focused
+     descendant from moving this outer frame and taking the header with it. */
+  height:100vh;box-sizing:border-box;overflow:clip;
 }
 
 /* The visible panel takes the remaining height; min-height:0 is what lets a
@@ -473,8 +475,16 @@ select.ta{cursor:pointer}
 textarea.ta{resize:none;min-height:56px}
 
 .hint{font-size:11px;color:var(--muted);line-height:1.5;margin:0}
+#certWarning{color:var(--text)}
 .hint.center{text-align:center;padding:8px 0}
-.hint.error{color:var(--danger-text)}
+/* Error messages share the permission panels' frame. Success and progress
+   messages use .hint without .error and keep their ordinary appearance. */
+.hint.error,.failure,.conn-problem{
+  border:1px solid var(--danger);border-radius:6px;
+  background:rgba(243,139,168,.08);padding:8px;
+  overflow-wrap:anywhere;user-select:text;flex-shrink:0;
+}
+.hint.error{color:var(--danger-text);text-align:left}
 /* Something to weigh, not something done wrong — so the warning hue, not the
    error one. Same colour the waiting badge and the code prompt already use. */
 .hint.warn{color:var(--warn)}
@@ -489,9 +499,6 @@ textarea.ta{resize:none;min-height:56px}
    hand to whoever looks after the NAS. */
 .conn-problem{
   display:flex;flex-direction:column;gap:3px;
-  border:1px solid var(--danger);border-radius:6px;
-  background:rgba(243,139,168,.08);padding:8px;
-  user-select:text;
 }
 .conn-problem-title{margin:0;font-size:12px;font-weight:600;color:var(--danger-text)}
 /* Wraps instead of truncating, and breaks a long unbroken address rather than
@@ -503,21 +510,28 @@ textarea.ta{resize:none;min-height:56px}
 /* Not every line is filled every time — an empty one must not leave a gap. */
 .conn-problem-line:empty{display:none}
 
-.checkline{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;color:var(--text)}
+/* The real checkbox and its decoration occupy the same grid cell. Keeping
+   the input in normal layout gives native focus scrolling the exact same
+   rectangle the user clicked, even deep inside the scrolling Settings panel. */
+.checkline{
+  display:grid;grid-template-columns:30px minmax(0,1fr);align-items:center;
+  column-gap:8px;font-size:13px;cursor:pointer;color:var(--text);
+}
+.checkline > .toggle ~ span{grid-column:2;grid-row:1;min-width:0}
 
 /* Toggle switch. The real checkbox stays in the DOM and keeps the id, so it
-   still carries the state and the label still toggles it — it is just moved
-   out of sight and drawn as the pill next to it. Styling the input itself is
-   not an option: pseudo-elements don't render on replaced elements. */
+   still carries the state, label activation and keyboard focus. It is
+   transparent above the pill, rather than an off-screen or absolute 1px box. */
 .toggle-input{
-  position:absolute;width:1px;height:1px;opacity:0;margin:0;pointer-events:none;
+  grid-column:1;grid-row:1;width:30px;height:17px;opacity:0;margin:0;
+  z-index:1;cursor:inherit;
 }
 /* Switched off, the track is a recess barely above the panel and the only thing
    drawing the switch is its outline. At --section-border that was 1.61:1; a
    control's boundary needs 3:1, which --field-border gives at 3.05:1. Switched
    on the accent fill carries it and the border follows the fill. */
 .toggle{
-  position:relative;flex:none;
+  grid-column:1;grid-row:1;position:relative;pointer-events:none;
   width:30px;height:17px;border-radius:99px;
   background:var(--recess);border:1px solid var(--field-border);
   transition:background .15s,border-color .15s;
@@ -716,5 +730,4 @@ textarea.ta{resize:none;min-height:56px}
    --danger-text was missed. */
 .failure{
   font-size:10px;color:var(--danger-text);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }

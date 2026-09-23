@@ -269,6 +269,12 @@
       </summary>
       <div class="section-body">
 
+      <div id="nasPermissionPanel" class="conn-problem" role="status" hidden>
+        <p class="conn-problem-title" data-i18n="nasPermissionTitle">NAS access not allowed</p>
+        <p class="conn-problem-line" id="nasPermissionMessage"></p>
+        <button type="button" id="btnNasPermission" class="btn-secondary" data-i18n="allowNasAccess" aria-describedby="nasPermissionMessage">Allow NAS access</button>
+      </div>
+
       <!-- The last connection failure at this address, in full and selectable.
            Filled from storage by syncConnectionProblem, so it is still here
            after the popup has been closed and opened again. Above the fields
@@ -304,7 +310,7 @@
       </p>
       <!-- Shown only for HTTPS to a bare IP. Also a warning, not a refusal:
            a certificate may carry an IP, it is just very rarely done. -->
-      <p id="certWarning" class="hint warn" data-i18n="hostIpCert" hidden>
+      <p id="certWarning" class="hint" data-i18n="hostIpCert" hidden>
         With HTTPS the certificate has to match the address you entered. If your NAS certificate only covers a host name, use that name instead of the IP address.
       </p>
 
@@ -333,6 +339,7 @@
 
       <!-- Appears only when DSM asks for a two-step verification code -->
       <div class="field otp-field" id="otpField" hidden>
+        <p id="otpMessage" class="hint error" role="status" hidden></p>
         <label for="otpCode" class="label" data-i18n="otpLabel">Verification code</label>
         <div class="row middle">
           <input type="text" id="otpCode" class="ta grow" inputmode="numeric"
@@ -387,11 +394,21 @@
         </span>
       </div>
 
+      <div id="magnetPermission" class="conn-problem" role="status" hidden>
+        <p id="magnetPermissionTitle" class="conn-problem-title" data-i18n="magnetPermissionTitle">Magnet capture inactive</p>
+        <p id="magnetPermissionMessage" class="conn-problem-line" data-i18n="errMagnetPermission">
+          Your preference is saved, but automatic magnet link capture is inactive because Firefox has not allowed access to HTTP and HTTPS websites. Allow access below to activate it.
+        </p>
+        <button type="button" id="btnMagnetPermission" class="btn-secondary" data-i18n="allowMagnetPermission" aria-describedby="magnetPermissionMessage">Allow website access</button>
+      </div>
       <label class="checkline">
-        <input type="checkbox" id="autoCaptureMagnets" class="toggle-input" />
+        <input type="checkbox" id="autoCaptureMagnets" class="toggle-input" aria-describedby="magnetPermissionHint" />
         <span class="toggle" aria-hidden="true"></span>
         <span data-i18n="autoCaptureMagnets">Auto-capture magnet links</span>
       </label>
+      <p id="magnetPermissionHint" class="hint" data-i18n="magnetPermissionHint">
+        To recognise clicked magnet links on any website and send them to your NAS, the extension needs access to HTTP and HTTPS websites. This feature is optional. Your choice is saved; capture starts automatically once Firefox allows access. You may need to reload pages that were already open when you granted access.
+      </p>
 
       <div class="field">
         <label class="checkline">
@@ -498,7 +515,7 @@
             <option value="progress" data-i18n="sortProgress">Progress</option>
             <option value="size" data-i18n="sortSize">Size</option>
           </select>
-          <select id="sortDir" class="ta" style="width:150px" hidden>
+          <select id="sortDir" class="ta" style="width:150px" aria-label="Sort direction" data-i18n-aria-label="sortDirection" hidden>
             <option value="desc" data-i18n="sortDescending">Descending</option>
             <option value="asc" data-i18n="sortAscending">Ascending</option>
           </select>

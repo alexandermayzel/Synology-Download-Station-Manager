@@ -62,8 +62,55 @@ function matchPattern(pattern, url) {
   return new RegExp(`^${escaped}$`).test(target.pathname + target.search);
 }
 
-function makeBrowser({ local = {}, session = {} } = {}) {
+function makeBrowser({ local = {}, session = {},
+  grantedOrigins = ['http://*/*', 'https://*/*'], grantRequests = true } = {}) {
   const changes = event();
+  let userGesture = false;
+  const withUserGesture = fn => {
+    const previous = userGesture;
+    userGesture = true;
+    // Firefox's permission prompt must be called directly from the input
+    // handler. An async continuation does not inherit this harness gesture.
+    try { return fn(); } finally { userGesture = previous; }
+  };
+  const permissionAdded = event(), permissionRemoved = event();
+  const permissionState = {
+    grantedOrigins: new Set(grantedOrigins), requestGranted: grantRequests,
+    requests: [], checks: [], gestureViolations: [],
+    grant(origins) {
+      const added = origins.filter(origin => !this.grantedOrigins.has(origin));
+      for (const origin of added) this.grantedOrigins.add(origin);
+      if (added.length) queueMicrotask(() => permissionAdded.emit({ origins: added }));
+    },
+    revoke(origins) {
+      const removed = origins.filter(origin => this.grantedOrigins.delete(origin));
+      if (removed.length) queueMicrotask(() => permissionRemoved.emit({ origins: removed }));
+    },
+  };
+  const hasOrigins = origins => origins.every(origin => [...permissionState.grantedOrigins]
+    .some(granted => granted === '<all_urls>' || matchPattern(granted, origin)));
+  const permissions = {
+    onAdded: permissionAdded, onRemoved: permissionRemoved,
+    async contains(request) {
+      permissionState.checks.push(plain(request));
+      return hasOrigins(request.origins ?? []);
+    },
+    async request(request) {
+      permissionState.requests.push(plain(request));
+      if (!userGesture) {
+        permissionState.gestureViolations.push(plain(request));
+        throw new Error('permissions.request must be called from a user input handler');
+      }
+      // Firefox answers already-held rights silently; a configured denial
+      // represents the choice for new rights, not revocation of existing ones.
+      if (hasOrigins(request.origins ?? [])) return true;
+      if (!permissionState.requestGranted) return false;
+      permissionState.grant([...request.origins ?? []]);
+      return true;
+    },
+    async remove(request) { permissionState.revoke([...request.origins ?? []]); return true; },
+    async getAll() { return { origins: [...permissionState.grantedOrigins], permissions: [] }; },
+  };
   const data = { local: { ...defaults, ...local }, session: { sid: 'old-sid', apiPaths: apis, ...session } };
   const writes = [];
   const area = name => ({
@@ -97,6 +144,9 @@ function makeBrowser({ local = {}, session = {} } = {}) {
     async clear() { await this.remove(Object.keys(data[name])); },
   });
   const alarmCalls = [], activeAlarms = new Set(), notifications = [], badges = [];
+  const popupCalls = [], tabCalls = [];
+  const extensionViews = new Map();
+  const contentReceivers = new Map();
   // The filter each registration asks for is kept, and applied: what this
   // listener is allowed to see is the point of it, not an implementation
   // detail, and an event that the real filter would never deliver must not
@@ -119,11 +169,21 @@ function makeBrowser({ local = {}, session = {} } = {}) {
     onBeforeRequest: listening(startFilters, startListeners),
   };
   const runtime = { onMessage: event(), onConnect: event(), onInstalled: event(), onStartup: event() };
-  runtime.sendMessage = message => new Promise(resolve => runtime.onMessage.emit(message, {}, resolve));
+  runtime.sendMessage = message => new Promise(resolve => {
+    // Firefox does not forward the page's user-input flag with a runtime
+    // message. A background listener must not borrow the sender's gesture.
+    const previous = userGesture;
+    userGesture = false;
+    try { runtime.onMessage.emit(message, { url: runtime.getURL('popup/popup.html') }, resolve); }
+    finally { userGesture = previous; }
+  });
   runtime.connect = port => { port.onDisconnect = event(); runtime.onConnect.emit(port); return port; };
   runtime.getURL = path => `moz-extension://test-extension/${path}`;
   const browser = {
     storage: { local: area('local'), session: area('session'), onChanged: changes }, runtime,
+    permissions,
+    extension: { getViews: ({ type } = {}) => [...extensionViews]
+      .filter(([, viewType]) => type === undefined || type === viewType).map(([view]) => view) },
     i18n: { getMessage: (key, subs = []) => key + (subs.length ? ':' + subs.join('|') : ''), getUILanguage: () => 'en' },
     alarms: { onAlarm: event(),
       create: (name, options) => { activeAlarms.add(name); alarmCalls.push({ name, options, created: true }); },
@@ -133,26 +193,40 @@ function makeBrowser({ local = {}, session = {} } = {}) {
     // What the badge was told, in order: a stale answer overwriting a newer
     // one is invisible unless the writes themselves are on record.
     action: { setBadgeText: info => badges.push(info?.text), setBadgeBackgroundColor() {},
-      setBadgeTextColor() {}, async openPopup() {} },
+      setBadgeTextColor() {}, async openPopup(options) { popupCalls.push(plain(options ?? {})); } },
+    tabs: {
+      async create(options) { tabCalls.push(plain(options)); return { id: tabCalls.length, ...options }; },
+      async query() { return [...contentReceivers.keys()].map(id => ({ id })); },
+      async sendMessage(tabId, message) {
+        const receiver = contentReceivers.get(tabId);
+        if (!receiver) throw new Error('No content script in this tab');
+        receiver.emit(message);
+      },
+    },
     contextMenus: { onShown: event(), onClicked: event(), removeAll: fn => fn(), create() {}, update() {}, refresh() {} },
     webRequest,
   };
-  return { browser, data, writes, alarmCalls, notifications, badges, errorFilters, startFilters, webRequest };
+  return { browser, data, writes, alarmCalls, notifications, badges, popupCalls, tabCalls, errorFilters, startFilters,
+    webRequest, permissionState, withUserGesture, extensionViews, contentReceivers };
 }
 
 /**
  * Just enough document for a page to be mounted against: look an element up by
  * id, set a value, call the listener it registered.
  */
-function domStub() {
+function domStub(withUserGesture = fn => fn()) {
   const nodes = new Map();
   const node = id => {
     const listeners = {}, classes = new Set();
     return { id, value: '', textContent: '', hidden: false, disabled: false, readOnly: false, checked: false,
       dataset: {}, style: {}, attributes: {}, open: false, listeners,
       classList: { add: x => classes.add(x), remove: x => classes.delete(x),
+        contains: x => classes.has(x),
         toggle(x, on) { if (on) classes.add(x); else classes.delete(x); } },
-      addEventListener(type, fn) { listeners[type] = fn; },
+      addEventListener(type, fn) {
+        listeners[type] = ['click', 'change', 'input', 'keydown'].includes(type)
+          ? (...args) => withUserGesture(() => fn(...args)) : fn;
+      },
       setAttribute(key, value) { this.attributes[key] = value; },
       // No tree is kept here — appendChild and replaceChildren are stubs — so
       // nothing is ever inside anything else. Reflexive and no more, rather
@@ -193,12 +267,64 @@ async function background(fetchImpl = success, storage = {}) {
   return { ...h, context, evaluate, api, requests, connection, send: message => h.browser.runtime.sendMessage(message) };
 }
 
-function popup(h = makeBrowser()) {
-  const { nodes, document } = domStub();
+function popup(h = makeBrowser(), { view = 'popup', hash = '' } = {}) {
+  const { nodes, document } = domStub(h.withUserGesture);
   const timers = new Map();
+  const ports = new Set();
   let timerId = 0;
-  const context = vm.createContext({ browser: h.browser, document, Date, URL,
-    setTimeout(fn) { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id),
+  const window = {
+    document, location: new URL(`moz-extension://test-extension/popup/popup.html${hash}`), closed: false,
+    close() {
+      if (window.closed) return;
+      window.closed = true;
+      h.extensionViews.delete(window);
+      timers.clear();
+      for (const port of ports) port.onDisconnect.emit();
+      ports.clear();
+    },
+  };
+  h.extensionViews.set(window, view);
+  // A closed page cannot react to later storage/permission events. Keep the
+  // shared browser alive for background work and for other open views.
+  const whileOpen = source => {
+    const listeners = new Map();
+    return {
+      addListener(fn) {
+        const listener = (...args) => { if (!window.closed) return fn(...args); };
+        listeners.set(fn, listener);
+        source.addListener(listener);
+      },
+      removeListener(fn) {
+        const listener = listeners.get(fn);
+        if (listener) source.removeListener(listener);
+        listeners.delete(fn);
+      },
+    };
+  };
+  const browser = {
+    ...h.browser,
+    storage: { ...h.browser.storage, onChanged: whileOpen(h.browser.storage.onChanged) },
+    permissions: { ...h.browser.permissions,
+      // Resolve these dynamically so existing tests can defer a browser answer.
+      contains: (...args) => h.browser.permissions.contains(...args),
+      request: (...args) => h.browser.permissions.request(...args),
+      onAdded: whileOpen(h.browser.permissions.onAdded),
+      onRemoved: whileOpen(h.browser.permissions.onRemoved) },
+    runtime: { ...h.browser.runtime,
+      getManifest: (...args) => h.browser.runtime.getManifest(...args),
+      sendMessage: (...args) => window.closed
+        ? Promise.reject(new Error('The extension view has closed'))
+        : h.browser.runtime.sendMessage(...args),
+      connect: (...args) => {
+        const port = h.browser.runtime.connect(...args);
+        ports.add(port);
+        return port;
+      },
+    },
+  };
+  const context = vm.createContext({ browser, document, window, location: window.location, Date, URL,
+    setTimeout(fn) { timers.set(++timerId, () => { if (!window.closed) fn(); }); return timerId; },
+    clearTimeout: id => timers.delete(id),
     setInterval: () => ++timerId, clearInterval() {},
   });
   // Mount the actual event handlers and functions without automatic popup init.
@@ -206,8 +332,1383 @@ function popup(h = makeBrowser()) {
   vm.runInContext(scripts.actions + '\n' + source, context);
   const evaluate = code => vm.runInContext(code, context);
   const api = evaluate('({ setAddBusy, syncAddControls, loadAddBusy, consumeLastAdd, applyAddOutcome, loadDraft, sortTasks, calcProgress, updateTotalSpeed, commitSettings, addBulkLinks, syncConnectionProblem })');
-  return { ...h, context, evaluate, api, nodes, document, timers };
+  return { ...h, context, evaluate, api, nodes, document, window, timers };
 }
+
+test('NAS permission scopes normalize hosts and cover ports without granting other hosts', async () => {
+  const h = await background();
+  const permissionFor = h.evaluate('hostPermissionForUrl');
+  for (const [url, origin] of [
+    ['https://NAS.Example:5001/webapi/auth.cgi', 'https://nas.example/*'],
+    ['https://nas.example:443/webapi/query.cgi', 'https://nas.example/*'],
+    ['http://192.168.1.2:5000/webapi/auth.cgi', 'http://192.168.1.2/*'],
+    ['https://[FD00:0:0:0:0:0:0:1]:5001/webapi/query.cgi', 'https://[fd00::1]/*'],
+  ]) assert.deepEqual(plain(permissionFor(url)), { origins: [origin] });
+  for (const url of ['file:///etc/passwd', 'ftp://nas.example/', 'https://*/',
+    'https://*.example/', 'https://user:password@nas.example/']) {
+    assert.throws(() => permissionFor(url), undefined, url);
+  }
+});
+
+test('missing NAS permission stops reads, discovery, wake and create before any network request', async () => {
+  for (const call of [
+    "apiFetch('https://old-nas.example:5001/webapi/query.cgi')",
+    "discoverApiPaths('https', 'old-nas.example', 5001)",
+    'wakeNas()',
+    "apiAddTaskBatch(['https://download.example/a'])",
+  ]) {
+    const h = await background(success, { grantedOrigins: [], session: { apiPaths: null } });
+    await assert.rejects(h.evaluate(call), error => error.permissionMissing === true
+      && error.deliveryUnknown === false && /errNasPermission/.test(error.message));
+    assert.equal(h.requests.length, 0, call);
+    assert.equal(h.permissionState.requests.length, 0, 'background work must not prompt');
+  }
+});
+
+test('missing access is a definite refusal for single adds, bulk adds and retry before sending', async () => {
+  for (const route of ['single', 'bulk', 'retry']) {
+    const h = await background(success, { grantedOrigins: [], local: { notificationsEnabled: false } });
+    const url = 'https://download.example/a';
+    const result = route === 'single'
+      ? await h.evaluate('addDownloadTask')(url)
+      : route === 'bulk'
+        ? await h.send({ action: 'addTasksBulk', urls: [url], connection: h.connection })
+        : await h.api.apiRetryTask('old-task', url, '');
+    assert.equal(result.permissionMissing, true, route);
+    assert.equal(result.deliveryUnknown, false, route);
+    assert.match(result.error?.message ?? result.errorMessage,
+      /errNasPermission:https:\/\/old-nas\.example:5001/, route);
+    assert.equal(h.requests.length, 0, route);
+    if (route === 'bulk') assert.equal(h.data.session.bulkDraft, url);
+    if (route !== 'retry') assert.ok(h.notifications.some(note => note.message.includes('notifyNasPermission')));
+  }
+});
+
+test('a concrete host grant covers its other ports but not another scheme or host', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'] });
+  await (await h.api.apiFetch('https://old-nas.example:8443/webapi/query.cgi')).json();
+  for (const url of ['http://old-nas.example:5000/webapi/query.cgi', 'https://other-nas.example:5001/webapi/query.cgi']) {
+    await assert.rejects(h.api.apiFetch(url), error => error.permissionMissing === true);
+  }
+  assert.equal(h.requests.length, 1);
+});
+
+test('an IPv6 host grant permits discovery and login for the configured address', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'ipv6-sid' } }) : success(), {
+    local: { host: 'FD00::1', port: 8443 }, session: { sid: null, apiPaths: null },
+    grantedOrigins: ['https://[fd00::1]/*'],
+  });
+  assert.equal((await h.send({ action: 'testConnection' })).success, true);
+  assert.ok(h.requests.some(request => request.url.includes('/query.cgi')));
+  assert.ok(h.requests.some(request => request.body.method === 'login'));
+  assert.ok(h.permissionState.checks.every(check => check.origins[0] === 'https://[fd00::1]/*'));
+});
+
+test('permission revoked after a session was cached makes status disconnected and stops task requests', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'] });
+  h.permissionState.revoke(['https://old-nas.example/*']);
+  const status = await h.send({ action: 'getStatus' });
+  assert.equal(status.connected, false);
+  assert.equal(status.permissionMissing, true);
+  const result = await h.send({ action: 'listTasks' });
+  assert.equal(result.permissionMissing, true);
+  assert.equal(result.deliveryUnknown, false);
+  assert.match(result.error.message, /errNasPermission/);
+  assert.equal(h.requests.length, 0);
+});
+
+test('granting the NAS access clears its kept permission failure but not an authentication failure', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'granted-sid' } })
+    : response({ success: true, data: { tasks: [] } }),
+  { grantedOrigins: [], session: { sid: null } });
+  const refusal = await h.send({ action: 'testConnection' });
+  assert.equal(refusal.permissionMissing, true);
+  assert.match(refusal.error.message, /errNasPermission:https:\/\/old-nas\.example:5001/);
+  assert.ok(h.notifications.some(note => note.message === 'notifyNasPermission'));
+  assert.equal(h.data.session.lastConnect.permissionMissing, true);
+  h.permissionState.grant(['https://another-host.example/*']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.data.session.lastConnect.permissionMissing, true);
+  h.permissionState.grant(['https://old-nas.example/*']);
+  await until(() => h.data.session.lastConnect === undefined);
+  assert.equal((await h.send({ action: 'listTasks' })).success, true);
+  assert.ok(h.requests.some(request => request.body.method === 'login'));
+
+  const authFailure = { success: false, authFailed: true, error: { message: 'wrong-password' } };
+  const blocked = await background(success, { grantedOrigins: [],
+    session: { sid: null, lastConnect: authFailure } });
+  blocked.permissionState.grant(['https://old-nas.example/*']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(blocked.data.session.lastConnect, authFailure);
+  assert.equal(blocked.requests.length, 0);
+});
+
+test('access granted during a delayed permission check cannot leave a fresh sign-in block behind', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'granted-sid' } }) : success(),
+  { grantedOrigins: [], session: { sid: null } });
+  const checked = deferred();
+  const contains = h.browser.permissions.contains;
+  let checking = false;
+  h.browser.permissions.contains = request => {
+    if (!checking) { checking = true; return checked.promise; }
+    return contains(request);
+  };
+  const testing = h.send({ action: 'testConnection' });
+  await until(() => checking);
+  h.permissionState.grant(['https://old-nas.example/*']);
+  await h.evaluate('settingsWriteQueue');
+  checked.resolve(false); // The old snapshot arrives after the user's grant.
+  const result = await testing;
+  // The grant event invalidates the delayed snapshot: rechecking lets the
+  // original, not-yet-sent login proceed once under the current permission.
+  assert.equal(result.success, true);
+  assert.equal(h.data.session.lastConnect, undefined);
+  assert.equal(h.evaluate('cachedConnectFailure'), null);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].body.method, 'login');
+});
+
+test('revoking access after sending a create preserves uncertainty when its lookup cannot run', async () => {
+  for (const route of ['single', 'bulk']) {
+    let h;
+    h = await background(async (_, options) => {
+      if (options.body?.get('method') === 'create') {
+        h.permissionState.revoke(['https://old-nas.example/*']);
+        throw new TypeError('Reply lost after create was sent');
+      }
+      return success();
+    }, { grantedOrigins: ['https://old-nas.example/*'] });
+    const url = 'https://download.example/a';
+    const result = route === 'single'
+      ? await h.evaluate('addDownloadTask')(url)
+      : await h.send({ action: 'addTasksBulk', urls: [url], connection: h.connection });
+    assert.equal(result.permissionMissing, true, route);
+    assert.equal(result.deliveryUnknown, true, route);
+    assert.match(result.error?.message ?? result.errorMessage,
+      /errNasPermission:https:\/\/old-nas\.example:5001/, route);
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1);
+    assert.equal(h.requests.filter(request => request.body.method === 'list').length, 0);
+    if (route === 'bulk') {
+      assert.equal(result.uncertain, 1);
+      assert.equal(h.data.session.bulkDraft, url);
+      assert.ok(h.notifications.some(note => note.message.includes('notifyBulkUncertainCount:1')
+        && note.message.includes('notifyNasPermission')));
+    } else {
+      assert.ok(h.notifications.some(note => note.title === 'notifyAddUnconfirmed'
+        && note.message === 'notifyNasPermission'));
+    }
+  }
+});
+
+test('revoking access before a task-action retry cannot erase an already-sent uncertain result', async () => {
+  let h;
+  h = await background(async () => {
+    h.permissionState.revoke(['https://old-nas.example/*']);
+    throw new TypeError('The pause reply was lost');
+  }, { grantedOrigins: ['https://old-nas.example/*'] });
+  const result = await h.send({ action: 'pauseTask', id: 'dbid_1', connection: h.connection });
+  assert.equal(result.permissionMissing, true);
+  assert.equal(result.deliveryUnknown, true);
+  assert.match(result.error.message, /actionResultUnknown/);
+  assert.match(result.error.message, /errNasPermission/);
+  assert.equal(h.requests.length, 1);
+});
+
+test('a NAS change during the retry permission check retains a link whose delete was already sent', async () => {
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'delete') throw new TypeError('Deletion reply lost');
+    return success();
+  });
+  const checked = deferred();
+  const contains = h.browser.permissions.contains;
+  let checks = 0;
+  h.browser.permissions.contains = request => ++checks === 3 ? checked.promise : contains(request);
+  const url = 'https://download.example/a';
+  const retrying = h.api.apiRetryTask('old-task', url, '');
+  await until(() => checks === 3); // Wake, delete, then the delete's retry.
+  await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+  checked.resolve(true);
+  const result = await retrying;
+  assert.equal(result.deliveryUnknown, true);
+  assert.equal(result.linkKept, true);
+  assert.equal(h.data.session.bulkDraft, url);
+  assert.equal(h.requests.filter(request => request.body.method === 'delete').length, 1);
+  assert.equal(h.requests.filter(request => request.body.method === 'create').length, 0);
+});
+
+test('opening a popup without NAS access shows the missing permission and never prompts', async () => {
+  const h = await background(success, { grantedOrigins: [] });
+  h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+  const p = popup(h);
+  p.nodes.get('otpField').hidden = true;
+  await p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+  assert.equal(h.permissionState.requests.length, 0);
+  assert.equal(h.requests.length, 0);
+  assert.equal(p.evaluate('nasAccessMissing'), true);
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+});
+
+test('context-menu links and selections open NAS access without sending or replacing a draft', async () => {
+  for (const input of [
+    { linkUrl: 'https://download.example/a' },
+    { selectionText: 'Downloads: https://download.example/a\nhttps://download.example/b' },
+  ]) {
+    const draft = 'https://saved.example/one\nhttps://saved.example/two';
+    const h = await background(success, { grantedOrigins: [], session: { bulkDraft: draft } });
+    const [result] = await Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', ...input }, { windowId: 17 })));
+    assert.equal(result.permissionMissing, true);
+    assert.equal(result.deliveryUnknown, false);
+    assert.equal(h.requests.length, 0);
+    assert.deepEqual(h.popupCalls, [{ windowId: 17 }]);
+    assert.deepEqual(h.tabCalls, []);
+    assert.equal(h.data.session.bulkDraft, draft);
+    assert.equal(h.data.session.lastAdd, undefined);
+    assert.equal(h.permissionState.requests.length, 0, 'opening the interface is not consent');
+
+    h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+    const p = popup(h);
+    p.nodes.get('otpField').hidden = true;
+    await p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+    assert.equal(p.evaluate('activeTab'), 'settings');
+    assert.equal(p.nodes.get('connectionSection').open, true);
+    assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+    assert.equal(p.nodes.get('bulkLinks').value, draft);
+    assert.equal(h.permissionState.requests.length, 0);
+    assert.equal(h.requests.length, 0);
+  }
+});
+
+test('context-menu downloads with NAS access keep sending normally without opening another interface', async () => {
+  for (const input of [
+    { linkUrl: 'https://download.example/a' },
+    { selectionText: 'https://download.example/a\nhttps://download.example/b' },
+  ]) {
+    const h = await background(async (_, options) => options.body?.get('method') === 'list'
+      ? response({ success: true, data: { tasks: [] } }) : success());
+    const [result] = await Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', ...input }, { windowId: 17 })));
+    assert.equal(result.success, true);
+    const created = h.requests.filter(request => request.body.method === 'create');
+    assert.equal(created.length, 1);
+    assert.equal(created[0].body.uri, input.linkUrl ?? 'https://download.example/a,https://download.example/b');
+    assert.deepEqual(h.popupCalls, []);
+    assert.deepEqual(h.tabCalls, []);
+    assert.equal(h.permissionState.requests.length, 0);
+  }
+});
+
+test('context-menu access falls back to an extension tab if Firefox refuses the popup', async () => {
+  for (const tabFails of [false, true]) {
+    const h = await background(success, { grantedOrigins: [], local: { notificationsEnabled: false } });
+    const openPopup = h.browser.action.openPopup, createTab = h.browser.tabs.create;
+    h.browser.action.openPopup = async options => {
+      await openPopup(options);
+      throw new Error('openPopup requires a user gesture in this Firefox version');
+    };
+    h.browser.tabs.create = async options => {
+      const tab = await createTab(options);
+      if (tabFails) throw new Error('the source window has closed');
+      return tab;
+    };
+    const [result] = await Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', linkUrl: 'https://download.example/a' }, { windowId: 17 })));
+    assert.equal(result.permissionMissing, true, 'UI failure must not erase the download result');
+    assert.deepEqual(h.popupCalls, [{ windowId: 17 }]);
+    assert.deepEqual(h.tabCalls, [{
+      url: 'moz-extension://test-extension/popup/popup.html', active: true, windowId: 17,
+    }]);
+    assert.ok(h.notifications.some(note => note.message === 'notifyNasPermission'));
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.permissionState.requests.length, 0);
+    assert.equal(h.evaluate('addsPending'), 0);
+  }
+});
+
+test('context-menu access does not open after a grant is restored or the connection changes', async () => {
+  for (const change of ['grant', 'connection']) {
+    const h = await background(success, { grantedOrigins: [] });
+    const checked = deferred(), contains = h.browser.permissions.contains;
+    let checks = 0;
+    // Restore access after the add's failed check, or change NAS while the
+    // interface's separate live check is still waiting for its answer.
+    const heldCheck = change === 'grant' ? 1 : 2;
+    h.browser.permissions.contains = request => ++checks === heldCheck ? checked.promise : contains(request);
+    const clicking = Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', linkUrl: 'https://download.example/a' }, { windowId: 17 })));
+    await until(() => checks === heldCheck);
+    if (change === 'grant') h.permissionState.grant(['https://old-nas.example/*']);
+    else await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+    checked.resolve(false);
+    await clicking;
+    assert.deepEqual(h.popupCalls, [], change);
+    assert.deepEqual(h.tabCalls, [], change);
+    if (change === 'grant') {
+      // This add was still preparing its first request when access returned.
+      // It may now send once; it must not reopen setup or repeat the create.
+      assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1);
+    } else assert.equal(h.requests.length, 0, change);
+    assert.equal(h.permissionState.requests.length, 0, change);
+    assert.equal(h.evaluate('addsPending'), 0, change);
+  }
+});
+
+test('missing NAS access outside the add context menu never opens the permission interface', async () => {
+  for (const route of ['single', 'magnet', 'bulk', 'list', 'other-menu', 'empty-selection']) {
+    const h = await background(success, { grantedOrigins: [] });
+    if (route === 'single') await h.evaluate("addDownloadTask('https://download.example/a')");
+    else if (route === 'magnet') await h.send({ action: 'magnetClicked', url: 'magnet:?xt=urn:btih:example' });
+    else if (route === 'bulk') await h.api.addDownloadTasksBulk(['https://download.example/a'], '');
+    else if (route === 'list') await h.send({ action: 'listTasks' });
+    else await Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(route === 'other-menu'
+      ? { menuItemId: 'another-command', linkUrl: 'https://download.example/a' }
+      : { menuItemId: 'download-station-add', selectionText: 'no download links here' })));
+    assert.deepEqual(h.popupCalls, [], route);
+    assert.deepEqual(h.tabCalls, [], route);
+    assert.equal(h.requests.length, 0, route);
+    assert.equal(h.permissionState.requests.length, 0, route);
+  }
+});
+
+test('a kept sign-in refusal does not hide revoked NAS access from a context-menu download', async () => {
+  for (const granted of [false, true]) {
+    const h = await background(success, {
+      grantedOrigins: granted ? ['https://old-nas.example/*'] : [],
+      session: { sid: null, lastConnect: { success: false, authFailed: true, error: { message: 'errLoginFailed' } } },
+    });
+    const [result] = await Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', linkUrl: 'https://download.example/a' })));
+    assert.equal(result.success, false);
+    assert.deepEqual(h.popupCalls, granted ? [] : [{}]);
+    assert.deepEqual(h.tabCalls, []);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.permissionState.requests.length, 0);
+  }
+});
+
+test('context-menu tab fallback rechecks NAS access after a delayed popup refusal', async () => {
+  for (const change of ['grant', 'connection']) {
+    const h = await background(success, { grantedOrigins: [] });
+    const opening = deferred(), openPopup = h.browser.action.openPopup;
+    h.browser.action.openPopup = async options => {
+      await openPopup(options);
+      return opening.promise;
+    };
+    const clicking = Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', linkUrl: 'https://download.example/a' }, { windowId: 17 })));
+    await until(() => h.popupCalls.length === 1);
+    if (change === 'grant') h.permissionState.grant(['https://old-nas.example/*']);
+    else await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+    opening.reject(new Error('Firefox refused the popup'));
+    await clicking;
+    assert.deepEqual(h.tabCalls, [], change);
+    assert.equal(h.requests.length, 0, change);
+    assert.equal(h.permissionState.requests.length, 0, change);
+    assert.equal(h.evaluate('addsPending'), 0, change);
+  }
+});
+
+test('closing one extension view does not let a finished poll log out another open view', async () => {
+  for (const firstClosed of [0, 1]) {
+    const h = await background(async (_, options) => options.body?.get('method') === 'list'
+      ? response({ success: true, data: { tasks: [] } }) : success());
+    const views = [h.browser.runtime.connect({ name: 'popup' }), h.browser.runtime.connect({ name: 'popup' })];
+    views[firstClosed].onDisconnect.emit();
+    await h.evaluate('runPoll()');
+    assert.equal(h.requests.filter(request => request.body.method === 'list').length, 1);
+    assert.equal(h.requests.filter(request => request.body.method === 'logout').length, 0);
+    assert.equal(h.data.session.sid, 'old-sid');
+    views[1 - firstClosed].onDisconnect.emit();
+    await h.evaluate('runPoll()');
+    assert.equal(h.requests.filter(request => request.body.method === 'logout').length, 1);
+    assert.equal(h.data.session.sid, undefined);
+  }
+});
+
+test('testing without NAS access shows an available grant button without opening a permission prompt', async () => {
+  const h = await background(success, { grantedOrigins: [], grantRequests: false });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  await p.nodes.get('btnTest').listeners.click();
+  assert.deepEqual(h.permissionState.requests, []);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.equal(h.requests.length, 0);
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+  assert.equal(p.evaluate('nasAccessMissing'), true);
+  assert.equal(p.nodes.get('btnNasPermission').disabled, false);
+  assert.equal(p.nodes.get('btnTest').disabled, false);
+});
+
+test('saving an ungranted NAS persists the clicked connection and leaves its access button usable', async () => {
+  const h = await background(success, { grantedOrigins: [], grantRequests: false });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.nodes.get('host').value = 'new-nas.example';
+  p.nodes.get('username').value = 'new-user';
+  p.nodes.get('password').value = 'new-password';
+  await p.nodes.get('btnSaveConnection').listeners.click();
+  assert.equal(h.data.local.host, 'new-nas.example');
+  assert.equal(h.data.local.username, 'new-user');
+  assert.equal(h.data.local.password, 'new-password');
+  assert.equal(p.evaluate('settings.host'), 'new-nas.example');
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+  assert.match(p.nodes.get('nasPermissionMessage').textContent, /new-nas\.example/);
+  assert.equal(p.nodes.get('btnNasPermission').disabled, false);
+  assert.equal(p.nodes.get('btnSaveConnection').disabled, false);
+  assert.equal(p.window.closed, false);
+  assert.deepEqual(h.permissionState.requests, []);
+  assert.equal(h.requests.length, 0);
+});
+
+test('an OTP without NAS access is not submitted and releases its gate for the access button', async () => {
+  const h = await background(success, { grantedOrigins: [], grantRequests: false });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('showOtpPrompt(true);');
+  p.nodes.get('otpCode').value = '123456';
+  await p.nodes.get('btnOtpSubmit').listeners.click();
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+  assert.equal(p.nodes.get('btnNasPermission').disabled, false);
+  assert.equal(p.nodes.get('btnOtpSubmit').disabled, false);
+  assert.equal(p.evaluate('otpBusyFor()'), false);
+  assert.deepEqual(h.permissionState.requests, []);
+  assert.equal(h.requests.length, 0);
+  await p.nodes.get('btnNasPermission').listeners.click();
+  assert.equal(h.permissionState.requests.length, 1, 'only the separate access click opens a prompt');
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.equal(h.requests.length, 0, 'refusing access must not send the retained OTP');
+});
+
+test('the NAS permission button in an extension tab grants its host and tests without closing the tab', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'granted-sid' } })
+    : response({ success: true, data: { tasks: [] } }), { grantedOrigins: [] });
+  const p = popup(h, { view: 'tab' });
+  await p.evaluate('loadSettings()');
+  p.nodes.get('otpField').hidden = true;
+  await p.evaluate('syncNasAccess()');
+  await p.nodes.get('btnNasPermission').listeners.click();
+  assert.deepEqual(h.permissionState.requests, [{ origins: ['https://old-nas.example/*'] }]);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.ok(h.requests.some(request => request.body.method === 'login'));
+  assert.equal(p.evaluate('nasAccessMissing'), false);
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, true);
+  assert.equal(p.window.closed, false);
+  assert.deepEqual(h.tabCalls, []);
+});
+
+test('the toolbar permission button closes before the decision and reconnects only after reopening', async () => {
+  for (const grant of [true, false]) {
+    const h = await background(async (_, options) => options.body?.get('method') === 'login'
+      ? response({ success: true, data: { sid: 'granted-sid' } })
+      : response({ success: true, data: { tasks: [] } }),
+    { grantedOrigins: [], grantRequests: false, session: { sid: null } });
+    assert.equal((await h.send({ action: 'testConnection' })).permissionMissing, true);
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    p.evaluate('popupReady = true;');
+    p.nodes.get('otpField').hidden = true;
+    await p.evaluate('syncNasAccess()');
+    const decision = deferred(), request = h.browser.permissions.request;
+    h.browser.permissions.request = permissions => {
+      // Check the actual click gesture now, but grant nothing until Firefox's
+      // delayed decision arrives after the view has closed.
+      const checked = request(permissions);
+      return checked.then(() => decision.promise).then(granted => {
+        if (granted) h.permissionState.grant(permissions.origins);
+        return granted;
+      });
+    };
+    const allowing = p.nodes.get('btnNasPermission').listeners.click();
+    await until(() => p.window.closed);
+    await allowing;
+    assert.deepEqual(h.permissionState.requests, [{ origins: ['https://old-nas.example/*'] }]);
+    assert.deepEqual(h.permissionState.gestureViolations, []);
+    assert.equal(p.window.closed, true, 'the pending browser decision must not keep the popup over its prompt');
+    assert.equal(h.evaluate('popupOpen'), false, 'closing the view also disconnects its port');
+    assert.equal(h.browser.extension.getViews({ type: 'popup' }).includes(p.window), false);
+    assert.equal(h.requests.length, 0);
+    assert.deepEqual(h.tabCalls, [], 'the button must not open a replacement tab');
+
+    decision.resolve(grant);
+    if (grant) await until(() => h.data.session.lastConnect === undefined);
+    else await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.requests.length, 0, 'a closed popup does not sign in after the decision');
+    if (!grant) assert.equal(h.data.session.lastConnect.permissionMissing, true);
+
+    h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+    const reopened = popup(h);
+    reopened.nodes.get('otpField').hidden = true;
+    await reopened.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+    assert.equal(reopened.evaluate('nasAccessMissing'), !grant);
+    assert.equal(reopened.nodes.get('nasPermissionPanel').hidden, grant);
+    assert.equal(h.requests.filter(request => request.body.method === 'login').length, grant ? 1 : 0);
+    assert.equal(h.permissionState.requests.length, 1, 'reopening never requests access automatically');
+  }
+});
+
+test('an immediate NAS permission refusal keeps the toolbar explanation and button available', async () => {
+  for (const refusal of ['denied', 'rejected']) {
+    const h = await background(success, { grantedOrigins: [], grantRequests: false });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('syncNasAccess()');
+    if (refusal === 'rejected') {
+      const request = h.browser.permissions.request;
+      h.browser.permissions.request = permissions => {
+        request(permissions); // Retain the gesture validation and request log.
+        return Promise.reject(new Error('Browser policy refuses this request'));
+      };
+    }
+    await p.nodes.get('btnNasPermission').listeners.click();
+    assert.equal(p.window.closed, false, refusal);
+    assert.equal(p.nodes.get('btnNasPermission').disabled, false, refusal);
+    assert.equal(p.nodes.get('nasPermissionPanel').hidden, false, refusal);
+    assert.equal(p.evaluate('nasAccessMissing'), true, refusal);
+    assert.equal(h.requests.length, 0, refusal);
+    assert.deepEqual(h.tabCalls, [], refusal);
+    assert.deepEqual(h.permissionState.gestureViolations, [], refusal);
+  }
+});
+
+test('an open popup notices access being removed and can refresh after it is granted again', async () => {
+  const h = await background(async () => response({ success: true, data: { tasks: [] } }),
+    { grantedOrigins: ['https://old-nas.example/*'] });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.nodes.get('otpField').hidden = true;
+  await p.evaluate('syncNasAccess()');
+  p.evaluate("popupReady = true; activeTab = 'tasks'; startAutoRefresh();");
+  assert.notEqual(p.evaluate('refreshTimer'), null);
+  h.permissionState.revoke(['https://old-nas.example/*']);
+  await until(() => p.evaluate('nasAccessMissing'));
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+  assert.equal(p.evaluate('refreshTimer'), null);
+  await p.evaluate('refreshTasks()');
+  assert.equal(h.requests.length, 0);
+  h.permissionState.grant(['https://old-nas.example/*']);
+  await until(() => !p.evaluate('nasAccessMissing'));
+  await p.evaluate('refreshTasks()');
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, true);
+  assert.ok(h.requests.some(request => request.body.method === 'list'));
+  assert.equal(h.permissionState.requests.length, 0, 'external permission changes do not trigger prompts');
+});
+
+test('a stored add permission failure uses the current grant rather than blocking a restored connection', async () => {
+  for (const restored of [false, true]) {
+    let h;
+    h = await background(async (_, options) => {
+      if (options.body?.get('method') === 'create') {
+        h.permissionState.revoke(['https://old-nas.example/*']);
+        throw new TypeError('Create reply lost, and its lookup no longer has access');
+      }
+      return success();
+    }, { grantedOrigins: ['https://old-nas.example/*'] });
+    const url = 'https://download.example/a';
+    await h.send({ action: 'addTasksBulk', urls: [url], connection: h.connection });
+    assert.equal(h.data.session.lastAdd.permissionMissing, true);
+    assert.equal(h.data.session.lastAdd.blockConnection, true);
+    const sentBeforeOpen = h.requests.length;
+    if (restored) {
+      h.permissionState.grant(['https://old-nas.example/*']);
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.api.consumeLastAdd();
+    assert.equal(p.evaluate('connectBlocked'), false, String(restored));
+    assert.equal(p.evaluate('nasAccessMissing'), !restored, String(restored));
+    assert.equal(p.nodes.get('nasPermissionPanel').hidden, restored, String(restored));
+    assert.equal(p.nodes.get('bulkLinks').value, url);
+    assert.equal(h.requests.length, sentBeforeOpen);
+    assert.equal(h.permissionState.requests.length, 0);
+  }
+});
+
+test('reset removes the permission warning together with the NAS address it described', async () => {
+  const h = await background(success, { grantedOrigins: [] });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('showNasAccessMissing(); magnetPermissionEl.hidden = false;');
+  assert.equal(p.evaluate('nasAccessMissing'), true);
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, false);
+  await p.evaluate('resetAllSettings()');
+  assert.equal(p.evaluate('nasAccessMissing'), false);
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, true);
+  assert.equal(p.nodes.get('magnetPermission').hidden, true);
+  assert.equal(p.nodes.get('host').value, '');
+  assert.equal(h.data.local.host, '');
+  assert.equal(h.permissionState.requests.length, 0);
+});
+
+test('a finishing reset cannot hide the missing-access panel from a newer magnet enable', async () => {
+  const h = await background(success, { grantedOrigins: [], grantRequests: false });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  const releaseDrafts = deferred(), get = h.browser.storage.local.get;
+  let removingDrafts = false;
+  h.browser.storage.local.get = async keys => {
+    const result = await get(keys);
+    // Cleanup belongs to the background now. Hold the reset's final UI read
+    // after its settings queue is free, when a newer choice can really run.
+    if (!removingDrafts && keys && Object.keys(keys).length === 1
+        && Object.hasOwn(keys, 'autoCaptureMagnets') && p.evaluate('magnetBlockingSaves') === 0) {
+      removingDrafts = true;
+      await releaseDrafts.promise;
+    }
+    return result;
+  };
+  const resetting = p.evaluate('resetAllSettings()');
+  await until(() => removingDrafts);
+  assert.equal(h.data.local.host, '');
+  assert.equal(h.data.local.autoCaptureMagnets, false, 'the reset write has already completed');
+
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(p.nodes.get('magnetPermission').hidden, false);
+  assert.equal(p.window.closed, false);
+  releaseDrafts.resolve();
+  await resetting;
+
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(p.nodes.get('magnetPermission').hidden, false,
+    'reset must read the newer saved choice rather than clearing its warning');
+  assert.equal(p.nodes.get('btnMagnetPermission').disabled, false);
+  assert.equal(h.permissionState.requests.length, 1);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.deepEqual(h.notifications, []);
+  assert.equal(h.requests.length, 0);
+});
+
+test('save keeps its clicked address while checking access and later field edits remain unsaved', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'clicked-sid' } })
+    : response({ success: true, data: { tasks: [] } }), { grantedOrigins: ['https://clicked-nas.example/*'] });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.nodes.get('host').value = 'clicked-nas.example';
+  const approval = deferred();
+  const contains = h.browser.permissions.contains;
+  let checking = false;
+  h.browser.permissions.contains = permissions => {
+    const granted = contains(permissions);
+    if (!checking && permissions.origins[0] === 'https://clicked-nas.example/*') {
+      checking = true;
+      return approval.promise.then(() => granted);
+    }
+    return granted;
+  };
+  const saving = p.nodes.get('btnSaveConnection').listeners.click();
+  await until(() => checking);
+  assert.deepEqual(h.permissionState.requests, []);
+  p.nodes.get('host').value = 'typed-later.example';
+  p.nodes.get('password').value = ''; // An unfinished draft cannot cancel the saved snapshot's test.
+  approval.resolve();
+  await saving;
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.equal(h.data.local.host, 'clicked-nas.example');
+  assert.ok(h.requests.some(r => r.body.method === 'login'
+    && r.url.startsWith('https://clicked-nas.example:5001/')));
+  assert.ok(!h.requests.some(r => r.url.includes('typed-later.example')));
+});
+
+test('an OTP left in another extension view cannot be sent to a newly saved NAS', async () => {
+  const h = await background(async (url, options) => {
+    if (options.body?.get('method') === 'login') {
+      return String(url).includes('old-nas.example')
+        ? response({ success: false, error: { code: 403 } })
+        : response({ success: true, data: { sid: 'new-nas-sid' } });
+    }
+    return response({ success: true, data: { tasks: [] } });
+  }, { session: { sid: null } });
+  const oldView = popup(h), newView = popup(h);
+  for (const p of [oldView, newView]) {
+    await p.evaluate('loadSettings()');
+    p.evaluate('popupReady = true;');
+    p.nodes.get('otpField').hidden = true;
+  }
+  await oldView.nodes.get('btnTest').listeners.click();
+  assert.equal(oldView.nodes.get('otpField').hidden, false);
+  oldView.nodes.get('otpCode').value = '123456';
+  newView.nodes.get('host').value = 'new-nas.example';
+  await newView.nodes.get('btnSaveConnection').listeners.click();
+  assert.equal(h.data.session.sid, 'new-nas-sid');
+
+  await oldView.nodes.get('btnOtpSubmit').listeners.click();
+  assert.ok(!h.requests.some(request => request.url.includes('new-nas.example')
+    && request.body.otp_code === '123456'), 'the old NAS code must never cross to the newly saved NAS');
+  assert.equal(h.requests.filter(request => request.body.method === 'login'
+    && request.url.includes('new-nas.example')).length, 1);
+  assert.equal(h.data.session.sid, 'new-nas-sid');
+});
+
+test('two Enter presses share a pending NAS access check and send the OTP only once', async () => {
+  let logins = 0;
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'login') {
+      return ++logins === 1 ? response({ success: true, data: { sid: 'otp-sid' } })
+        : response({ success: false, error: { code: 404 } });
+    }
+    return response({ success: true, data: { tasks: [{ id: 'active-task', status: 'downloading' }] } });
+  }, { session: { sid: null } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('popupReady = true; showOtpPrompt(true);');
+  p.nodes.get('otpCode').value = '123456';
+  const firstCheck = deferred(), contains = h.browser.permissions.contains;
+  let checks = 0;
+  h.browser.permissions.contains = permissions => {
+    const granted = contains(permissions);
+    return ++checks === 1 ? firstCheck.promise.then(() => granted) : granted;
+  };
+  const enter = p.nodes.get('otpCode').listeners.keydown;
+  enter({ key: 'Enter', preventDefault() {} });
+  enter({ key: 'Enter', preventDefault() {} });
+  await until(() => checks > 0);
+  assert.equal(checks, 1, 'the OTP gate must already cover the pending access check');
+  firstCheck.resolve();
+  await until(() => logins === 1 && p.nodes.get('otpField').hidden);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(logins, 1);
+  assert.equal(p.nodes.get('otpField').hidden, true);
+  assert.equal(p.evaluate('connectBlocked'), false);
+  assert.equal(p.evaluate('refreshWanted'), true);
+  assert.equal(h.data.session.sid, 'otp-sid');
+  assert.deepEqual(h.permissionState.requests, []);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+});
+
+test('a wrong OTP is explained inline and the explanation clears after a successful replacement code', async () => {
+  let logins = 0;
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response(++logins === 1 ? { success: false, error: { code: 404 } }
+      : { success: true, data: { sid: 'correct-code-sid' } })
+    : response({ success: true, data: { tasks: [] } }), { session: { sid: null } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('showOtpPrompt(true);');
+  assert.equal(p.nodes.get('otpMessage').hidden, true);
+  p.nodes.get('otpCode').value = '123456';
+  await p.nodes.get('btnOtpSubmit').listeners.click();
+  assert.equal(p.nodes.get('otpField').hidden, false);
+  assert.equal(p.nodes.get('otpMessage').hidden, false);
+  assert.match(p.nodes.get('otpMessage').textContent, /otpWrong/);
+  p.nodes.get('otpCode').value = '654321';
+  await p.nodes.get('btnOtpSubmit').listeners.click();
+  assert.equal(h.data.session.sid, 'correct-code-sid');
+  assert.equal(p.nodes.get('otpField').hidden, true);
+  assert.equal(p.nodes.get('otpMessage').hidden, true);
+  assert.equal(p.nodes.get('otpMessage').textContent, '');
+  p.evaluate('showOtpPrompt(true);');
+  assert.equal(p.nodes.get('otpMessage').hidden, true);
+  assert.equal(p.nodes.get('otpMessage').textContent, '');
+});
+
+test('an old NAS access check cannot block a newer successful save and test', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'newer-sid' } })
+    : response({ success: true, data: { tasks: [] } }), { grantedOrigins: [] });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('popupReady = true;');
+  p.nodes.get('otpField').hidden = true;
+  const denial = deferred(), contains = h.browser.permissions.contains;
+  let checks = 0;
+  h.browser.permissions.contains = permissions => {
+    return ++checks === 1 ? denial.promise : contains(permissions);
+  };
+  const oldTest = p.nodes.get('btnTest').listeners.click();
+  await until(() => checks > 0);
+  h.permissionState.grant(['https://old-nas.example/*']);
+  await p.nodes.get('btnSaveConnection').listeners.click();
+  assert.equal(h.data.session.sid, 'newer-sid');
+  assert.equal(p.evaluate('nasAccessMissing'), false);
+  denial.resolve(false);
+  await oldTest;
+  assert.equal(p.evaluate('nasAccessMissing'), false);
+  assert.equal(p.nodes.get('nasPermissionPanel').hidden, true);
+  assert.equal(p.evaluate('connectBlocked'), false);
+  await until(() => !p.evaluate('refreshInFlight'));
+  const lists = h.requests.filter(request => request.body.method === 'list').length;
+  await p.evaluate('refreshTasks()');
+  assert.ok(h.requests.filter(request => request.body.method === 'list').length > lists);
+  assert.deepEqual(h.permissionState.requests, []);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+});
+
+test('a test overtaken during its access check shows the session accepted in another view', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'another-view-sid' } })
+    : response({ success: true, data: { tasks: [] } }), { session: { sid: null } });
+  const firstView = popup(h), otherView = popup(h);
+  for (const p of [firstView, otherView]) {
+    await p.evaluate('loadSettings()');
+    p.evaluate('popupReady = true;');
+    p.nodes.get('otpField').hidden = true;
+  }
+  const approval = deferred(), contains = h.browser.permissions.contains;
+  let checks = 0;
+  h.browser.permissions.contains = permissions => {
+    const granted = contains(permissions);
+    return ++checks === 1 ? approval.promise.then(() => granted) : granted;
+  };
+  const testing = firstView.nodes.get('btnTest').listeners.click();
+  await otherView.nodes.get('btnTest').listeners.click();
+  assert.equal(h.data.session.sid, 'another-view-sid');
+  approval.resolve();
+  await testing;
+  assert.match(firstView.nodes.get('statusText').textContent, /^connected/);
+  assert.equal(firstView.evaluate('nasAccessMissing'), false);
+  assert.equal(firstView.evaluate('connectBlocked'), false);
+  assert.equal(h.requests.filter(request => request.body.method === 'login').length, 1,
+    'an overtaken test reads the current status instead of signing in again');
+  assert.deepEqual(h.permissionState.requests, []);
+});
+
+test('an overtaken test status read cannot replace a newer test that has not answered yet', async () => {
+  const newLogin = deferred();
+  let logins = 0;
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'login') return ++logins === 1
+      ? response({ success: true, data: { sid: 'another-view-sid' } }) : newLogin.promise;
+    return response({ success: true, data: { tasks: [] } });
+  }, { session: { sid: null } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('popupReady = true;');
+  p.nodes.get('otpField').hidden = true;
+  const approval = deferred(), contains = h.browser.permissions.contains;
+  let checks = 0;
+  h.browser.permissions.contains = permissions => {
+    const granted = contains(permissions);
+    return ++checks === 1 ? approval.promise.then(() => granted) : granted;
+  };
+  const oldTest = p.nodes.get('btnTest').listeners.click();
+  assert.equal((await h.send({ action: 'testConnection' })).success, true);
+
+  const statusReply = deferred(), send = h.browser.runtime.sendMessage;
+  let readingStatus = false;
+  h.browser.runtime.sendMessage = message => {
+    const reply = send(message);
+    if (message.action === 'getStatus' && !readingStatus) {
+      readingStatus = true;
+      return statusReply.promise.then(() => reply);
+    }
+    return reply;
+  };
+  approval.resolve();
+  await until(() => readingStatus);
+  // Save remains available while the old Test button waits for its status.
+  const newerTest = p.nodes.get('btnSaveConnection').listeners.click();
+  await until(() => logins === 2);
+  statusReply.resolve();
+  await oldTest;
+  assert.equal(p.nodes.get('statusText').textContent, 'connecting',
+    'a pending newer test owns the status even before it has an answer');
+  newLogin.resolve(response({ success: false, error: { code: 400 } }));
+  await newerTest;
+  assert.equal(p.nodes.get('statusText').textContent, 'connectionFailed');
+  assert.equal(p.evaluate('connectBlocked'), true);
+  assert.equal(logins, 2);
+});
+
+test('connection tests reject stale view bindings before clearing a newer sign-in failure', async () => {
+  for (const stale of ['connection', 'version', 'password']) {
+    const failure = { success: false, authFailed: true, error: { message: 'newer-login-refusal' } };
+    const h = await background(async (_, options) => options.body?.get('method') === 'login'
+      ? response({ success: true, data: { sid: 'accepted-sid' } }) : success(),
+    { session: { sid: null, lastConnect: failure } });
+    const binding = { connection: h.connection, connectionVersion: await h.api.readConnectionVersion(),
+      connectionSnapshot: { ...defaults } };
+    // Each guard has a purpose of its own. In particular, a new version read
+    // beside an old password snapshot must not pass just because its key fits.
+    if (stale === 'connection') binding.connection = 'another-connection';
+    if (stale === 'version') binding.connectionVersion++;
+    if (stale === 'password') binding.connectionSnapshot.password = 'previous-password';
+    const result = await h.send({ action: 'testConnection', otpCode: '123456', ...binding });
+    assert.equal(result.connectionChanged, true, stale);
+    assert.equal(result.outdated, true, stale);
+    assert.equal(h.requests.length, 0, stale);
+    assert.deepEqual(h.data.session.lastConnect, failure, stale);
+
+    const accepted = await h.send({ action: 'testConnection', otpCode: '654321',
+      connection: h.connection, connectionVersion: await h.api.readConnectionVersion(),
+      connectionSnapshot: h.evaluate('connectionSettings')(h.data.local) });
+    assert.equal(accepted.success, true, 'a current, explicit test must still get through');
+    assert.equal(h.requests.filter(request => request.body.method === 'login').length, 1);
+    assert.equal(h.requests.find(request => request.body.method === 'login').body.otp_code, '654321');
+  }
+});
+
+test('a prepared OTP login cannot leave after its connection changes during a local or permission read', async () => {
+  for (const pause of ['device-token', 'permission']) {
+    const h = await background(success, { session: { sid: null } });
+    const delayed = deferred();
+    let waiting = false;
+    if (pause === 'device-token') {
+      const get = h.browser.storage.local.get;
+      h.browser.storage.local.get = keys => {
+        if (!waiting && keys && Object.hasOwn(keys, 'deviceToken')) {
+          waiting = true;
+          return delayed.promise;
+        }
+        return get(keys);
+      };
+    } else {
+      const contains = h.browser.permissions.contains;
+      h.browser.permissions.contains = request => {
+        if (!waiting) { waiting = true; return delayed.promise; }
+        return contains(request);
+      };
+    }
+    const testing = h.send({ action: 'testConnection', otpCode: '123456', connection: h.connection,
+      connectionVersion: await h.api.readConnectionVersion(),
+      connectionSnapshot: h.evaluate('connectionSettings')(h.data.local) });
+    await until(() => waiting);
+    await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+    delayed.resolve(pause === 'device-token' ? { deviceToken: '' } : true);
+    const result = await testing;
+    assert.equal(result.connectionChanged, true, pause);
+    assert.equal(h.requests.length, 0, pause);
+    assert.equal(h.data.session.lastConnect, undefined, pause);
+  }
+});
+
+test('status ignores a permission answer superseded by a grant, revocation or NAS switch', async () => {
+  for (const change of ['grant', 'revocation', 'connection']) {
+    const h = await background(async (_, options) => options.body?.get('method') === 'login'
+      ? response({ success: true, data: { sid: 'new-sid' } }) : success(), {
+      grantedOrigins: change === 'revocation' ? ['https://old-nas.example/*']
+        : change === 'connection' ? ['https://new-nas.example/*'] : [],
+    });
+    const delayed = deferred(), contains = h.browser.permissions.contains;
+    let waiting = false;
+    h.browser.permissions.contains = request => {
+      if (!waiting) { waiting = true; return delayed.promise; }
+      return contains(request);
+    };
+    const status = h.send({ action: 'getStatus' });
+    await until(() => waiting);
+    if (change === 'grant') h.permissionState.grant(['https://old-nas.example/*']);
+    else if (change === 'revocation') h.permissionState.revoke(['https://old-nas.example/*']);
+    else {
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+      assert.equal((await h.send({ action: 'testConnection' })).success, true);
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    delayed.resolve(change === 'revocation');
+    const current = await status;
+    assert.equal(current.connected, change !== 'revocation', change);
+    assert.equal(current.permissionMissing === true, change === 'revocation', change);
+    assert.equal(h.permissionState.requests.length, 0, change);
+  }
+});
+
+test('a toolbar magnet request hands its preference to the background before closing and keeps either decision', async () => {
+  for (const grant of [true, false]) {
+    const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+      grantRequests: false, local: { autoCaptureMagnets: false } });
+    const content = await page(h);
+    const anchor = new content.Element({ href: 'magnet:?xt=urn:btih:abc', protocol: 'magnet:' });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    p.evaluate('popupReady = true;');
+    const saved = deferred(), set = h.browser.storage.local.set;
+    let saving = false;
+    h.browser.storage.local.set = async values => {
+      if (values.autoCaptureMagnets === true) { saving = true; await saved.promise; }
+      return set(values);
+    };
+    const decision = deferred(), request = h.browser.permissions.request;
+    h.browser.permissions.request = permissions => {
+      // Firefox owns this decision after closing the originating popup. The
+      // synchronous call still checks the actual toggle's input gesture.
+      const checked = request(permissions);
+      return checked.then(() => decision.promise).then(granted => {
+        if (granted) h.permissionState.grant(permissions.origins);
+        return granted;
+      });
+    };
+    p.nodes.get('autoCaptureMagnets').checked = true;
+    const changing = p.nodes.get('autoCaptureMagnets').listeners.change();
+    assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }],
+      'the request starts in the input handler, before any awaited permission check');
+    await until(() => saving);
+    await until(() => p.window.closed);
+    await changing;
+    assert.equal(p.window.closed, true, 'the background owns the accepted write before the view closes');
+    assert.equal(h.data.local.autoCaptureMagnets, false);
+    assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+    saved.resolve();
+    await h.evaluate('settingsWriteQueue');
+    assert.equal(h.data.local.autoCaptureMagnets, true);
+    assert.deepEqual(h.tabCalls, []);
+    assert.equal(h.requests.length, 0);
+    assert.deepEqual(h.permissionState.gestureViolations, []);
+
+    decision.resolve(grant);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.data.local.autoCaptureMagnets, true, 'the permission decision does not change the chosen option');
+    assert.equal(content.click({ target: anchor }).prevented, grant,
+      'a late grant activates the existing content listener without a second toggle');
+
+    const reopened = popup(h);
+    await reopened.evaluate('loadSettings()');
+    reopened.evaluate('popupReady = true;');
+    await reopened.evaluate('syncMagnetAccess()');
+    assert.equal(reopened.nodes.get('autoCaptureMagnets').checked, true);
+    assert.equal(reopened.nodes.get('magnetPermission').hidden, grant);
+    assert.equal(h.permissionState.requests.length, 1, 'loading the saved option never opens a prompt');
+    if (!grant) {
+      // A later grant satisfies the still-enabled preference without a second toggle.
+      h.permissionState.grant(['http://*/*', 'https://*/*']);
+      await until(() => reopened.nodes.get('magnetPermission').hidden);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(content.click({ target: anchor }).prevented, true);
+    }
+    assert.equal(h.data.local.autoCaptureMagnets, true);
+    assert.equal(reopened.nodes.get('autoCaptureMagnets').checked, true);
+    assert.equal(reopened.window.closed, false);
+    assert.equal(h.permissionState.requests.length, 1);
+    assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false));
+    assert.deepEqual(h.notifications, []);
+    assert.deepEqual(h.tabCalls, []);
+    assert.equal(h.requests.length, 0);
+    assert.deepEqual(h.permissionState.gestureViolations, []);
+  }
+});
+
+test('the magnet permission retry button prompts without changing the enabled preference or opening a tab', async () => {
+  for (const grant of [false, true]) {
+    const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+      grantRequests: false, local: { autoCaptureMagnets: true } });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('syncMagnetAccess()');
+    assert.equal(p.nodes.get('magnetPermission').hidden, false);
+    const decision = deferred(), request = h.browser.permissions.request;
+    h.browser.permissions.request = permissions => {
+      const checked = request(permissions);
+      return checked.then(() => decision.promise).then(granted => {
+        if (granted) h.permissionState.grant(permissions.origins);
+        return granted;
+      });
+    };
+    const retrying = p.nodes.get('btnMagnetPermission').listeners.click();
+    assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }]);
+    await until(() => p.window.closed);
+    await retrying;
+    assert.equal(h.data.local.autoCaptureMagnets, true);
+    decision.resolve(grant);
+    await new Promise(resolve => setImmediate(resolve));
+    const reopened = popup(h);
+    await reopened.evaluate('loadSettings()');
+    await reopened.evaluate('syncMagnetAccess()');
+    assert.equal(reopened.nodes.get('autoCaptureMagnets').checked, true);
+    assert.equal(reopened.nodes.get('magnetPermission').hidden, grant);
+    assert.equal(h.data.local.autoCaptureMagnets, true);
+    assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false));
+    assert.deepEqual(h.permissionState.gestureViolations, []);
+    assert.deepEqual(h.tabCalls, []);
+    assert.deepEqual(h.notifications, []);
+    assert.equal(h.requests.length, 0);
+  }
+});
+
+test('the missing magnet access panel depends on the enabled preference and unrelated saves preserve it', async () => {
+  for (const enabled of [false, true]) for (const granted of [false, true]) {
+    const h = await background(success, { local: { autoCaptureMagnets: enabled },
+      grantedOrigins: granted ? ['http://*/*', 'https://*/*'] : ['https://old-nas.example/*'] });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('syncMagnetAccess()');
+    assert.equal(p.nodes.get('magnetPermission').hidden, !enabled || granted);
+    assert.equal(p.nodes.get('autoCaptureMagnets').checked, enabled);
+    p.nodes.get('notificationsEnabled').checked = false;
+    await p.nodes.get('notificationsEnabled').listeners.change();
+    assert.equal(h.data.local.autoCaptureMagnets, enabled);
+    assert.equal(p.nodes.get('autoCaptureMagnets').checked, enabled);
+    assert.equal(p.nodes.get('magnetPermission').hidden, !enabled || granted);
+    if (enabled) {
+      p.nodes.get('autoCaptureMagnets').checked = false;
+      await p.nodes.get('autoCaptureMagnets').listeners.change();
+      assert.equal(h.data.local.autoCaptureMagnets, false);
+      assert.equal(p.nodes.get('magnetPermission').hidden, true);
+    }
+    assert.deepEqual(h.permissionState.requests, []);
+    assert.deepEqual(h.notifications, []);
+    assert.equal(h.requests.length, 0);
+  }
+});
+
+test('a toolbar magnet toggle with website access saves and stays open without a new tab', async () => {
+  const h = await background(success);
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  const changing = p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }]);
+  await changing;
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+  p.nodes.get('autoCaptureMagnets').checked = false;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.equal(h.data.local.autoCaptureMagnets, false);
+  assert.equal(p.window.closed, false);
+  assert.equal(h.permissionState.requests.length, 1, 'turning capture off needs no permission request');
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.deepEqual(h.tabCalls, []);
+  assert.equal(h.requests.length, 0);
+});
+
+test('an immediate magnet refusal or request error keeps the enabled preference and explains the missing access', async () => {
+  for (const refusal of ['denied', 'rejected', 'thrown']) {
+    const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+      grantRequests: false, local: { autoCaptureMagnets: false } });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    if (refusal !== 'denied') {
+      const request = h.browser.permissions.request;
+      h.browser.permissions.request = permissions => {
+        request(permissions); // Preserve the gesture check and request log.
+        const error = new Error('Browser policy refuses this request');
+        if (refusal === 'thrown') throw error;
+        return Promise.reject(error);
+      };
+    }
+    p.nodes.get('autoCaptureMagnets').checked = true;
+    await p.nodes.get('autoCaptureMagnets').listeners.change();
+    assert.equal(p.window.closed, false, refusal);
+    assert.equal(p.nodes.get('autoCaptureMagnets').checked, true, refusal);
+    assert.equal(p.nodes.get('autoCaptureMagnets').disabled, false, refusal);
+    assert.equal(p.nodes.get('magnetPermission').hidden, false, refusal);
+    assert.equal(p.nodes.get('btnMagnetPermission').disabled, false, refusal);
+    assert.equal(h.data.local.autoCaptureMagnets, true, refusal);
+    assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }], refusal);
+    assert.deepEqual(h.permissionState.gestureViolations, [], refusal);
+    assert.deepEqual(h.tabCalls, [], refusal);
+    assert.equal(h.requests.length, 0, refusal);
+    assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false), refusal);
+    assert.deepEqual(h.notifications, [], refusal);
+  }
+});
+
+test('a normal extension tab keeps its enabled preference while awaiting either permission decision', async () => {
+  for (const grant of [false, true]) {
+    const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+      grantRequests: false, local: { autoCaptureMagnets: false } });
+    const p = popup(h, { view: 'tab' });
+    await p.evaluate('loadSettings()');
+    p.evaluate('popupReady = true;');
+
+    const decision = deferred(), request = h.browser.permissions.request;
+    h.browser.permissions.request = permissions => {
+      const checked = request(permissions);
+      return checked.then(() => decision.promise).then(granted => {
+        if (granted) h.permissionState.grant(permissions.origins);
+        return granted;
+      });
+    };
+    p.nodes.get('autoCaptureMagnets').checked = true;
+    const changing = p.nodes.get('autoCaptureMagnets').listeners.change();
+    assert.equal(h.permissionState.requests.length, 1, 'the tab also requests before its first await');
+    let settled = false;
+    changing.then(() => { settled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(p.window.closed, false, 'a normal tab remains alive behind Firefox\'s permission prompt');
+    assert.equal(h.data.local.autoCaptureMagnets, true);
+    assert.equal(p.nodes.get('autoCaptureMagnets').disabled, true);
+    decision.resolve(grant);
+    await changing;
+    assert.equal(h.data.local.autoCaptureMagnets, true);
+    assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+    assert.equal(p.nodes.get('magnetPermission').hidden, grant);
+    assert.equal(p.nodes.get('autoCaptureMagnets').disabled, false);
+    assert.equal(p.window.closed, false);
+    assert.equal(h.requests.length, 0);
+    assert.deepEqual(h.tabCalls, []);
+    assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }]);
+    assert.deepEqual(h.permissionState.gestureViolations, []);
+    if (grant) {
+      h.permissionState.revoke(['http://*/*', 'https://*/*']);
+      await until(() => !p.nodes.get('magnetPermission').hidden);
+      assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+      assert.equal(p.evaluate('settings.autoCaptureMagnets'), true);
+      assert.equal(h.data.local.autoCaptureMagnets, true);
+      assert.equal(h.requests.length, 0, 'revoking website access must not contact the NAS');
+      assert.equal(h.permissionState.requests.length, 1);
+    }
+  }
+});
+
+test('denying magnet page access keeps the requested option enabled and offers a permission retry', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'], grantRequests: false });
+  const p = popup(h, { view: 'tab' });
+  await p.evaluate('loadSettings()');
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }]);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(p.nodes.get('magnetPermission').hidden, false);
+  assert.equal(p.nodes.get('btnMagnetPermission').disabled, false);
+  assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false));
+  assert.deepEqual(h.notifications, []);
+});
+
+test('enabling magnet capture grants both web schemes and disabling it asks for no new access', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'] });
+  const p = popup(h, { view: 'tab' });
+  await p.evaluate('loadSettings()');
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.deepEqual(h.permissionState.requests, [{ origins: ['http://*/*', 'https://*/*'] }]);
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  p.nodes.get('autoCaptureMagnets').checked = false;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.equal(h.data.local.autoCaptureMagnets, false);
+  assert.equal(h.permissionState.requests.length, 1);
+});
+
+test('revoking magnet access during its enable-save keeps the preference but exposes missing rights', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+    local: { autoCaptureMagnets: false } });
+  const p = popup(h, { view: 'tab' });
+  await p.evaluate('loadSettings()');
+  p.evaluate('popupReady = true;');
+  const held = deferred();
+  p.context.earlierSave = held.promise;
+  const earlier = p.evaluate('queueSettingsSave(() => earlierSave)');
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  const changing = p.nodes.get('autoCaptureMagnets').listeners.change();
+  await until(() => p.evaluate('magnetPermissionPending') && p.nodes.get('autoCaptureMagnets').checked);
+  assert.equal(h.data.local.autoCaptureMagnets, false, 'the enable-save is still queued');
+
+  // The decision changes before the queued preference save finishes. The
+  // user's choice must still be saved; only the permission display changes.
+  await h.browser.permissions.remove({ origins: ['http://*/*', 'https://*/*'] });
+  await h.evaluate('settingsWriteQueue');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(p.evaluate('magnetPermissionPending'), true);
+  held.resolve();
+  await earlier;
+  await changing;
+
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(p.evaluate('settings.autoCaptureMagnets'), true);
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(p.nodes.get('magnetPermission').hidden, false);
+  assert.equal(p.evaluate('magnetPermissionPending'), false);
+  assert.equal(h.permissionState.requests.length, 1);
+  assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false));
+});
+
+test('revoking website access suspends an already-loaded capture listener and regrant resumes its saved preference', async () => {
+  const h = await background(success, { local: { autoCaptureMagnets: true } });
+  const content = await page(h);
+  const anchor = new content.Element({ href: 'magnet:?xt=urn:btih:abc', protocol: 'magnet:' });
+  assert.equal(content.click({ target: anchor }).prevented, true);
+  assert.equal(content.sent.length, 1);
+  h.permissionState.revoke(['http://*/*', 'https://*/*']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(content.click({ target: anchor }).prevented, false);
+  assert.equal(content.sent.length, 1);
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  h.permissionState.grant(['http://*/*', 'https://*/*']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(content.click({ target: anchor }).prevented, true);
+  assert.equal(content.sent.length, 2);
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false));
+  assert.equal(h.permissionState.requests.length, 0);
+  assert.deepEqual(h.notifications, []);
+  assert.equal(h.requests.length, 0);
+});
+
+test('a delayed initial content answer cannot revive capture after permission revocation or disabling', async () => {
+  for (const change of ['revocation', 'disabled']) {
+    const h = await background(success, { local: { autoCaptureMagnets: true } });
+    const original = h.browser.runtime.sendMessage, initial = deferred();
+    let reads = 0, initialState;
+    h.browser.runtime.sendMessage = async message => {
+      const state = await original(message);
+      if (message.action === 'getMagnetCaptureState' && ++reads === 1) {
+        initialState = state;
+        return initial.promise;
+      }
+      return state;
+    };
+    const content = await page(h);
+    const anchor = new content.Element({ href: 'magnet:?xt=urn:btih:abc', protocol: 'magnet:' });
+    assert.equal(initialState.enabled, true);
+    assert.equal(content.click({ target: anchor }).prevented, false, 'capture starts closed until its first confirmed answer');
+    if (change === 'revocation') h.permissionState.revoke(['http://*/*', 'https://*/*']);
+    else await h.browser.storage.local.set({ autoCaptureMagnets: false });
+    await until(() => reads >= 2);
+    initial.resolve(initialState);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(content.click({ target: anchor }).prevented, false, change);
+    assert.equal(content.sent.length, 0, change);
+    assert.equal(h.data.local.autoCaptureMagnets, change === 'revocation');
+    assert.deepEqual(h.notifications, []);
+    assert.equal(h.requests.length, 0);
+  }
+});
+
+test('background magnet clicks require both the saved preference and both live website grants', async () => {
+  for (const enabled of [false, true]) for (const origins of [[], ['http://*/*'], ['https://*/*'], ['http://*/*', 'https://*/*']]) {
+    const h = await background(success, { local: { autoCaptureMagnets: enabled }, grantedOrigins: origins });
+    const allowed = enabled && origins.length === 2;
+    assert.equal((await h.send({ action: 'getMagnetCaptureState' })).enabled, allowed);
+    const result = await h.send({ action: 'magnetClicked', url: 'magnet:?xt=urn:btih:abc' });
+    if (allowed) {
+      assert.equal(result.success, true);
+      assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1);
+    } else {
+      assert.equal(result.magnetCaptureDisabled, true);
+      assert.equal(h.requests.length, 0);
+      assert.deepEqual(h.notifications, []);
+    }
+    assert.equal(h.data.local.autoCaptureMagnets, enabled);
+    assert.equal(h.permissionState.requests.length, 0);
+  }
+});
+
+test('a queued magnet click rechecks website access before adding anything to the NAS', async () => {
+  const sent = deferred();
+  const h = await background(async (_, options) => options.body?.get('method') === 'create'
+    ? sent.promise : success(), { local: { autoCaptureMagnets: true } });
+  const earlier = h.send({ action: 'addTasksBulk', urls: ['https://download.example/a'] });
+  await until(() => h.requests.some(request => request.body.method === 'create'));
+  const magnet = h.send({ action: 'magnetClicked', url: 'magnet:?xt=urn:btih:abc' });
+  h.permissionState.revoke(['http://*/*', 'https://*/*']);
+  sent.resolve(success());
+  await earlier;
+  const notificationsBefore = h.notifications.length;
+  const result = await magnet;
+  assert.equal(result.magnetCaptureDisabled, true);
+  assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1);
+  assert.equal(h.notifications.length, notificationsBefore);
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+});
+
+test('removing a redundant single-host grant keeps magnet capture enabled', async () => {
+  const h = await background(success, { local: { autoCaptureMagnets: true },
+    grantedOrigins: ['http://*/*', 'https://*/*', 'https://old-nas.example/*'] });
+  await h.browser.permissions.remove({ origins: ['https://old-nas.example/*'] });
+  await h.evaluate('settingsWriteQueue');
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.ok(!h.writes.some(write => write.values.autoCaptureMagnets === false));
+  assert.equal(h.permissionState.requests.length, 0);
+});
 
 test('create requests are sent once for network failures and retain an uncertain outcome', async () => {
   for (const error of [new TypeError('Connection reset after sending'), Object.assign(new Error(), { name: 'TimeoutError' })]) {
@@ -769,19 +2270,30 @@ test('the popup treats an unconfirmed outcome as a reason to keep watching', () 
 });
 
 /** A content script mounted on just enough page to click things on. */
-async function page() {
+async function page(h = null) {
+  h ??= await background(success, { local: { autoCaptureMagnets: true } });
   const sent = [];
   let onClick;
   class Element {
     constructor(anchor = null) { this.anchor = anchor; }
     closest() { return this.anchor; }
   }
+  const incoming = event();
+  h.contentReceivers.set(h.contentReceivers.size + 1, incoming);
   const context = vm.createContext({
     Element,
     document: { addEventListener: (type, fn) => { if (type === 'click') onClick = fn; } },
     browser: {
-      storage: { local: { get: async () => ({ autoCaptureMagnets: true }) }, onChanged: { addListener() {} } },
-      runtime: { sendMessage: async message => { sent.push(message); } },
+      storage: h.browser.storage,
+      runtime: {
+        onMessage: incoming,
+        sendMessage: async message => {
+          if (message.action === 'magnetClicked') { sent.push(message); return { success: true }; }
+          // Permission state comes from the real background. Captured URLs are
+          // recorded separately so click-shape tests do not also add downloads.
+          return h.browser.runtime.sendMessage(message);
+        },
+      },
     },
   });
   vm.runInContext(read('content.js'), context);
@@ -939,7 +2451,7 @@ test('an add during a running poll gets a fresh poll instead of the running one\
   });
   const running = h.evaluate('pollDownloads()');
   await until(() => lists === 1);
-  h.evaluate('startDownloadPolling()');
+  h.evaluate('startDownloadPolling(sessionEpoch)');
   first.resolve(response({ success: true, data: { tasks: [] } }));
   await running;
   await until(() => lists === 2 && h.evaluate('pollRunning') === null);
@@ -1569,6 +3081,7 @@ test('an action taken while a list is on its way still gets a list of its own', 
   h.browser.runtime.sendMessage = () => { const pending = deferred(); answers.push(pending); return pending.promise; };
 
   const running = h.evaluate('refreshTasks()');          // the timer's, asked before the action
+  await until(() => answers.length === 1);              // includes the shared-session read
   h.evaluate('refreshTasks({ queue: true })');           // the action's own
   assert.equal(answers.length, 1);
 
@@ -1584,6 +3097,7 @@ test('an action taken while a list is on its way still gets a list of its own', 
 
 test('pressing Enter twice on the verification code signs in once', async () => {
   const h = popup();
+  await h.evaluate('loadSettings()');
   let logins = 0;
   const pending = deferred();
   h.browser.runtime.sendMessage = () => { logins++; return pending.promise; };
@@ -1592,6 +3106,8 @@ test('pressing Enter twice on the verification code signs in once', async () => 
   const enter = h.nodes.get('otpCode').listeners.keydown;
   enter({ key: 'Enter', preventDefault() {} });
   enter({ key: 'Enter', preventDefault() {} });
+  // Checking access is asynchronous even when it has already been granted.
+  await until(() => logins > 0);
   // The second press used to spend the same code again, and DSM answered the
   // one that arrived second with "wrong code".
   assert.equal(logins, 1);
@@ -1618,7 +3134,7 @@ test('"Save and test" cannot spend the verification code a second time', async (
   p.nodes.get('otpField').hidden = false;
   p.nodes.get('otpCode').value = '123456';
 
-  const checking = p.evaluate('submitOtp()');
+  const checking = h.withUserGesture(() => p.evaluate('submitOtp()'));
   await until(() => logins === 1);
   // The code field's button is disabled by now, but this one calls straight in.
   await p.api.commitSettings({ forceTest: true, commitConn: true });
@@ -1637,14 +3153,15 @@ test('the plain "Test" button cannot sign in while a code is being checked', asy
   }, { session: { sid: null } });
 
   const p = popup(h);
+  await p.evaluate('loadSettings()');
   p.nodes.get('otpField').hidden = false;
   p.nodes.get('otpCode').value = '123456';
 
-  const checking = p.evaluate('submitOtp()');
+  const checking = h.withUserGesture(() => p.evaluate('submitOtp()'));
   await until(() => logins === 1);
   // No code of its own, so this used to walk straight past the gate — and its
   // answer, a fresh demand for a code, landed after the successful one.
-  await p.evaluate('testConnection()');
+  await h.withUserGesture(() => p.evaluate('testConnection()'));
   assert.equal(logins, 1);
 
   login.resolve(response({ success: true, data: { sid: 'new-sid' } }));
@@ -1664,12 +3181,13 @@ test('an older connection test cannot undo a sign-in that already succeeded', as
   }, { session: { sid: null } });
 
   const p = popup(h);
+  await p.evaluate('loadSettings()');
   p.nodes.get('otpField').hidden = false;
   p.nodes.get('otpCode').value = '123456';
 
-  const testing = p.evaluate('testConnection()');   // no code, so it takes no gate
+  const testing = h.withUserGesture(() => p.evaluate('testConnection()')); // no code, so it takes no gate
   await until(() => logins === 1);
-  await p.evaluate('submitOtp()');                  // and this one succeeds
+  await h.withUserGesture(() => p.evaluate('submitOtp()')); // and this one succeeds
   assert.equal(p.nodes.get('otpField').hidden, true);
 
   // Now the overtaken test answers "code required" — about a session that has
@@ -2027,6 +3545,7 @@ test('an explicit sign-in lifts the bar in a popup that is already open', async 
   { session: { sid: null, lastConnect: { success: false, error: { message: 'errLoginFailed' } } } });
 
   const p = popup(h);
+  await p.evaluate('loadSettings()');
   await p.evaluate('popupReady = true; loadKeptConnectFailure()');
   assert.equal(p.evaluate('connectBlocked'), true);
   const listsBefore = h.requests.filter(request => request.body.method === 'list').length;
@@ -2034,7 +3553,8 @@ test('an explicit sign-in lifts the bar in a popup that is already open', async 
   // A successful explicit retry retires the failure, and the open popup
   // resumes its task list when that stored failure is removed.
   assert.equal((await h.send({ action: 'testConnection' })).success, true);
-  await until(() => p.evaluate('connectBlocked') === false);
+  await until(() => p.nodes.get('statusText').textContent === 'connected');
+  assert.equal(p.evaluate('connectBlocked'), false);
   assert.equal(p.nodes.get('statusText').textContent, 'connected');
   await until(() => h.requests.filter(request => request.body.method === 'list').length > listsBefore);
 });
@@ -2123,17 +3643,19 @@ test('a code check for one NAS does not swallow the test of another', async () =
     if (options.body?.get('method') !== 'login') return success();
     logins++;
     return logins === 1 ? first.promise : second.promise;
-  }, { session: { sid: null } });
+  }, { local: { host: 'nas-a.example' }, session: { sid: null } });
 
   const p = popup(h);
-  p.evaluate("settings.host = 'nas-a.example'");
+  await p.evaluate('loadSettings()');
   const forA = p.evaluate("attemptConnect('123456')");
   await until(() => logins === 1);
 
   // Another NAS is saved and tested while the first code is still in flight. As
   // a plain flag the gate turned this away: A's answer was correctly discarded
   // and B was simply never asked, leaving the header on "Connecting…".
-  p.evaluate("settings.host = 'nas-b.example'");
+  await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'nas-b.example' } });
+  await p.evaluate('settingsSaves');
+  assert.equal(p.evaluate('settings.host'), 'nas-b.example');
   const forB = p.evaluate("attemptConnect('654321')");
   await until(() => logins === 2);
 
@@ -2210,13 +3732,16 @@ test('returning to a NAS gives its new code check an owner the old check cannot 
   assert.ok(owner);
 
   oldA.resolve(response({ success: false, error: { code: 403 } }));
-  await until(() => !p.nodes.get('btnOtpSubmit').disabled);
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(p.evaluate('otpPendingFor'), owner);
+  assert.equal(p.nodes.get('btnOtpSubmit').disabled, true,
+    'the old attempt must not release the current attempt\'s button');
   enter('987654');
-  await until(() => !p.nodes.get('btnOtpSubmit').disabled || aCodes > 2);
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(aCodes, 2);
   assert.equal(bCodes, 1);
   assert.equal(p.evaluate('otpPendingFor'), owner);
+  assert.equal(p.nodes.get('btnOtpSubmit').disabled, true);
 
   pendingB.resolve(response({ success: false, error: { code: 403 } }));
   await new Promise(resolve => setImmediate(resolve));
@@ -2380,13 +3905,13 @@ test('single-link notifications retain uncertainty when the confirmation lookup 
         ? response({ success: false, error: { code: 400 } })
         : response({ success: true, data: { sid: 'lookup-sid' } });
       return success();
-    });
+    }, { local: { autoCaptureMagnets: true } });
     const url = 'magnet:?xt=urn:btih:example';
     if (route === 'magnet') {
       const result = await h.send({ action: 'magnetClicked', url });
       assert.equal(result.deliveryUnknown, true);
     } else {
-      h.browser.contextMenus.onClicked.emit({ linkUrl: url });
+      h.browser.contextMenus.onClicked.emit({ menuItemId: 'download-station-add', linkUrl: url });
     }
     await until(() => h.notifications.length > 0 && h.evaluate('addsPending') === 0);
     const note = h.notifications.at(-1);
@@ -2513,6 +4038,34 @@ test('the popup tells a refused link from one that may be running', async () => 
   assert.match(text, /linksUncertain:1/, text);
 });
 
+test('add errors are marked while a later add progress and success clear the error style', async () => {
+  const pending = deferred();
+  const h = await background(async (_, options) => options.body?.get('method') === 'create'
+    ? pending.promise : response({ success: true, data: { tasks: [] } }));
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.api.setAddBusy(false);
+  p.nodes.get('bulkLinks').value = '';
+  await p.api.addBulkLinks();
+  const status = p.nodes.get('bulkStatus');
+  assert.equal(status.textContent, 'noLinksEntered');
+  assert.equal(status.classList.contains('error'), true);
+
+  p.nodes.get('bulkLinks').value = 'https://download.example/a';
+  const adding = p.api.addBulkLinks();
+  await until(() => h.requests.some(request => request.body.method === 'create'));
+  assert.match(status.textContent, /^addingLinks/);
+  assert.equal(status.classList.contains('error'), false);
+  pending.resolve(success());
+  await adding;
+  assert.match(status.textContent, /^linksAdded/);
+  assert.equal(status.classList.contains('error'), false);
+
+  await p.api.applyAddOutcome({ success: false, error: { message: 'NAS refused the add' }, at: Date.now() });
+  assert.equal(status.textContent, 'NAS refused the add');
+  assert.equal(status.classList.contains('error'), true);
+});
+
 test('a retry whose new task got no answer does not call it a failure', async () => {
   let creates = 0;
   const h = await background(async (_, options) => {
@@ -2593,29 +4146,29 @@ test('a draft typed while a save was waiting is not dropped with it', async () =
   // The fields are what the comparison reads, so they are what a case has to
   // set up. Arranged in storage alone, every case passed for the wrong reason:
   // untouched fields are empty, and empty differs from any snapshot.
-  const mount = (session) => {
-    const h = makeBrowser({ session });
+  const mount = async (session) => {
+    const h = await background(success, { session });
     const p = popup(h);
     for (const [id, value] of Object.entries(saved)) p.nodes.get(id).value = value;
     return { h, p };
   };
 
   // Nothing typed since the save began: the draft has done its job and goes.
-  const settled = mount({ connDraft: { ...saved } });
+  const settled = await mount({ connDraft: { ...saved } });
   await settled.p.evaluate(`clearConnDraft(${JSON.stringify(saved)})`);
   assert.equal(settled.h.data.session.connDraft, undefined);
 
   // "Save and test connection" waits on the NAS with the fields still editable,
   // and whatever was typed in the meantime is in them. Dropped anyway, it was
   // gone, and the next open came back without it.
-  const typing = mount({ connDraft: { ...saved, host: 'typed-later.example' } });
+  const typing = await mount({ connDraft: { ...saved, host: 'typed-later.example' } });
   typing.p.nodes.get('host').value = 'typed-later.example';
   await typing.p.evaluate(`clearConnDraft(${JSON.stringify(saved)})`);
   assert.equal(typing.h.data.session.connDraft.host, 'typed-later.example');
 
   // The destination keeps a draft of its own and answers the same question the
   // same way, from its own field — both ways round.
-  const dest = makeBrowser({ session: { destDraft: 'movies' } });
+  const dest = await background(success, { session: { destDraft: 'movies' } });
   const d = popup(dest);
   d.nodes.get('defaultDestination').value = 'series';
   await d.evaluate("clearDestDraft('movies')");
@@ -4663,6 +6216,7 @@ test('clearing finished downloads gets a list of its own', async () => {
   h.browser.runtime.sendMessage = () => { const pending = deferred(); answers.push(pending); return pending.promise; };
 
   const running = h.evaluate('refreshTasks()');   // asked before anything was cleared
+  await until(() => answers.length === 1);       // includes the shared-session read
   assert.equal(answers.length, 1);
 
   const clearing = h.nodes.get('btnClear').listeners.click();
@@ -4687,7 +6241,7 @@ test('the Settings tab shows the version from the manifest', () => {
 test('release files parse, manifest assets exist and locale keys stay in sync', () => {
   for (const file of ['actions.js', 'background.js', 'content.js', 'popup/popup.js']) new vm.Script(read(file));
   const manifest = JSON.parse(read('manifest.json'));
-  assert.equal(manifest.version, '1.1.4');
+  assert.equal(manifest.version, '1.1.6');
   for (const file of [...manifest.background.scripts, ...manifest.content_scripts.flatMap(s => s.js),
     manifest.action.default_popup, ...Object.values(manifest.icons)]) assert.ok(fs.existsSync(path.join(root, file)), file);
   // The default policy for Manifest V3 rewrites http requests to https, which
@@ -4702,6 +6256,9 @@ test('release files parse, manifest assets exist and locale keys stay in sync', 
   // Without this the content script reaches the top document only, and a magnet
   // link clicked inside an ordinary iframe never gets to the listener at all.
   assert.equal(manifest.content_scripts[0].all_frames, true);
+  // Magnet capture requests these website grants. A file-page match would
+  // imply access the switch never requests and Firefox handles separately.
+  assert.deepEqual([...manifest.content_scripts[0].matches].sort(), ['http://*/*', 'https://*/*']);
 
   const csp = manifest.content_security_policy.extension_pages;
   assert.match(csp, /script-src 'self'/);
@@ -4722,4 +6279,2273 @@ test('release files parse, manifest assets exist and locale keys stay in sync', 
   assert.ok(!fs.existsSync(path.join(root, 'popup/picker.html')));
   assert.ok(!scripts.background.includes('addTaskFiles'));
   assert.ok(!html.includes('type="file"'));
+});
+
+test('a finishing reset preserves a newer sign-in prompt and newly entered popup state', async () => {
+  const h = await background(async (_, options) => options.body?.get('method') === 'login'
+    ? response({ success: false, error: { code: 403 } }) : success());
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  const released = deferred(), get = h.browser.storage.local.get;
+  let cleaning = false;
+  h.browser.storage.local.get = async keys => {
+    const result = await get(keys);
+    if (!cleaning && keys && Object.keys(keys).length === 1
+        && Object.hasOwn(keys, 'autoCaptureMagnets') && p.evaluate('magnetBlockingSaves') === 0) {
+      cleaning = true;
+      await released.promise;
+    }
+    return result;
+  };
+  const resetting = p.evaluate('resetAllSettings()');
+  await until(() => cleaning);
+  for (const [key, value] of Object.entries({ ...defaults, host: 'new-nas.example' })) {
+    const input = p.nodes.get(key);
+    if (input) input.value = String(value);
+  }
+  await p.nodes.get('btnSaveConnection').listeners.click();
+  assert.equal(p.nodes.get('otpField').hidden, false);
+  p.nodes.get('otpCode').value = '123456';
+  p.nodes.get('bulkLinks').value = 'https://download.example/new-draft';
+  p.nodes.get('unzipPassword').value = 'new-archive-password';
+  p.evaluate("setActiveFilter('failed', false); setBulkStatus('new add result', true)");
+  const status = p.nodes.get('statusText').textContent;
+
+  released.resolve();
+  await resetting;
+
+  assert.equal(p.nodes.get('otpField').hidden, false, 'the old reset must not hide the new code prompt');
+  assert.equal(p.nodes.get('otpCode').value, '123456');
+  assert.equal(p.nodes.get('bulkLinks').value, 'https://download.example/new-draft');
+  assert.equal(p.nodes.get('unzipPassword').value, 'new-archive-password');
+  assert.equal(p.nodes.get('statusText').textContent, status);
+  assert.equal(p.nodes.get('bulkStatus').textContent, 'new add result');
+  assert.equal(p.evaluate('activeFilter'), 'failed');
+});
+
+test('connection writes disable both magnet permission controls until the previous NAS signs out', async () => {
+  for (const operation of ['save', 'signOut', 'reset']) {
+    const releaseLogout = deferred();
+    let loggingOut = false;
+    const h = await background(async (_, options) => {
+      if (options.body?.get('method') === 'logout') {
+        loggingOut = true;
+        await releaseLogout.promise;
+      }
+      if (options.body?.get('method') === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+      return success();
+    }, { grantedOrigins: ['https://old-nas.example/*'], local: { autoCaptureMagnets: false } });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    p.nodes.get('host').value = 'new-nas.example';
+    const saving = operation === 'save' ? p.nodes.get('btnSaveConnection').listeners.click()
+      : p.evaluate(operation === 'signOut' ? 'logoutAccount()' : 'resetAllSettings()');
+    assert.equal(p.nodes.get('autoCaptureMagnets').disabled, true, operation);
+    assert.equal(p.nodes.get('btnMagnetPermission').disabled, true, operation);
+    await until(() => loggingOut);
+    // Disabled native controls cannot activate; the handler also rejects an
+    // already queued event rather than opening a prompt behind this slow save.
+    p.nodes.get('autoCaptureMagnets').checked = true;
+    await p.nodes.get('autoCaptureMagnets').listeners.change();
+    await p.nodes.get('btnMagnetPermission').listeners.click();
+    assert.equal(h.permissionState.requests.length, 0, operation);
+    assert.equal(p.nodes.get('autoCaptureMagnets').checked, false, operation);
+    assert.equal(p.window.closed, false, operation);
+
+    releaseLogout.resolve();
+    await saving;
+    assert.equal(p.nodes.get('autoCaptureMagnets').disabled, false, operation);
+    assert.equal(p.nodes.get('btnMagnetPermission').disabled, false, operation);
+    p.nodes.get('autoCaptureMagnets').checked = true;
+    await p.nodes.get('autoCaptureMagnets').listeners.change();
+    assert.equal(h.data.local.autoCaptureMagnets, true, operation);
+    assert.equal(h.permissionState.requests.length, 1, operation);
+    assert.deepEqual(h.permissionState.gestureViolations, [], operation);
+  }
+});
+
+test('failed connection saves release the magnet controls without discarding the saved preference', async () => {
+  const h = await background(success, { local: { autoCaptureMagnets: true } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  const held = deferred(), send = h.browser.runtime.sendMessage;
+  h.browser.runtime.sendMessage = message => message.action === 'settingsUpdated'
+    ? held.promise : send(message);
+  const saving = p.nodes.get('btnSaveConnection').listeners.click();
+  assert.equal(p.nodes.get('autoCaptureMagnets').disabled, true);
+  held.resolve({ ok: false, error: 'Could not save connection' });
+  await saving;
+  assert.equal(p.nodes.get('autoCaptureMagnets').disabled, false);
+  assert.equal(p.nodes.get('btnMagnetPermission').disabled, false);
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(h.permissionState.requests.length, 0);
+});
+
+test('late bulk and row task outcomes name their previous NAS without refreshing the new connection', async () => {
+  for (const kind of ['bulk', 'row']) for (const outcome of ['refused', 'uncertain', 'success', 'rejected']) {
+    const p = popup();
+    await p.evaluate('loadSettings()');
+    p.evaluate('tasksConnection = connectionKey(settings)');
+    const oldConnection = p.evaluate('tasksConnection');
+    const held = deferred(), sent = [];
+    p.browser.runtime.sendMessage = message => {
+      sent.push(message);
+      return message.action === 'listTasks'
+        ? Promise.resolve({ success: true, connection: p.evaluate('tasksConnection'), data: { tasks: [] } })
+        : held.promise;
+    };
+    const rowButton = { dataset: { action: 'resumeTask', taskId: 'old-task' }, disabled: false };
+    const running = kind === 'bulk' ? p.nodes.get('btnResumeAll').listeners.click()
+      : p.nodes.get('taskList').listeners.click({ target: { closest: () => rowButton } });
+    assert.equal(sent[0].connection, oldConnection);
+    p.evaluate(`settings = { ...settings, host: 'new-nas.example' }; forgetTasks();
+      tasksConnection = connectionKey(settings); stopAutoRefresh();
+      reportActionResult({ success: false, error: 'new NAS error' });`);
+    if (outcome === 'rejected') held.reject(new Error('old transport failure'));
+    else held.resolve(outcome === 'success' ? { success: true }
+      : outcome === 'uncertain' ? { success: false, unconfirmed: ['old-task'], error: 'old deletion unconfirmed' }
+      : { success: false, error: 'old action refused' });
+    await running;
+
+    const text = p.nodes.get('taskStatus').textContent;
+    if (outcome === 'success') assert.equal(text, 'new NAS error', `${kind}: old success cleared a new failure`);
+    else {
+      assert.match(text, /^taskActionPreviousConnection:https:\/\/old-nas\.example:5001\|/, `${kind}/${outcome}`);
+      assert.match(text, /old (?:action refused|deletion unconfirmed|transport failure)/);
+      assert.ok(!text.includes('new-nas.example'));
+    }
+    assert.equal(sent.length, 1, `${kind}/${outcome}: old result refreshed the new NAS`);
+    assert.equal(p.evaluate('refreshWanted'), false, `${kind}/${outcome}: old result started a new watch`);
+    assert.equal(kind === 'bulk' ? p.nodes.get('btnResumeAll').disabled : rowButton.disabled, false);
+  }
+});
+
+test('task outcomes also become old when the task generation changes on the same NAS', async () => {
+  const p = popup();
+  await p.evaluate('loadSettings()');
+  p.evaluate('tasksConnection = connectionKey(settings)');
+  const connection = p.evaluate('tasksConnection');
+  const held = deferred();
+  p.browser.runtime.sendMessage = () => held.promise;
+  const deleting = p.evaluate('runBulkAction(ACTIONS.DELETE_ALL, btnDeleteYes)');
+  p.evaluate("settings.password = 'replacement-password'; forgetTasks(); tasksConnection = connectionKey(settings)");
+  assert.equal(p.evaluate('tasksConnection'), connection, 'the connection key deliberately omits passwords');
+  held.resolve({ success: false, deliveryUnknown: true });
+  await deleting;
+  assert.equal(p.nodes.get('taskStatus').textContent,
+    'taskActionPreviousConnection:https://old-nas.example:5001|actionResultUnknown');
+  assert.equal(p.nodes.get('taskStatus').hidden, false);
+});
+
+test('a magnet prompt closes its popup before another extension view finishes saving its NAS connection', async () => {
+  for (const grant of [false, true]) {
+    const logout = deferred();
+    let loggingOut = false;
+    const h = await background(async (_, options) => {
+      if (options.body?.get('method') === 'logout') {
+        loggingOut = true;
+        await logout.promise;
+      }
+      return success();
+    }, { grantedOrigins: ['https://old-nas.example/*'], grantRequests: false,
+      local: { autoCaptureMagnets: false } });
+    const content = await page(h);
+    const link = new content.Element({ href: 'magnet:?xt=urn:btih:abc', protocol: 'magnet:' });
+    const editor = popup(h, { view: 'tab' }), capture = popup(h);
+    await editor.evaluate('loadSettings()');
+    await capture.evaluate('loadSettings()');
+    editor.nodes.get('host').value = 'new-nas.example';
+    const saving = editor.nodes.get('btnSaveConnection').listeners.click();
+    await until(() => loggingOut);
+    const decision = deferred(), request = h.browser.permissions.request;
+    h.browser.permissions.request = permissions => {
+      const checked = request(permissions);
+      return checked.then(() => decision.promise).then(allowed => {
+        if (allowed) h.permissionState.grant(permissions.origins);
+        return allowed;
+      });
+    };
+    capture.nodes.get('autoCaptureMagnets').checked = true;
+    const enabling = capture.nodes.get('autoCaptureMagnets').listeners.change();
+    assert.equal(h.permissionState.requests.length, 1, 'Firefox is asked in the click gesture');
+    await until(() => capture.window.closed);
+    await enabling;
+    assert.equal(h.data.local.autoCaptureMagnets, false, 'the background write is still behind the other view');
+    assert.equal(editor.window.closed, false);
+    assert.deepEqual(h.tabCalls, []);
+    decision.resolve(grant);
+    logout.resolve();
+    await saving;
+    await until(() => h.data.local.autoCaptureMagnets === true);
+    await h.evaluate('settingsWriteQueue');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(content.click({ target: link }).prevented, grant);
+
+    const reopened = popup(h);
+    await reopened.evaluate('loadSettings()');
+    await reopened.evaluate('syncMagnetAccess()');
+    assert.equal(reopened.nodes.get('autoCaptureMagnets').checked, true);
+    assert.equal(reopened.nodes.get('magnetPermission').hidden, grant);
+    if (!grant) {
+      h.browser.permissions.request = request;
+      h.permissionState.requestGranted = true;
+      await reopened.nodes.get('btnMagnetPermission').listeners.click();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(reopened.nodes.get('magnetPermission').hidden, true);
+      assert.equal(content.click({ target: link }).prevented, true);
+    }
+    assert.deepEqual(h.permissionState.gestureViolations, []);
+    assert.deepEqual(h.notifications, []);
+  }
+});
+
+test('a local options save waiting behind another view disables new magnet prompts until it finishes', async () => {
+  const logout = deferred();
+  let loggingOut = false;
+  const h = await background(async (_, options) => {
+    if (options.body?.get('method') === 'logout') { loggingOut = true; await logout.promise; }
+    return success();
+  }, { grantedOrigins: ['https://old-nas.example/*'], local: { autoCaptureMagnets: false } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  const connectionSave = h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+  await until(() => loggingOut);
+  p.nodes.get('notificationsEnabled').checked = false;
+  const optionSave = p.nodes.get('notificationsEnabled').listeners.change();
+  assert.equal(p.nodes.get('autoCaptureMagnets').disabled, true);
+  assert.equal(p.nodes.get('btnMagnetPermission').disabled, true);
+  await p.nodes.get('btnMagnetPermission').listeners.click();
+  assert.equal(h.permissionState.requests.length, 0);
+  logout.resolve();
+  await connectionSave;
+  await optionSave;
+  assert.equal(p.nodes.get('autoCaptureMagnets').disabled, false);
+  assert.equal(p.nodes.get('btnMagnetPermission').disabled, false);
+});
+
+test('a detached magnet save failure reopens as a storage error and retry saves the preference', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+    grantRequests: false, local: { autoCaptureMagnets: false } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  const set = h.browser.storage.local.set;
+  h.browser.storage.local.set = async values => {
+    if (Object.hasOwn(values, 'autoCaptureMagnets')) throw new Error('Could not store the magnet preference');
+    return set(values);
+  };
+  const decision = deferred(), request = h.browser.permissions.request;
+  h.browser.permissions.request = permissions => {
+    const checked = request(permissions);
+    return checked.then(() => decision.promise).then(allowed => {
+      if (allowed) h.permissionState.grant(permissions.origins);
+      return allowed;
+    });
+  };
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  const enabling = p.nodes.get('autoCaptureMagnets').listeners.change();
+  await until(() => p.window.closed);
+  await enabling;
+  decision.resolve(true);
+  await until(() => h.data.session.magnetPreferenceError);
+  assert.deepEqual(h.data.session.magnetPreferenceError,
+    { message: 'Could not store the magnet preference', enabled: true });
+  const reopened = popup(h);
+  await reopened.evaluate('loadSettings()');
+  await reopened.evaluate('syncMagnetAccess()');
+  assert.equal(reopened.nodes.get('autoCaptureMagnets').checked, false);
+  assert.equal(reopened.nodes.get('magnetPermission').hidden, false);
+  assert.equal(reopened.nodes.get('magnetPermissionTitle').textContent, 'magnetSaveFailedTitle');
+  assert.equal(reopened.nodes.get('magnetPermissionMessage').textContent, 'Could not store the magnet preference');
+  assert.equal(reopened.nodes.get('btnMagnetPermission').textContent, 'retry');
+  assert.deepEqual(h.notifications, []);
+
+  h.browser.storage.local.set = set;
+  h.browser.permissions.request = request;
+  await reopened.nodes.get('btnMagnetPermission').listeners.click();
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(h.data.session.magnetPreferenceError, undefined);
+  assert.equal(reopened.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(reopened.nodes.get('magnetPermission').hidden, true);
+  assert.equal(reopened.nodes.get('magnetPermissionTitle').textContent, 'magnetPermissionTitle');
+  assert.equal(reopened.nodes.get('btnMagnetPermission').textContent, 'allowMagnetPermission');
+  assert.equal(reopened.window.closed, false, 'already-held rights need no visible browser prompt');
+  assert.deepEqual(h.permissionState.gestureViolations, []);
+});
+
+test('retrying a failed magnet disable repeats the disabled preference without requesting access', async () => {
+  const h = await background(success, { local: { autoCaptureMagnets: true } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  const set = h.browser.storage.local.set;
+  h.browser.storage.local.set = async values => {
+    if (values.autoCaptureMagnets === false) throw new Error('Could not turn capture off');
+    return set(values);
+  };
+  p.nodes.get('autoCaptureMagnets').checked = false;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(p.nodes.get('magnetPermissionTitle').textContent, 'magnetSaveFailedTitle');
+  assert.equal(p.nodes.get('btnMagnetPermission').textContent, 'retry');
+  h.browser.storage.local.set = set;
+  await p.nodes.get('btnMagnetPermission').listeners.click();
+  assert.equal(h.data.local.autoCaptureMagnets, false);
+  assert.equal(p.nodes.get('autoCaptureMagnets').checked, false);
+  assert.equal(p.nodes.get('magnetPermission').hidden, true);
+  assert.deepEqual(h.permissionState.requests, []);
+  assert.deepEqual(h.notifications, []);
+});
+
+test('an older detached magnet failure cannot survive a newer queued preference or reset', async () => {
+  for (const reset of [false, true]) {
+    const h = await background(success, { session: { sid: null } });
+    const original = h.browser.storage.local.set;
+    const pending = deferred(), started = deferred();
+    let first = true;
+    h.browser.storage.local.set = async values => {
+      if (first && Object.hasOwn(values, 'autoCaptureMagnets')) {
+        first = false;
+        started.resolve();
+        await pending.promise;
+      }
+      return original(values);
+    };
+    const queue = enabled => new Promise(resolve => h.browser.runtime.onMessage.emit(
+      { action: 'queueMagnetPreference', enabled },
+      { url: h.browser.runtime.getURL('popup/popup.html') }, resolve));
+    assert.equal((await queue(true)).accepted, true);
+    await started.promise;
+    const newer = reset ? h.send({ action: 'settingsUpdated', reset: true }) : queue(false);
+    pending.reject(new Error('older failure'));
+    await newer;
+    await h.evaluate('settingsWriteQueue');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.notEqual(h.data.local.autoCaptureMagnets, true);
+    assert.equal(h.data.session.magnetPreferenceError, undefined);
+    assert.equal(h.notifications.length, 0);
+  }
+});
+
+test('queued magnet preference accepts only a boolean-only request from an extension view', async () => {
+  const h = await background();
+  const own = h.browser.runtime.getURL('popup/popup.html');
+  for (const [message, url] of [
+    [{ action: 'queueMagnetPreference', enabled: true }, 'https://page.example/'],
+    [{ action: 'queueMagnetPreference', enabled: true }, undefined],
+    [{ action: 'queueMagnetPreference', enabled: 'true' }, own],
+    [{ action: 'queueMagnetPreference', enabled: true, options: { host: 'bad.example' } }, own],
+  ]) {
+    const result = await new Promise(resolve => h.browser.runtime.onMessage.emit(message, { url }, resolve));
+    assert.equal(result.accepted, false);
+  }
+  await h.evaluate('settingsWriteQueue');
+  assert.notEqual(h.data.local.autoCaptureMagnets, true);
+  assert.equal(h.data.local.host, defaults.host);
+  assert.equal(h.data.session.magnetPreferenceError, undefined);
+});
+
+test('an older kept-failure recovery cannot hide a newer OTP prompt after either asynchronous read', async () => {
+  for (const pauseAt of ['sid', 'permission']) for (const newerOtp of [false, true]) {
+    let askForOtp = false;
+    const h = await background(async (_, options) => {
+      const method = options.body?.get('method');
+      if (method === 'login') return askForOtp
+        ? response({ success: false, error: { code: 403 } })
+        : response({ success: true, data: { sid: 'accepted-sid' } });
+      if (method === 'list') return response({ success: true, data: { tasks: [] } });
+      return success();
+    }, { session: { sid: null, lastConnect: { success: false, error: { message: 'old login failure' } } } });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('loadKeptConnectFailure()');
+    p.evaluate('showOtpPrompt(false); popupReady = true');
+    const gate = deferred(), get = h.browser.storage.session.get, contains = h.browser.permissions.contains;
+    let sawRecoverySid = false, held = false;
+    h.browser.storage.session.get = async keys => {
+      const snapshot = await get(keys);
+      if (!sawRecoverySid && keys && Object.keys(keys).length === 1 && Object.hasOwn(keys, 'sid')) {
+        sawRecoverySid = true;
+        if (pauseAt === 'sid') { held = true; await gate.promise; }
+      }
+      return snapshot;
+    };
+    h.browser.permissions.contains = async permission => {
+      const granted = await contains(permission);
+      if (pauseAt === 'permission' && sawRecoverySid && !held) {
+        held = true;
+        await gate.promise;
+      }
+      return granted;
+    };
+    await h.send({ action: 'testConnection' });
+    await until(() => held);
+    if (newerOtp) {
+      askForOtp = true;
+      await p.nodes.get('btnTest').listeners.click();
+      assert.equal(p.nodes.get('otpField').hidden, false);
+      p.nodes.get('otpCode').value = '123456';
+    }
+    gate.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(p.nodes.get('otpField').hidden, !newerOtp, `${pauseAt}/${newerOtp}`);
+    assert.equal(p.nodes.get('otpCode').value, newerOtp ? '123456' : '', `${pauseAt}/${newerOtp}`);
+    assert.equal(p.nodes.get('statusText').textContent, newerOtp ? 'otpRequired' : 'connected');
+    assert.equal(p.evaluate('connectBlocked'), newerOtp);
+    if (newerOtp) assert.equal(h.data.session.lastConnect.otpRequired, true);
+  }
+});
+
+test('a connection saved while logout or reset is waiting keeps its confirmed values in the form', async () => {
+  for (const operation of ['logout', 'reset']) for (const differentValues of [false, true]) {
+    const gate = deferred();
+    let loggingOut = false;
+    const h = await background(async (_, options) => {
+      const method = options.body?.get('method');
+      if (method === 'logout') { loggingOut = true; await gate.promise; }
+      if (method === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+      if (method === 'list') return response({ success: true, data: { tasks: [] } });
+      return success();
+    });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    const leaving = p.evaluate(operation === 'logout' ? 'logoutAccount()' : 'resetAllSettings()');
+    await until(() => loggingOut);
+    const fields = { protocol: 'https', host: differentValues ? 'next-nas.example' : defaults.host,
+      port: '5001', username: differentValues ? 'next-user' : defaults.username,
+      password: differentValues ? 'next-password' : defaults.password };
+    for (const [key, value] of Object.entries(fields)) p.nodes.get(key).value = value;
+    const saving = p.nodes.get('btnSaveConnection').listeners.click();
+    gate.resolve();
+    await leaving;
+    await saving;
+    for (const [key, value] of Object.entries(fields)) {
+      assert.equal(String(h.data.local[key]), value, `${operation}/${differentValues}/${key}: stored`);
+      assert.equal(p.nodes.get(key).value, value, `${operation}/${differentValues}/${key}: visible`);
+    }
+    assert.match(p.nodes.get('statusText').textContent, /^connectedWithVersion:/);
+    assert.equal(p.nodes.get('connMessage').hidden, true);
+  }
+});
+
+test('logout and reset preserve only connection drafts entered after they started', async () => {
+  for (const operation of ['logout', 'reset']) for (const edited of [false, true]) {
+    const gate = deferred();
+    let loggingOut = false;
+    const h = await background(async (_, options) => {
+      if (options.body?.get('method') === 'logout') { loggingOut = true; await gate.promise; }
+      return success();
+    });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('saveConnDraft()');
+    const leaving = p.evaluate(operation === 'logout' ? 'logoutAccount()' : 'resetAllSettings()');
+    await until(() => loggingOut);
+    if (edited) {
+      p.nodes.get('host').value = 'draft-nas.example';
+      p.nodes.get('username').value = 'draft-user';
+      p.nodes.get('password').value = 'draft-password';
+      await p.evaluate('saveConnDraft()');
+    }
+    gate.resolve();
+    await leaving;
+    assert.equal(h.data.local.username, '', `${operation}/${edited}: no draft was saved as credentials`);
+    assert.equal(h.data.local.password, '');
+    if (edited) {
+      assert.equal(p.nodes.get('username').value, 'draft-user');
+      assert.equal(h.data.session.connDraft.username, 'draft-user');
+      const reopened = popup(h);
+      await reopened.evaluate('loadSettings()');
+      await reopened.evaluate('loadConnDraft()');
+      assert.equal(reopened.nodes.get('host').value, 'draft-nas.example');
+      assert.equal(reopened.nodes.get('username').value, 'draft-user');
+      assert.equal(reopened.nodes.get('password').value, 'draft-password');
+    } else {
+      assert.equal(p.nodes.get('username').value, '');
+      assert.equal(p.nodes.get('password').value, '');
+      assert.equal(h.data.session.connDraft, undefined);
+    }
+  }
+});
+
+
+test('task transport retries retain their original connection and open delivery outcome', async () => {
+  for (const method of ['pause', 'resume', 'delete']) {
+    for (const changed of [true, false]) {
+      const pending = deferred(), started = deferred();
+      let attempts = 0;
+      const h = await background(async (_url, options) => {
+        const requestMethod = options.body?.get('method');
+        if (requestMethod === method) {
+          if (++attempts === 1) { started.resolve(); return pending.promise; }
+          return response({ success: true, data: [{ id: 'old-task', error: 0 }] });
+        }
+        if (requestMethod === 'logout') throw new TypeError('NAS temporarily unavailable');
+        if (requestMethod === 'list') return response({ success: true, data: { tasks: [] } });
+        return success();
+      });
+      const acting = h.send({ action: method + 'Task', id: 'old-task', connection: h.connection });
+      await started.promise;
+      if (changed) {
+        await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+      }
+      pending.reject(new TypeError('First task response lost'));
+      const result = await acting;
+      if (changed) {
+        assert.equal(attempts, 1, method + ': no second write to the old NAS');
+        assert.equal(result.connectionChanged, true, method);
+        assert.equal(result.deliveryUnknown, true, method + ': first write remains unconfirmed');
+        assert.match(result.error.message, /actionResultUnknown/, method);
+      } else {
+        assert.equal(attempts, 2, method + ': same connection still retries');
+        assert.equal(result.success, true, method);
+        assert.equal(result.affected, 1, method);
+      }
+    }
+  }
+});
+
+test('context-menu visibility handles withheld fields and never keeps the previous visibility', async () => {
+  const h = await background(success, { grantedOrigins: [] });
+  const updates = [];
+  let refreshes = 0;
+  h.browser.contextMenus.update = (id, props) => updates.push({ id, ...props });
+  h.browser.contextMenus.refresh = () => { refreshes++; };
+  const sequence = [
+    [{ contexts: ['selection'], selectionText: 'ordinary selected text' }, false],
+    [{ contexts: ['link'] }, true],
+    [{ contexts: ['editable'] }, false],
+    [{ contexts: ['selection'] }, true],
+    [{ contexts: ['editable', 'selection'] }, true],
+    [{ contexts: ['selection'], selectionText: '' }, false],
+    [{ contexts: ['selection'], selectionText: 'Downloads: https://download.example/a' }, true],
+    [{ contexts: ['page'] }, false],
+    [{ linkUrl: 'https://download.example/link' }, true],
+    [{ contexts: ['editable'], selectionText: 'nothing downloadable' }, false],
+  ];
+  for (const [info, visible] of sequence) {
+    await Promise.all(h.browser.contextMenus.onShown.emit(info));
+    assert.equal(updates.at(-1).id, 'download-station-add');
+    assert.equal(updates.at(-1).visible, visible, JSON.stringify(info));
+  }
+  assert.equal(updates.length, sequence.length);
+  assert.equal(refreshes, sequence.length);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.notifications.length, 0);
+});
+
+test('withheld context-menu fields are validated on click before opening NAS access', async () => {
+  const cases = [
+    [['link'], { linkUrl: 'https://download.example/a' }, true],
+    [['selection'], { selectionText: 'https://download.example/a' }, true],
+    [['selection', 'editable'], { selectionText: 'Downloads: https://download.example/a\nhttps://download.example/b' }, true],
+    [['selection'], { selectionText: 'ordinary text without a link' }, false],
+  ];
+  for (const [contexts, click, hasLinks] of cases) {
+    const h = await background(success, { grantedOrigins: [] });
+    let visible;
+    h.browser.contextMenus.update = (_id, props) => { visible = props.visible; };
+    await Promise.all(h.browser.contextMenus.onShown.emit({ contexts }));
+    assert.equal(visible, true, 'withheld fields must not hide a usable context');
+    const [result] = await Promise.all(h.withUserGesture(() => h.browser.contextMenus.onClicked.emit(
+      { menuItemId: 'download-station-add', ...click }, { windowId: 7 },
+    )));
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.permissionState.requests.length, 0, 'context-menu click must not request grants itself');
+    if (hasLinks) {
+      assert.equal(result.permissionMissing, true);
+      assert.deepEqual(h.popupCalls, [{ windowId: 7 }]);
+      assert.ok(h.notifications.some(note => note.message.includes('notifyNasPermission')));
+    } else {
+      assert.equal(h.popupCalls.length, 0);
+      assert.equal(h.notifications.length, 0);
+    }
+  }
+});
+
+test('a normal magnet save failure survives its later permission grant and retry saves the same choice', async () => {
+  const h = await background(success, { grantedOrigins: ['https://old-nas.example/*'],
+    grantRequests: false, local: { autoCaptureMagnets: false } });
+  const p = popup(h, { view: 'tab' });
+  await p.evaluate('loadSettings()');
+  p.evaluate('popupReady = true');
+  const set = h.browser.storage.local.set;
+  h.browser.storage.local.set = async values => {
+    if (Object.hasOwn(values, 'autoCaptureMagnets')) throw new Error('Could not store capture');
+    return set(values);
+  };
+  const approval = deferred(), request = h.browser.permissions.request;
+  h.browser.permissions.request = permissions => request(permissions).then(() => approval.promise).then(granted => {
+    if (granted) h.permissionState.grant(permissions.origins);
+    return granted;
+  });
+  p.nodes.get('autoCaptureMagnets').checked = true;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.equal(p.nodes.get('magnetPermission').hidden, false);
+  assert.equal(p.nodes.get('magnetPermissionTitle').textContent, 'magnetSaveFailedTitle');
+  approval.resolve(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.data.local.autoCaptureMagnets, false);
+  assert.equal(p.nodes.get('magnetPermission').hidden, false);
+  assert.equal(p.nodes.get('magnetPermissionMessage').textContent, 'Could not store capture');
+  assert.equal(p.nodes.get('btnMagnetPermission').textContent, 'retry');
+  assert.equal(p.evaluate('magnetRetryPreference'), true);
+  h.browser.storage.local.set = set;
+  h.browser.permissions.request = request;
+  await p.nodes.get('btnMagnetPermission').listeners.click();
+  assert.equal(h.data.local.autoCaptureMagnets, true);
+  assert.equal(p.nodes.get('magnetPermission').hidden, true);
+  assert.equal(p.evaluate('magnetSaveFailure'), null);
+  assert.equal(p.window.closed, false);
+  assert.deepEqual(h.notifications, []);
+});
+
+test('permission changes cannot discard a failed magnet disable or turn its retry into an enable', async () => {
+  const h = await background(success, { local: { autoCaptureMagnets: true },
+    grantedOrigins: ['http://*/*', 'https://*/*', 'https://unrelated.example/*'] });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('popupReady = true');
+  const set = h.browser.storage.local.set;
+  h.browser.storage.local.set = async values => {
+    if (values.autoCaptureMagnets === false) throw new Error('Could not stop capture');
+    return set(values);
+  };
+  p.nodes.get('autoCaptureMagnets').checked = false;
+  await p.nodes.get('autoCaptureMagnets').listeners.change();
+  for (const origins of [['https://unrelated.example/*'], ['http://*/*']]) {
+    await h.browser.permissions.remove({ origins });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(p.nodes.get('magnetPermission').hidden, false);
+    assert.equal(p.nodes.get('magnetPermissionTitle').textContent, 'magnetSaveFailedTitle');
+    assert.equal(p.nodes.get('magnetPermissionMessage').textContent, 'Could not stop capture');
+    assert.equal(p.nodes.get('btnMagnetPermission').textContent, 'retry');
+    assert.equal(p.evaluate('magnetRetryPreference'), false);
+  }
+  h.browser.storage.local.set = set;
+  await p.nodes.get('btnMagnetPermission').listeners.click();
+  assert.equal(h.data.local.autoCaptureMagnets, false);
+  assert.equal(p.nodes.get('magnetPermission').hidden, true);
+  assert.deepEqual(h.permissionState.requests, []);
+});
+
+test('another view saving a changed magnet preference or resetting retires the local storage error', async () => {
+  const h = await background(success, { local: { autoCaptureMagnets: false } });
+  const first = popup(h), other = popup(h, { view: 'tab' });
+  for (const p of [first, other]) {
+    await p.evaluate('loadSettings()');
+    p.evaluate('popupReady = true');
+  }
+  const set = h.browser.storage.local.set;
+  h.browser.storage.local.set = async values => {
+    if (Object.hasOwn(values, 'autoCaptureMagnets')) throw new Error('Storage unavailable');
+    return set(values);
+  };
+  first.nodes.get('autoCaptureMagnets').checked = true;
+  await first.nodes.get('autoCaptureMagnets').listeners.change();
+  h.browser.storage.local.set = set;
+  other.nodes.get('autoCaptureMagnets').checked = true;
+  await other.nodes.get('autoCaptureMagnets').listeners.change();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(first.nodes.get('autoCaptureMagnets').checked, true);
+  assert.equal(first.nodes.get('magnetPermission').hidden, true);
+  assert.equal(first.evaluate('magnetSaveFailure'), null);
+
+  h.browser.storage.local.set = async values => {
+    if (values.autoCaptureMagnets === false) throw new Error('Could not disable capture');
+    return set(values);
+  };
+  first.nodes.get('autoCaptureMagnets').checked = false;
+  await first.nodes.get('autoCaptureMagnets').listeners.change();
+  assert.equal(first.nodes.get('magnetPermission').hidden, false);
+  h.browser.storage.local.set = set;
+  await other.evaluate('resetAllSettings()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(first.nodes.get('autoCaptureMagnets').checked, false);
+  assert.equal(first.nodes.get('magnetPermission').hidden, true);
+  assert.equal(first.evaluate('magnetSaveFailure'), null);
+});
+
+test('a NAS change ends a pending wake on every add route without retrying the old NAS', async () => {
+  for (const route of ['single', 'bulk', 'retry']) {
+    for (const revokeOld of [false, true]) {
+      const started = deferred(), first = deferred();
+      let probes = 0;
+      const h = await background(async (url, options) => {
+        if (url.startsWith('https://old-nas.example:5001/') && url.includes('query.cgi')) {
+          if (++probes === 1) { started.resolve(); return first.promise; }
+          throw new TypeError('Old NAS offline');
+        }
+        if (options.body?.get('method') === 'logout') throw new TypeError('Old NAS offline');
+        return success();
+      });
+      const url = 'https://download.example/wake';
+      const adding = route === 'single'
+        ? h.evaluate('addDownloadTask')(url, { epoch: h.evaluate('sessionEpoch') })
+        : route === 'bulk'
+          ? h.send({ action: 'addTasksBulk', urls: [url], connection: h.connection })
+          : h.api.apiRetryTask('old-task', url, '');
+      await started.promise;
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+      if (revokeOld) {
+        h.permissionState.grant(['https://new-nas.example/*']);
+        h.permissionState.revoke(['https://*/*']);
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      const before = h.evaluate('Date.now()');
+      first.reject(new TypeError('Old NAS offline'));
+      const result = await adding;
+      const label = `${route}, old grant revoked: ${revokeOld}`;
+      assert.equal(probes, 1, label);
+      assert.equal(result.connectionChanged, true, label);
+      assert.equal(result.deliveryUnknown, false, label);
+      assert.notEqual(result.permissionMissing, true, label);
+      assert.notEqual(result.certificateError, true, label);
+      assert.equal(h.requests.filter(request => ['create', 'delete'].includes(request.body.method)).length, 0, label);
+      assert.ok(h.evaluate('Date.now()') - before < h.evaluate('WAKE_GAP_MS'), label);
+      assert.equal(h.evaluate('addsPending'), 0, label);
+      if (route === 'bulk') {
+        assert.deepEqual(plain(result.failedUrls), [url]);
+        assert.equal(result.errorMessage, 'addConnectionChanged');
+      }
+      assert.equal(await h.browser.permissions.contains({ origins: ['https://new-nas.example/*'] }), true);
+    }
+  }
+});
+
+test('wake checks its original connection after settings, permission and successful probe replies', async () => {
+  for (const stage of ['settings', 'permission', 'probe']) {
+    const reached = deferred(), held = deferred();
+    let heldOnce = false;
+    const h = await background(async (url) => {
+      if (stage === 'probe' && url.includes('query.cgi') && !heldOnce) {
+        heldOnce = true;
+        reached.resolve();
+        return held.promise;
+      }
+      return success();
+    });
+    if (stage === 'settings') {
+      const get = h.browser.storage.local.get;
+      h.browser.storage.local.get = async (...args) => {
+        const values = await get(...args);
+        if (!heldOnce) {
+          heldOnce = true;
+          reached.resolve();
+          await held.promise;
+        }
+        return values;
+      };
+    } else if (stage === 'permission') {
+      const contains = h.browser.permissions.contains;
+      h.browser.permissions.contains = request => {
+        if (!heldOnce) {
+          heldOnce = true;
+          reached.resolve();
+          return held.promise;
+        }
+        return contains(request);
+      };
+    }
+    const waking = h.evaluate('wakeNas()').then(value => value, error => error);
+    await reached.promise;
+    await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+    held.resolve(stage === 'probe' ? success() : false);
+    const result = await waking;
+    assert.equal(result.connectionChanged, true, stage);
+    assert.notEqual(result.permissionMissing, true, stage);
+    assert.equal(h.requests.filter(request => request.url.includes('query.cgi')).length,
+      stage === 'probe' ? 1 : 0, stage);
+  }
+});
+
+test('wake stops after a NAS change during either wait and still retries an unchanged NAS', async () => {
+  for (const stage of ['gap', 'settle', 'unchanged']) {
+    const reached = deferred();
+    let probes = 0, release;
+    const h = await background(async (url) => {
+      if (url.includes('query.cgi') && ++probes === 1) throw new TypeError('NAS waking');
+      return success();
+    });
+    const timeout = h.context.setTimeout;
+    const waitMs = h.evaluate(stage === 'gap' ? 'WAKE_GAP_MS' : 'WAKE_SETTLE_MS');
+    h.context.setTimeout = (fn, ms) => {
+      if (ms === waitMs && !release) {
+        release = () => timeout(fn, ms);
+        reached.resolve();
+        return 1;
+      }
+      return timeout(fn, ms);
+    };
+    const waking = h.evaluate('wakeNas()').then(value => value, error => error);
+    await reached.promise;
+    if (stage !== 'unchanged') {
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+    }
+    release();
+    const result = await waking;
+    if (stage === 'unchanged') assert.equal(result, undefined);
+    else assert.equal(result.connectionChanged, true, stage);
+    assert.equal(probes, stage === 'gap' ? 1 : 2, stage);
+  }
+});
+
+test('already visible task errors keep their original NAS when the connection changes', async () => {
+  for (const kind of ['bulk', 'row']) for (const outcome of ['refused', 'uncertain']) {
+    const h = await background(async (url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'list') return response({ success: true, data: { tasks: [
+        { id: 'task-1', title: url.includes('old-nas') ? 'old task' : 'new task', status: 'downloading', size: 100 },
+      ] } });
+      if (method === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+      if (method === 'pause') return response({ success: true, data: url.includes('old-nas')
+        ? outcome === 'refused' ? [{ id: 'task-1', error: 400 }] : []
+        : [{ id: 'task-1', error: 0 }] });
+      return success();
+    });
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('refreshTasks()');
+    if (kind === 'bulk') await p.nodes.get('btnPauseAll').listeners.click();
+    else await p.nodes.get('taskList').listeners.click({ target: { closest: () => ({
+      dataset: { action: 'pauseTask', taskId: 'task-1' }, disabled: false,
+    }) } });
+    const reason = p.nodes.get('taskStatus').textContent;
+    assert.equal(p.nodes.get('taskStatus').hidden, false);
+    assert.ok(!reason.includes('taskActionPreviousConnection'));
+    p.nodes.get('host').value = 'new-nas.example';
+    await p.nodes.get('btnSaveConnection').listeners.click();
+    await until(() => String(p.evaluate('tasksConnection')).includes('new-nas.example'));
+    assert.equal(p.nodes.get('taskStatus').textContent,
+      'taskActionPreviousConnection:https://old-nas.example:5001|' + reason);
+    assert.match(p.nodes.get('statusText').textContent, /connected/);
+
+    await p.nodes.get('btnPauseAll').listeners.click();
+    assert.equal(p.nodes.get('taskStatus').hidden, true, 'a successful current action retires the old problem');
+    p.evaluate('forgetTasks()');
+    assert.equal(p.nodes.get('taskStatus').hidden, true, 'retired errors must not reappear');
+  }
+});
+
+test('logout reset and connection saves keep newer drafts from another extension view', async () => {
+  for (const operation of ['logout', 'reset', 'save']) for (const different of [false, true]) {
+    const gate = deferred();
+    let leaving = false;
+    const h = await background(async (_url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'logout') { leaving = true; await gate.promise; }
+      if (method === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+      if (method === 'list') return response({ success: true, data: { tasks: [] } });
+      return success();
+    });
+    const first = popup(h), other = popup(h, { view: 'tab' });
+    await first.evaluate('loadSettings()');
+    await other.evaluate('loadSettings()');
+    await other.evaluate('saveConnDraft()');
+    if (operation === 'save') first.nodes.get('host').value = 'saved-nas.example';
+    const changing = operation === 'save' ? first.nodes.get('btnSaveConnection').listeners.click()
+      : first.evaluate(operation === 'logout' ? 'logoutAccount()' : 'resetAllSettings()');
+    await until(() => leaving);
+    const draft = { protocol: 'https', host: different ? 'draft-nas.example' : defaults.host,
+      port: '5001', username: different ? 'draft-user' : defaults.username,
+      password: different ? 'draft-password' : defaults.password };
+    for (const [key, value] of Object.entries(draft)) other.nodes.get(key).value = value;
+    await other.evaluate('saveConnDraft()');
+    gate.resolve();
+    await changing;
+    assert.deepEqual(h.data.session.connDraft, draft, `${operation}/${different}`);
+    const reopened = popup(h);
+    await reopened.evaluate('loadSettings()');
+    await reopened.evaluate('loadConnDraft()');
+    for (const [key, value] of Object.entries(draft)) {
+      assert.equal(reopened.nodes.get(key).value, value, `${operation}/${different}/${key}`);
+    }
+  }
+});
+
+test('a newer connection draft survives a delayed removal and its writing view closing', async () => {
+  const h = await background(success);
+  const first = popup(h), other = popup(h, { view: 'tab' });
+  await first.evaluate('loadSettings()');
+  await other.evaluate('loadSettings()');
+  await first.evaluate('saveConnDraft()');
+  const snapshot = await first.evaluate('readConnDraftRevision()');
+  const gate = deferred(), remove = h.browser.storage.session.remove;
+  let removing = false;
+  h.browser.storage.session.remove = async keys => {
+    if (keys === 'connDraft') { removing = true; await gate.promise; }
+    return remove(keys);
+  };
+  const clearing = first.evaluate('clearConnDraft()');
+  await until(() => removing);
+  other.nodes.get('host').value = 'typed-during-cleanup.example';
+  const writing = other.evaluate('saveConnDraft()');
+  other.window.close();
+  gate.resolve();
+  await Promise.all([clearing, writing]);
+  assert.equal(h.data.session.connDraft.host, 'typed-during-cleanup.example');
+  assert.ok(h.data.session.connDraftRevision > snapshot.revision);
+  await h.send({ action: 'connectionDraft', operation: 'clear', revision: snapshot.revision });
+  assert.equal(h.data.session.connDraft.host, 'typed-during-cleanup.example', 'the stale owner stays stale');
+});
+
+test('only extension views may write valid connection drafts and rejected input preserves the draft', async () => {
+  const h = await background(success);
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  await p.evaluate('saveConnDraft()');
+  const before = plain(h.data.session.connDraft);
+  const cases = [
+    [{ operation: 'clear', revision: h.data.session.connDraftRevision }, 'https://page.example/'],
+    [{ operation: 'write', draft: { ...before, password: 123 } }, h.browser.runtime.getURL('popup/popup.html')],
+    [{ operation: 'write', draft: { ...before, extra: 'unexpected' } }, h.browser.runtime.getURL('popup/popup.html')],
+    [{ operation: 'clear', revision: -1 }, h.browser.runtime.getURL('popup/popup.html')],
+  ];
+  for (const [message, url] of cases) {
+    const result = await new Promise(resolve => h.browser.runtime.onMessage.emit(
+      { action: 'connectionDraft', ...message }, { url }, resolve));
+    assert.equal(result.ok, false);
+    assert.deepEqual(h.data.session.connDraft, before);
+  }
+});
+
+test('popup startup cannot overwrite a newer deliberate connection result with its old status or error', async () => {
+  for (const oldStatus of ['connected', 'disconnected', 'rejected']) {
+    for (const newer of ['otp', 'connected', 'changed']) {
+      const pending = deferred(), started = deferred();
+      let logins = 0;
+      const h = await background(async (_url, options) => {
+        if (options.body?.get('method') === 'login') {
+          logins++;
+          return response(newer === 'otp' ? { success: false, error: { code: 403 } }
+            : { success: true, data: { sid: 'fresh-sid' } });
+        }
+        return response({ success: true, data: { tasks: [] } });
+      }, { session: { sid: oldStatus === 'connected' ? 'old-sid' : null } });
+      h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+      const original = h.browser.runtime.sendMessage;
+      let first = true;
+      h.browser.runtime.sendMessage = async message => {
+        const result = await original(message);
+        if (message.action === 'getStatus') {
+          if (first) { first = false; started.resolve(); await pending.promise; }
+          if (oldStatus === 'rejected') throw new Error('late startup failure');
+        }
+        return result;
+      };
+      const p = popup(h);
+      const timeout = p.context.setTimeout;
+      p.context.setTimeout = (fn, delay) => delay === 150 ? queueMicrotask(fn) : timeout(fn, delay);
+      p.evaluate('showOtpPrompt(false)');
+      const startup = p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+      await started.promise;
+      if (newer === 'changed') {
+        p.nodes.get('host').value = 'next-nas.example';
+        p.nodes.get('username').value = 'next-user';
+        p.nodes.get('password').value = 'next-password';
+        await p.nodes.get('btnSaveConnection').listeners.click();
+      } else {
+        await p.nodes.get('btnTest').listeners.click();
+      }
+      if (newer === 'otp') p.nodes.get('otpCode').value = '123456';
+      const expected = plain(p.evaluate('({ status:statusText.textContent, blocked:connectBlocked, otp:!otpField.hidden, code:otpCodeEl.value, host:settings.host })'));
+      pending.resolve();
+      await startup;
+      await until(() => !p.evaluate('refreshInFlight'));
+      assert.deepEqual(plain(p.evaluate('({ status:statusText.textContent, blocked:connectBlocked, otp:!otpField.hidden, code:otpCodeEl.value, host:settings.host })')),
+        expected, `${oldStatus}/${newer}`);
+      assert.equal(logins, 1, `${oldStatus}/${newer}: startup must not sign in again`);
+    }
+  }
+});
+
+test('popup startup guards kept-failure reads before they can change a newer prompt or sign-in', async () => {
+  for (const heldRead of [1, 2]) {
+    const pending = deferred(), started = deferred();
+    const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+      ? response(heldRead === 1 ? { success: true, data: { sid: 'fresh-sid' } }
+        : { success: false, error: { code: 403 } })
+      : response({ success: true, data: { tasks: [] } }),
+    { session: { sid: null, lastConnect: heldRead === 1
+      ? { success: false, error: { message: 'old login failure' } } : null } });
+    h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+    const original = h.browser.storage.session.get;
+    let reads = 0;
+    h.browser.storage.session.get = async keys => {
+      const result = await original(keys);
+      if (keys && Object.keys(keys).length === 1 && Object.hasOwn(keys, 'lastConnect')
+        && ++reads === heldRead) {
+        started.resolve();
+        await pending.promise;
+      }
+      return result;
+    };
+    const p = popup(h);
+    p.evaluate('showOtpPrompt(false)');
+    const startup = p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+    await started.promise;
+    await p.nodes.get('btnTest').listeners.click();
+    if (heldRead === 2) p.nodes.get('otpCode').value = '123456';
+    pending.resolve();
+    await startup;
+    await until(() => !p.evaluate('refreshInFlight'));
+    assert.equal(p.evaluate('popupReady'), true);
+    assert.equal(p.evaluate('connectBlocked'), heldRead === 2);
+    assert.equal(p.nodes.get('otpField').hidden, heldRead === 1);
+    assert.equal(p.nodes.get('otpCode').value, heldRead === 2 ? '123456' : '');
+    assert.match(p.nodes.get('statusText').textContent, heldRead === 1 ? /^connected/ : /^otpRequired$/);
+  }
+});
+
+test('popup startup rereads a session accepted in another view and still handles ordinary startup states', async () => {
+  for (const state of ['other-view', 'live-session', 'kept-failure', 'fresh-login']) {
+    const pending = deferred(), started = deferred();
+    let logins = 0, statuses = 0;
+    const h = await background(async (_url, options) => {
+      if (options.body?.get('method') === 'login') {
+        logins++;
+        return response({ success: true, data: { sid: 'fresh-sid' } });
+      }
+      return response({ success: true, data: { tasks: [] } });
+    }, { session: { sid: state === 'live-session' ? 'old-sid' : null,
+      lastConnect: state === 'kept-failure' ? { success: false, otpRequired: true } : null } });
+    h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+    const original = h.browser.runtime.sendMessage;
+    h.browser.runtime.sendMessage = async message => {
+      const result = await original(message);
+      if (message.action === 'getStatus' && ++statuses === 1 && state === 'other-view') {
+        started.resolve(); await pending.promise;
+      }
+      return result;
+    };
+    const p = popup(h);
+    p.evaluate('showOtpPrompt(false)');
+    const startup = p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+    if (state === 'other-view') {
+      await started.promise;
+      assert.equal((await h.send({ action: 'testConnection' })).success, true);
+      pending.resolve();
+    }
+    await startup;
+    await until(() => !p.evaluate('refreshInFlight'));
+    assert.equal(logins, ['other-view', 'fresh-login'].includes(state) ? 1 : 0, state);
+    assert.equal(p.evaluate('connectBlocked'), state === 'kept-failure', state);
+    assert.equal(p.nodes.get('otpField').hidden, state !== 'kept-failure', state);
+    assert.match(p.nodes.get('statusText').textContent, state === 'kept-failure' ? /^otpRequired$/ : /^connected/, state);
+    if (state === 'other-view') assert.equal(statuses, 2, 'read the accepted session instead of signing in again');
+  }
+});
+
+test('a superseded OTP task-list answer cannot reopen the prompt or stop a newer sign-in watch', async () => {
+  for (const code of [403, 404]) {
+    for (const newer of [false, true]) {
+      const pending = deferred(), started = deferred();
+      let logins = 0;
+      const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+        ? response(++logins === 1 ? { success: false, error: { code } }
+          : { success: true, data: { sid: 'fresh-sid' } })
+        : response({ success: true, data: { tasks: [] } }), { session: { sid: null } });
+      const original = h.browser.runtime.sendMessage;
+      let first = true;
+      h.browser.runtime.sendMessage = async message => {
+        const result = await original(message);
+        if (message.action === 'listTasks' && first) {
+          first = false; started.resolve(); await pending.promise;
+        }
+        return result;
+      };
+      const p = popup(h);
+      await p.evaluate('loadSettings()');
+      p.evaluate('showOtpPrompt(false); popupReady = true');
+      const refreshing = p.evaluate('refreshTasks()');
+      await started.promise;
+      if (newer) await p.nodes.get('btnTest').listeners.click();
+      pending.resolve();
+      await refreshing;
+      assert.equal(p.nodes.get('otpField').hidden, newer, `${code}/${newer}`);
+      assert.equal(p.evaluate('codePending'), !newer, `${code}/${newer}`);
+      assert.equal(p.evaluate('refreshWanted'), newer, `${code}/${newer}`);
+      assert.match(p.nodes.get('statusText').textContent,
+        newer ? /^connected/ : new RegExp(code === 403 ? '^otpRequired$' : '^otpWrong$'));
+    }
+  }
+});
+
+
+test('task actions retain a lost attempt when a later HTTP or API reply refuses the write', async () => {
+  const replies = [
+    ['http403', () => ({ ok: false, status: 403, json: async () => ({}) }), /HTTP 403/],
+    ['api100', () => response({ success: false, error: { code: 100 } }), /err100/],
+    ['api400', () => response({ success: false, error: { code: 400 } }), /errTask400/],
+    ['task400', () => response({ success: true, data: [{ id: 'a', error: 400 }] }), /errTask400/],
+  ];
+  for (const method of ['pause', 'resume', 'delete']) {
+    for (const [kind, answer, cause] of replies) for (const lostFirst of [false, true]) {
+      let attempts = 0;
+      const h = await background(async (_url, options) => {
+        if (options.body?.get('method') === method) {
+          if (++attempts === 1 && lostFirst) throw new TypeError('Write processed; reply lost');
+          return answer();
+        }
+        return success();
+      });
+      const result = await h.api.apiBulkTaskAction(method, ['a']).catch(error => error);
+      const label = `${method}/${kind}/${lostFirst}`;
+      assert.equal(attempts, lostFirst ? 2 : 1, label);
+      assert.equal(result.deliveryUnknown === true, lostFirst, label);
+      assert.match(result.error?.message ?? result.message, cause, label);
+      if (kind !== 'http403') {
+        assert.equal(result.success, false, label);
+        assert.equal(result.affected, 0, label);
+        assert.deepEqual(plain(result.unconfirmed), lostFirst ? ['a'] : [], label);
+        assert.equal(result.failed.length, !lostFirst && kind === 'task400' ? 1 : 0, label);
+      }
+    }
+  }
+});
+
+test('retry keeps the original URI after a lost delete followed by refusal, but confirmed deletion can create', async () => {
+  const replies = [
+    ['http403', () => ({ ok: false, status: 403, json: async () => ({}) }), /HTTP 403/],
+    ['api400', () => response({ success: false, error: { code: 400 } }), /errTask400/],
+    ['task400', () => response({ success: true, data: [{ id: 'a', error: 400 }] }), /errTask400/],
+    ['confirmed', () => response({ success: true, data: [{ id: 'a', error: 0 }] })],
+  ];
+  for (const [kind, answer, cause] of replies) for (const lostFirst of [false, true]) {
+    let deletes = 0;
+    const h = await background(async (_url, options) => {
+      if (options.body?.get('method') === 'delete') {
+        if (++deletes === 1 && lostFirst) throw new TypeError('Deletion processed; reply lost');
+        return answer();
+      }
+      if (options.body?.get('method') === 'list') return response({ success: true, data: { tasks: [] } });
+      return success();
+    });
+    const uri = 'https://download.example/only-copy';
+    const result = await h.send({ action: 'retryTask', id: 'a', uri, connection: h.connection });
+    const label = `${kind}/${lostFirst}`;
+    assert.equal(deletes, lostFirst ? 2 : 1, label);
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length,
+      kind === 'confirmed' ? 1 : 0, label);
+    if (kind === 'confirmed') {
+      assert.equal(result.success, true, label);
+      assert.notEqual(result.deliveryUnknown, true, label);
+    } else if (lostFirst) {
+      assert.equal(result.deliveryUnknown, true, label);
+      assert.equal(result.linkKept, true, label);
+      assert.equal(h.data.session.bulkDraft, uri, label);
+      assert.match(result.error.message, /retryLinkKeptUnsent/, label);
+      assert.match(result.error.message, cause, label);
+    } else {
+      assert.notEqual(result.deliveryUnknown, true, label);
+      assert.notEqual(result.linkKept, true, label);
+      assert.equal(h.data.session.bulkDraft, undefined, label);
+    }
+  }
+});
+
+test('after a lost batch write only positively confirmed IDs leave the unconfirmed set', async () => {
+  let attempts = 0;
+  const h = await background(async () => {
+    if (++attempts === 1) throw new TypeError('Batch processed; reply lost');
+    return response({ success: true, data: [
+      { id: 'a', error: 0 }, { id: 'b', error: 400 }, { id: 'c', error: 404 },
+      { id: 'd', error: '0' },
+    ] });
+  });
+  const result = await h.api.apiBulkTaskAction('pause', ['a', 'b', 'c', 'd', 'e']);
+  assert.equal(result.success, false);
+  assert.equal(result.affected, 2);
+  assert.equal(result.deliveryUnknown, true);
+  assert.deepEqual(plain(result.failed), []);
+  assert.deepEqual(plain(result.unconfirmed), ['b', 'c', 'e']);
+  assert.match(result.error.message, /b: .*errTask400/);
+  assert.match(result.error.message, /taskActionUnconfirmed:3/);
+});
+
+test('lost task writes survive session renewal while a shared login failure stays definite for readers', async () => {
+  for (const lostFirst of [false, true]) {
+    const loginStarted = deferred(), loginReply = deferred();
+    let deletes = 0;
+    const h = await background(async (_url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'delete') {
+        if (++deletes === 1 && lostFirst) throw new TypeError('Deletion processed; reply lost');
+        return response({ success: false, error: { code: 119 } });
+      }
+      if (method === 'login') { loginStarted.resolve(); return loginReply.promise; }
+      return success();
+    });
+    const uri = 'https://download.example/shared-login';
+    const retrying = h.send({ action: 'retryTask', id: 'a', uri, connection: h.connection });
+    await loginStarted.promise;
+    const reading = h.send({ action: 'listTasks' });
+    await new Promise(resolve => setImmediate(resolve));
+    loginReply.resolve(response({ success: false, error: { code: 400 } }));
+    const [retried, listed] = await Promise.all([retrying, reading]);
+    assert.equal(deletes, lostFirst ? 2 : 1);
+    assert.equal(retried.deliveryUnknown === true, lostFirst);
+    assert.equal(retried.linkKept === true, lostFirst);
+    assert.equal(h.data.session.bulkDraft, lostFirst ? uri : undefined);
+    assert.match(retried.error.message, /errLoginFailed/);
+    assert.equal(listed.deliveryUnknown, false, 'the shared login must not inherit the earlier delete');
+    assert.match(listed.error.message, /errLoginFailed/);
+    assert.equal(h.requests.filter(request => request.body.method === 'login').length, 1);
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length, 0);
+  }
+});
+
+test('session renewal and connection switches cannot turn a lost delete into a definite refusal', async () => {
+  for (const finish of ['refused', 'confirmed', 'changed-refused', 'changed-confirmed']) {
+    const finalReply = deferred(), finalStarted = deferred();
+    let deletes = 0;
+    const h = await background(async (_url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'delete') {
+        if (++deletes === 1) throw new TypeError('Deletion processed; reply lost');
+        if (deletes === 2) return response({ success: false, error: { code: 119 } });
+        finalStarted.resolve();
+        return finalReply.promise;
+      }
+      if (method === 'login') return response({ success: true, data: { sid: 'renewed-sid' } });
+      if (method === 'list') return response({ success: true, data: { tasks: [] } });
+      return success();
+    });
+    const uri = 'https://download.example/renewed-session';
+    const retrying = h.send({ action: 'retryTask', id: 'a', uri, connection: h.connection });
+    await finalStarted.promise;
+    if (finish.startsWith('changed-')) {
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+    }
+    const confirmed = finish.endsWith('confirmed');
+    finalReply.resolve(response({ success: true, data: [{ id: 'a', error: confirmed ? 0 : 400 }] }));
+    const result = await retrying;
+    assert.equal(deletes, 3, finish);
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length,
+      finish === 'confirmed' ? 1 : 0, finish);
+    if (finish === 'confirmed') {
+      assert.equal(result.success, true);
+      assert.notEqual(result.deliveryUnknown, true);
+    } else {
+      assert.equal(result.linkKept, true, finish);
+      assert.equal(h.data.session.bulkDraft, uri, finish);
+      assert.equal(result.deliveryUnknown, !confirmed, finish);
+      assert.match(result.error.message, confirmed ? /retryLinkKeptSwitched/ : /retryLinkKeptUnsent/);
+    }
+  }
+});
+
+test('a failed renewal after a lost pause remains visibly unconfirmed alongside the login error', async () => {
+  let pauses = 0;
+  const h = await background(async (_url, options) => {
+    const method = options.body?.get('method');
+    if (method === 'pause') {
+      if (++pauses === 1) throw new TypeError('Pause processed; reply lost');
+      return response({ success: false, error: { code: 119 } });
+    }
+    if (method === 'login') return response({ success: false, error: { code: 400 } });
+    return success();
+  });
+  const result = await h.send({ action: 'pauseTask', id: 'a', connection: h.connection });
+  assert.equal(result.deliveryUnknown, true);
+  assert.match(result.error.message, /actionResultUnknown/);
+  assert.match(result.error.message, /errLoginFailed/);
+});
+
+test('logout and reset finish draft cleanup after their popup closes while preserving later input', async () => {
+  for (const operation of ['logout', 'reset']) {
+    for (const pauseAt of ['draft', 'logout']) for (const newerDraft of [false, true]) {
+      const gate = deferred();
+      let paused = false;
+      const h = await background(async (_url, options) => {
+        if (pauseAt === 'logout' && options.body?.get('method') === 'logout') {
+          paused = true;
+          await gate.promise;
+        }
+        return success();
+      }, { session: { destDraft: 'old-folder', bulkDraft: 'https://download.example/old',
+        lastAdd: { success: false }, lastTab: 'settings', setupRequired: true } });
+      const first = popup(h), other = popup(h, { view: 'tab' });
+      await first.evaluate('loadSettings()');
+      await other.evaluate('loadSettings()');
+      await first.evaluate('saveConnDraft()');
+      const remove = h.browser.storage.session.remove;
+      h.browser.storage.session.remove = async keys => {
+        if (pauseAt === 'draft' && keys === 'connDraft' && !paused) {
+          paused = true;
+          await gate.promise;
+        }
+        return remove(keys);
+      };
+      const leaving = first.evaluate(operation === 'logout' ? 'logoutAccount()' : 'resetAllSettings()');
+      await until(() => paused);
+      first.window.close();
+      let writing = Promise.resolve();
+      if (newerDraft) {
+        other.nodes.get('host').value = 'later-draft.example';
+        other.nodes.get('username').value = 'later-user';
+        other.nodes.get('password').value = 'later-password';
+        writing = other.evaluate('saveConnDraft()');
+        other.window.close();
+      }
+      gate.resolve();
+      await Promise.all([leaving, writing]);
+      const label = `${operation}/${pauseAt}/${newerDraft}`;
+      assert.equal(h.data.local.username, '', label);
+      assert.equal(h.data.local.password, '', label);
+      assert.equal(h.data.session.connDraft?.username, newerDraft ? 'later-user' : undefined, label);
+      if (operation === 'reset') {
+        for (const key of ['destDraft', 'bulkDraft', 'lastAdd', 'lastTab', 'setupRequired']) {
+          assert.equal(h.data.session[key], undefined, `${label}/${key}`);
+        }
+      }
+      const reopened = popup(h);
+      await reopened.evaluate('loadSettings()');
+      await reopened.evaluate('loadConnDraft()');
+      assert.equal(reopened.nodes.get('username').value, newerDraft ? 'later-user' : '', label);
+      assert.equal(reopened.nodes.get('password').value, newerDraft ? 'later-password' : '', label);
+    }
+  }
+});
+
+test('background sign-out and reset also own draft cleanup without a popup revision', async () => {
+  for (const operation of ['signOut', 'reset']) {
+    const h = await background(success);
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    await p.evaluate('saveConnDraft()');
+    p.window.close();
+    const result = await h.send({ action: 'settingsUpdated', [operation]: true });
+    assert.equal(result.ok, true, operation);
+    assert.equal(h.data.session.connDraft, undefined, operation);
+    assert.equal(h.data.local.username, '', operation);
+    assert.equal(h.data.local.password, '', operation);
+  }
+});
+
+test('a failed old resume body cannot start a watch or log out the replacement NAS session', async () => {
+  for (const action of ['resumeTask', 'resumeAll']) {
+    for (const changed of [false, true]) for (const lostFirst of [false, true]) {
+      const reading = deferred(), body = deferred();
+      let resumes = 0, newLists = 0, oldListsAfterResume = 0;
+      const h = await background(async (url, options) => {
+        const method = options.body?.get('method');
+        if (method === 'resume') {
+          if (++resumes === 1 && lostFirst) throw new TypeError('Earlier resume reply lost');
+          return { ok: true, status: 200, json: async () => {
+            reading.resolve();
+            await body.promise;
+            throw new SyntaxError('Old resume body was truncated');
+          } };
+        }
+        if (method === 'login') return response({ success: true, data: { sid: 'new-nas-sid' } });
+        if (method === 'list') {
+          if (new URL(url).hostname === 'new-nas.example') {
+            newLists++;
+            return response({ success: true, data: { tasks: [] } });
+          }
+          if (resumes > 0) oldListsAfterResume++;
+          return response({ success: true, data: { tasks: [
+            { id: 'a', status: resumes > 0 ? 'downloading' : 'paused' },
+          ] } });
+        }
+        return success();
+      });
+      const resuming = h.send({ action, id: 'a', connection: h.connection });
+      await reading.promise;
+      if (changed) {
+        await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+        assert.equal((await h.send({ action: 'testConnection' })).success, true);
+        assert.equal(h.evaluate('cachedSid'), 'new-nas-sid');
+      }
+      body.resolve();
+      const result = await resuming;
+      await new Promise(resolve => setImmediate(resolve));
+      const label = `${action}/${changed}/${lostFirst}`;
+      assert.equal(result.connectionChanged, changed, label);
+      assert.equal(result.deliveryUnknown, true, label);
+      assert.match(result.error.message, /actionResultUnknown/, label);
+      assert.equal(resumes, lostFirst ? 2 : 1, label);
+      assert.equal(newLists, 0, label);
+      assert.equal(oldListsAfterResume, changed ? 0 : 1, label);
+      assert.equal(h.evaluate('cachedSid'), changed ? 'new-nas-sid' : 'old-sid', label);
+      assert.equal(h.requests.filter(request => request.body.method === 'logout'
+        && new URL(request.url).hostname === 'new-nas.example').length, 0, label);
+      assert.equal(h.alarmCalls.filter(call => call.created && call.name === 'download-station-poll').length,
+        changed ? 0 : 1, label);
+    }
+  }
+});
+
+test('a switched retry keeps an unconfirmed deleted link when its response body fails', async () => {
+  const reading = deferred(), body = deferred();
+  const h = await background(async (_url, options) => {
+    if (options.body?.get('method') === 'delete') {
+      return { ok: true, status: 200, json: async () => {
+        reading.resolve();
+        await body.promise;
+        throw new SyntaxError('Deletion body was truncated');
+      } };
+    }
+    return success();
+  });
+  const uri = 'https://download.example/original';
+  const retrying = h.send({ action: 'retryTask', id: 'a', uri, connection: h.connection });
+  await reading.promise;
+  await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+  body.resolve();
+  const result = await retrying;
+  assert.equal(result.deliveryUnknown, true);
+  assert.equal(result.linkKept, true);
+  assert.equal(h.data.session.bulkDraft, uri);
+  assert.match(result.error.message, /retryLinkKeptUnsent/);
+  assert.equal(h.requests.filter(request => request.body.method === 'create').length, 0);
+});
+
+test('a connection-test failure received after another view signs in adopts that shared session', async () => {
+  for (const delayEvents of [false, true]) {
+    for (const code of [400, 403, 404, 'rejected message']) {
+      const pending = deferred(), started = deferred();
+      let logins = 0;
+      const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+        ? response(++logins === 1 ? { success: false, error: { code: typeof code === 'number' ? code : 403 } }
+          : { success: true, data: { sid: 'fresh-sid' } })
+        : response({ success: true, data: { tasks: [] } }), { session: { sid: null } });
+      const emit = h.browser.storage.onChanged.emit;
+      if (delayEvents) h.browser.storage.onChanged.emit = (changes, area) => {
+        if (area === 'session' && 'connectionVersion' in changes) return;
+        return emit(changes, area);
+      };
+      const original = h.browser.runtime.sendMessage;
+      let first = true;
+      h.browser.runtime.sendMessage = async message => {
+        const result = await original(message);
+        if (message.action === 'testConnection' && first) {
+          first = false; started.resolve(); await pending.promise;
+          if (code === 'rejected message') throw new Error('late message failure');
+        }
+        return result;
+      };
+      const a = popup(h, { view: 'tab' }), b = popup(h);
+      for (const p of [a, b]) { await p.evaluate('loadSettings()'); p.evaluate('showOtpPrompt(false); popupReady = true'); }
+      const older = a.nodes.get('btnTest').listeners.click();
+      await started.promise;
+      await b.nodes.get('btnTest').listeners.click();
+      if (delayEvents) assert.equal(a.evaluate('latestConnectionVersion'), 0);
+      pending.resolve();
+      await older;
+      await until(() => !a.evaluate('refreshInFlight') && !b.evaluate('refreshInFlight'));
+      assert.equal(h.data.session.sid, 'fresh-sid');
+      assert.equal(h.data.session.lastConnect, undefined);
+      assert.equal(a.evaluate('connectBlocked'), false, `${delayEvents}/${code}`);
+      assert.equal(a.nodes.get('otpField').hidden, true, `${delayEvents}/${code}`);
+      assert.match(a.nodes.get('statusText').textContent, /^connected/, `${delayEvents}/${code}`);
+      assert.equal(logins, 2, 'adopting a session must never spend another code/login');
+    }
+  }
+});
+
+test('a connection refusal also checks a shared sign-in accepted during its diagnostic read', async () => {
+  for (const delayEvents of [false, true]) {
+    const pending = deferred(), started = deferred();
+    let logins = 0;
+    const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+      ? response(++logins === 1 ? { success: false, error: { code: 403 } }
+        : { success: true, data: { sid: 'fresh-sid' } })
+      : response({ success: true, data: { tasks: [] } }), { session: { sid: null } });
+    const emit = h.browser.storage.onChanged.emit;
+    if (delayEvents) h.browser.storage.onChanged.emit = (changes, area) => {
+      if (area === 'session' && 'connectionVersion' in changes) return;
+      return emit(changes, area);
+    };
+    const a = popup(h, { view: 'tab' }), b = popup(h);
+    for (const p of [a, b]) { await p.evaluate('loadSettings()'); p.evaluate('showOtpPrompt(false); popupReady = true'); }
+    const send = h.browser.runtime.sendMessage;
+    let answered = false;
+    h.browser.runtime.sendMessage = async message => {
+      const result = await send(message);
+      if (message.action === 'testConnection') answered = true;
+      return result;
+    };
+    const original = h.browser.storage.session.get;
+    let first = true;
+    h.browser.storage.session.get = async keys => {
+      const result = await original(keys);
+      if (answered && first && keys && Object.keys(keys).length === 1 && Object.hasOwn(keys, 'connectionProblem')) {
+        first = false; started.resolve(); await pending.promise;
+      }
+      return result;
+    };
+    const older = a.nodes.get('btnTest').listeners.click();
+    await started.promise;
+    await b.nodes.get('btnTest').listeners.click();
+    pending.resolve();
+    await older;
+    await until(() => !a.evaluate('refreshInFlight') && !b.evaluate('refreshInFlight'));
+    assert.equal(a.evaluate('connectBlocked'), false);
+    assert.equal(a.nodes.get('otpField').hidden, true);
+    assert.match(a.nodes.get('statusText').textContent, /^connected/);
+  }
+});
+
+test('an old OTP list answer adopts a newer session established in a different view', async () => {
+  for (const delayEvents of [false, true]) {
+    for (const code of [403, 404]) {
+      const pending = deferred(), started = deferred();
+      let logins = 0;
+      const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+        ? response(++logins === 1 ? { success: false, error: { code } }
+          : { success: true, data: { sid: 'fresh-sid' } })
+        : response({ success: true, data: { tasks: [{ id: 'fresh-task', status: 'downloading' }] } }),
+      { session: { sid: null } });
+      const emit = h.browser.storage.onChanged.emit;
+      if (delayEvents) h.browser.storage.onChanged.emit = (changes, area) => {
+        if (area === 'session' && 'connectionVersion' in changes) return;
+        return emit(changes, area);
+      };
+      const original = h.browser.runtime.sendMessage;
+      let first = true;
+      h.browser.runtime.sendMessage = async message => {
+        const result = await original(message);
+        if (message.action === 'listTasks' && first) {
+          first = false; started.resolve(); await pending.promise;
+        }
+        return result;
+      };
+      const a = popup(h, { view: 'tab' }), b = popup(h);
+      for (const p of [a, b]) { await p.evaluate('loadSettings()'); p.evaluate('showOtpPrompt(false); popupReady = true'); }
+      const older = a.evaluate('refreshTasks()');
+      await started.promise;
+      await b.nodes.get('btnTest').listeners.click();
+      pending.resolve();
+      await older;
+      assert.equal(a.nodes.get('otpField').hidden, true, `${delayEvents}/${code}`);
+      assert.equal(a.evaluate('codePending'), false);
+      assert.equal(a.evaluate('connectBlocked'), false);
+      assert.equal(a.evaluate('refreshWanted'), true);
+      assert.match(a.nodes.get('statusText').textContent, /^connected/);
+      assert.equal(a.evaluate('tasksConnection'), h.connection);
+      assert.equal(logins, 2);
+    }
+  }
+});
+
+test('a current automatic OTP refusal survives its own earlier successful login and delayed version events', async () => {
+  for (const acceptedBy of ['this list', 'earlier other view']) {
+    let logins = 0;
+    const h = await background(async (_url, options) => {
+      if (options.body?.get('method') === 'login') return response(++logins === 1
+        ? { success: true, data: { sid: 'accepted-once' } }
+        : { success: false, error: { code: 403 } });
+      if (options.body?.get('method') === 'list') return response({ success: false, error: { code: 119 } });
+      return success();
+    }, { session: { sid: null } });
+    const emit = h.browser.storage.onChanged.emit;
+    h.browser.storage.onChanged.emit = (changes, area) => {
+      if (area === 'session' && 'connectionVersion' in changes) return;
+      return emit(changes, area);
+    };
+    const p = popup(h);
+    await p.evaluate('loadSettings()');
+    p.evaluate('showOtpPrompt(false); popupReady = true');
+    if (acceptedBy === 'earlier other view') assert.equal((await h.send({ action: 'testConnection' })).success, true);
+    await p.evaluate('refreshTasks()');
+    assert.equal(h.data.session.connectionVersion, 1);
+    assert.equal(h.data.session.sid, undefined);
+    assert.equal(p.nodes.get('otpField').hidden, false, acceptedBy);
+    assert.equal(p.nodes.get('statusText').textContent, 'otpRequired', acceptedBy);
+    assert.equal(p.evaluate('refreshWanted'), false);
+    assert.equal(logins, 2);
+  }
+});
+
+test('a current test can still report a new refusal after accepting its own session version', async () => {
+  let logins = 0;
+  const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+    ? response(++logins === 1 ? { success: true, data: { sid: 'accepted-once' } }
+      : { success: false, error: { code: 404 } })
+    : response({ success: true, data: { tasks: [] } }), { session: { sid: null } });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.evaluate('showOtpPrompt(false); popupReady = true');
+  await p.nodes.get('btnTest').listeners.click();
+  await until(() => !p.evaluate('refreshInFlight'));
+  assert.match(p.nodes.get('statusText').textContent, /^connectedWithVersion/);
+  assert.equal(h.data.session.connectionVersion, 1);
+  await p.nodes.get('btnTest').listeners.click();
+  assert.equal(p.nodes.get('statusText').textContent, 'otpWrong');
+  assert.equal(p.evaluate('connectBlocked'), true);
+  assert.equal(p.nodes.get('otpField').hidden, false);
+  assert.equal(logins, 2);
+});
+
+test('a destination save retires only its own draft across extension views', async () => {
+  for (const later of [null, 'share/new', 'share/saved', '']) {
+    const h = await background(success), first = popup(h), other = popup(h, { view: 'tab' });
+    await first.evaluate('loadSettings()');
+    await other.evaluate('loadSettings()');
+    first.nodes.get('defaultDestination').value = 'share/saved';
+    await first.evaluate('saveDestDraft()');
+    const gate = deferred(), send = h.browser.runtime.sendMessage;
+    let held = false;
+    h.browser.runtime.sendMessage = async message => {
+      const result = await send(message);
+      if (message.action === 'settingsUpdated' && Object.hasOwn(message.options ?? {}, 'defaultDestination')) {
+        held = true;
+        await gate.promise;
+      }
+      return result;
+    };
+    const saving = first.nodes.get('btnSaveDest').listeners.click();
+    await until(() => held);
+    if (later !== null) {
+      other.nodes.get('defaultDestination').value = later;
+      await other.evaluate('saveDestDraft()');
+      other.window.close();
+    }
+    gate.resolve();
+    await saving;
+    assert.equal(h.data.local.defaultDestination, 'share/saved');
+    assert.equal(h.data.session.destDraft, later ?? undefined);
+    const reopened = popup(h);
+    await reopened.evaluate('loadSettings()');
+    await reopened.evaluate('loadConnDraft()');
+    assert.equal(reopened.nodes.get('defaultDestination').value, later ?? 'share/saved');
+  }
+});
+
+test('destination writes survive a delayed removal even when their view closes', async () => {
+  const h = await background(success), first = popup(h), other = popup(h, { view: 'tab' });
+  await first.evaluate('loadSettings()');
+  first.nodes.get('defaultDestination').value = 'share/old';
+  await first.evaluate('saveDestDraft()');
+  const snapshot = await first.evaluate('readDestDraftRevision()');
+  const gate = deferred(), remove = h.browser.storage.session.remove;
+  let held = false;
+  h.browser.storage.session.remove = async keys => {
+    if (keys === 'destDraft') { held = true; await gate.promise; }
+    return remove(keys);
+  };
+  const clearing = first.evaluate("clearDestDraft('share/old')");
+  await until(() => held);
+  other.nodes.get('defaultDestination').value = 'share/new';
+  const writing = other.evaluate('saveDestDraft()');
+  other.window.close();
+  gate.resolve();
+  await Promise.all([clearing, writing]);
+  assert.equal(h.data.session.destDraft, 'share/new');
+  await h.send({ action: 'destinationDraft', operation: 'clear', revision: snapshot.revision });
+  assert.equal(h.data.session.destDraft, 'share/new', 'a stale clear remains stale');
+});
+
+test('reset preserves destination edits made after it started, including in another view', async () => {
+  for (const editingView of ['same', 'other']) {
+    const gate = deferred();
+    let leaving = false;
+    const h = await background(async (_url, options) => {
+      if (options.body?.get('method') === 'logout') { leaving = true; await gate.promise; }
+      return success();
+    });
+    const first = popup(h), other = popup(h, { view: 'tab' });
+    await first.evaluate('loadSettings()');
+    await other.evaluate('loadSettings()');
+    first.nodes.get('defaultDestination').value = 'share/old';
+    await first.evaluate('saveDestDraft()');
+    const resetting = first.evaluate('resetAllSettings()');
+    await until(() => leaving);
+    const editor = editingView === 'same' ? first : other;
+    editor.nodes.get('defaultDestination').value = 'share/after-reset';
+    await editor.evaluate('saveDestDraft()');
+    if (editingView === 'other') first.window.close();
+    gate.resolve();
+    await resetting;
+    assert.equal(h.data.local.defaultDestination, '');
+    assert.equal(h.data.session.destDraft, 'share/after-reset');
+    assert.equal(editor.nodes.get('defaultDestination').value, 'share/after-reset');
+    const reopened = popup(h);
+    await reopened.evaluate('loadSettings()');
+    await reopened.evaluate('loadConnDraft()');
+    assert.equal(reopened.nodes.get('defaultDestination').value, 'share/after-reset');
+  }
+});
+
+test('destination draft messages accept empty folders but reject foreign views and invalid payloads', async () => {
+  const h = await background(success);
+  assert.equal((await h.send({ action: 'destinationDraft', operation: 'write', draft: '' })).ok, true);
+  assert.equal(h.data.session.destDraft, '');
+  const revision = h.data.session.destDraftRevision;
+  const cases = [
+    [{ operation: 'write', draft: 'foreign' }, 'https://page.example/'],
+    [{ operation: 'write', draft: 123 }, h.browser.runtime.getURL('popup/popup.html')],
+    [{ operation: 'clear', revision: -1 }, h.browser.runtime.getURL('popup/popup.html')],
+  ];
+  for (const [message, url] of cases) {
+    const result = await new Promise(resolve => h.browser.runtime.onMessage.emit(
+      { action: 'destinationDraft', ...message }, { url }, resolve));
+    assert.equal(result.ok, false);
+    assert.equal(h.data.session.destDraft, '');
+    assert.equal(h.data.session.destDraftRevision, revision);
+  }
+});
+
+test('successful late creates retain their outcome without polling the replacement NAS', async () => {
+  for (const route of ['bulk', 'single', 'retry']) for (const changed of [false, true]) {
+    const creating = deferred(), reply = deferred();
+    let newLists = 0, oldLists = 0;
+    const h = await background(async (url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'create') { creating.resolve(); return reply.promise; }
+      if (method === 'delete') return response({ success: true, data: [{ id: 'a', error: 0 }] });
+      if (method === 'login') return response({ success: true, data: { sid: 'new-nas-sid' } });
+      if (method === 'list') {
+        if (new URL(url).hostname === 'new-nas.example') {
+          newLists++;
+          return response({ success: true, data: { tasks: [] } });
+        }
+        oldLists++;
+        return response({ success: true, data: { tasks: [{ id: 'a', status: 'downloading' }] } });
+      }
+      return success();
+    });
+    const uri = 'https://download.example/a';
+    const adding = route === 'bulk'
+      ? h.send({ action: 'addTasksBulk', urls: [uri], connection: h.connection })
+      : route === 'single' ? h.evaluate('addDownloadTask')(uri)
+        : h.send({ action: 'retryTask', id: 'a', uri, connection: h.connection });
+    await creating.promise;
+    if (changed) {
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+      assert.equal((await h.send({ action: 'testConnection' })).success, true);
+      assert.equal(h.evaluate('cachedSid'), 'new-nas-sid');
+    }
+    reply.resolve(success());
+    const result = await adding;
+    await new Promise(resolve => setImmediate(resolve));
+    const label = `${route}/${changed}`;
+    assert.equal(result.success, true, label);
+    assert.notEqual(result.deliveryUnknown, true, label);
+    assert.notEqual(result.connectionChanged, true, label);
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1, label);
+    assert.equal(newLists, 0, label);
+    assert.equal(oldLists, changed ? 0 : 1, label);
+    assert.equal(h.evaluate('cachedSid'), changed ? 'new-nas-sid' : 'old-sid', label);
+    assert.equal(h.requests.filter(request => request.body.method === 'logout'
+      && new URL(request.url).hostname === 'new-nas.example').length, 0, label);
+    assert.equal(h.alarmCalls.filter(call => call.created && call.name === 'download-station-poll').length,
+      changed ? 0 : 1, label);
+    if (route === 'bulk') {
+      assert.equal(result.added, 1);
+      assert.deepEqual(plain(result.failedUrls), []);
+      assert.equal(h.data.session.bulkDraft, '', 'confirmed links must not be offered again');
+      assert.equal(h.data.session.lastAdd.success, true);
+    }
+  }
+});
+
+test('partly confirmed adds keep their original watch target during a connection change in the lookup', async () => {
+  for (const changed of [false, true]) {
+    const waiting = deferred();
+    let release, lookups = 0, newLists = 0;
+    const urls = ['https://download.example/first', 'https://download.example/second'];
+    const h = await background(async (url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'create') throw new TypeError('Create may have been processed');
+      if (method === 'login') return response({ success: true, data: { sid: 'new-nas-sid' } });
+      if (method === 'list') {
+        if (new URL(url).hostname === 'new-nas.example') {
+          newLists++;
+          return response({ success: true, data: { tasks: [] } });
+        }
+        const listed = ++lookups === 1 ? urls.slice(0, 1) : urls;
+        return response({ success: true, data: { tasks: listed.map((uri, index) => ({
+          id: `task-${index}`, status: 'downloading', additional: { detail: { uri } },
+        })) } });
+      }
+      return success();
+    });
+    const timeout = h.context.setTimeout;
+    const gap = h.evaluate('CONFIRM_GAP_MS');
+    h.context.setTimeout = (fn, ms) => {
+      if (ms === gap && !release) {
+        release = () => timeout(fn, ms);
+        waiting.resolve();
+        return 1;
+      }
+      return timeout(fn, ms);
+    };
+    const adding = h.send({ action: 'addTasksBulk', urls, connection: h.connection });
+    await waiting.promise;
+    if (changed) {
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+      assert.equal((await h.send({ action: 'testConnection' })).success, true);
+    }
+    release();
+    const result = await adding;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(result.added, changed ? 1 : 2);
+    assert.equal(result.uncertain, changed ? 1 : 0);
+    assert.equal(result.deliveryUnknown, changed);
+    assert.deepEqual(plain(result.failedUrls), changed ? urls.slice(1) : []);
+    assert.equal(h.data.session.bulkDraft, changed ? urls[1] : '');
+    assert.equal(newLists, 0);
+    assert.equal(h.evaluate('cachedSid'), changed ? 'new-nas-sid' : 'old-sid');
+    assert.equal(h.requests.filter(request => request.body.method === 'create').length, 1);
+    assert.equal(h.alarmCalls.filter(call => call.created && call.name === 'download-station-poll').length,
+      changed ? 0 : 1);
+  }
+});
+
+test('test replies in different views follow the newest completed test for successes and refusals', async () => {
+  for (const delayEvents of [false, true]) {
+    for (const olderResult of ['success', 400]) {
+      for (const newerResult of ['success', 403, 404]) {
+        const pending = deferred(), started = deferred();
+        let logins = 0;
+        const h = await background(async (_url, options) => {
+          if (options.body?.get('method') === 'login') {
+            const verdict = ++logins === 1 ? olderResult : newerResult;
+            return response(verdict === 'success'
+              ? { success: true, data: { sid: `sid-${logins}` } }
+              : { success: false, error: { code: verdict } });
+          }
+          return response({ success: true, data: { tasks: [{ id: 'running', status: 'downloading' }] } });
+        }, { session: { sid: null } });
+        const emit = h.browser.storage.onChanged.emit;
+        if (delayEvents) h.browser.storage.onChanged.emit = (changes, area) => {
+          if (area !== 'session') return emit(changes, area);
+          const visible = Object.fromEntries(Object.entries(changes)
+            .filter(([key]) => !['connectionVersion', 'connectionTestRevision'].includes(key)));
+          if (Object.keys(visible).length) return emit(visible, area);
+        };
+        const original = h.browser.runtime.sendMessage;
+        let first = true;
+        h.browser.runtime.sendMessage = async message => {
+          const result = await original(message);
+          if (message.action === 'testConnection' && first) {
+            first = false; started.resolve(result); await pending.promise;
+          }
+          return result;
+        };
+        const a = popup(h, { view: 'tab' });
+        await a.evaluate('loadSettings()');
+        a.evaluate('showOtpPrompt(false); popupReady = true');
+        const older = a.nodes.get('btnTest').listeners.click();
+        const oldReply = await started.promise;
+        const b = popup(h);
+        await b.evaluate('loadSettings()');
+        b.evaluate('showOtpPrompt(false); popupReady = true');
+        await b.nodes.get('btnTest').listeners.click();
+        assert.equal(oldReply.testRevision, 1);
+        assert.equal(h.data.session.connectionTestRevision, 2);
+        pending.resolve();
+        await older;
+        await until(() => !a.evaluate('refreshInFlight') && !b.evaluate('refreshInFlight'));
+        for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setImmediate(resolve));
+        const label = `${delayEvents}/${olderResult}/${newerResult}`;
+        assert.equal(a.evaluate('connectBlocked'), newerResult !== 'success', label);
+        assert.equal(a.nodes.get('otpField').hidden, newerResult === 'success', label);
+        assert.equal(a.evaluate('refreshWanted'), newerResult === 'success', label);
+        assert.match(a.nodes.get('statusText').textContent, newerResult === 'success' ? /^connected/
+          : new RegExp(newerResult === 403 ? '^otpRequired$' : '^otpWrong$'), label);
+        assert.equal(logins, 2, 'reconciliation does not sign in or resubmit a code');
+        if (newerResult !== 'success') {
+          assert.equal(h.data.session.lastConnect.testRevision, 2);
+          assert.equal(h.data.session.lastConnect.otpWrong, newerResult === 404);
+          assert.equal(h.requests.filter(r => r.body.method === 'list').length, 0,
+            'an older success cannot start refreshing past the newer refusal');
+        }
+      }
+    }
+  }
+});
+
+test('connection-test revisions continue across an event-page restart', async () => {
+  const first = await background(async (_url, options) => options.body?.get('method') === 'login'
+    ? response({ success: false, error: { code: 403 } }) : success(),
+  { session: { sid: null, connectionTestRevision: 40 } });
+  const refused = await first.send({ action: 'testConnection' });
+  assert.equal(refused.testRevision, 41);
+  assert.equal(first.data.session.lastConnect.testRevision, 41);
+  const restarted = await background(async (_url, options) => options.body?.get('method') === 'login'
+    ? response({ success: true, data: { sid: 'after-restart' } }) : success(),
+  { local: first.data.local, session: first.data.session });
+  const accepted = await restarted.send({ action: 'testConnection' });
+  assert.equal(accepted.testRevision, 42);
+  assert.equal(restarted.data.session.connectionTestRevision, 42);
+  assert.equal(restarted.data.session.lastConnect, undefined);
+});
+
+test('reconciliation rereads a newer refusal that arrives during its permission check', async () => {
+  for (const delayEvents of [false, true]) {
+    const oldReply = deferred(), received = deferred(), permission = deferred(), reading = deferred();
+    let logins = 0;
+    const h = await background(async (_url, options) => {
+      if (options.body?.get('method') === 'login') {
+        logins++;
+        return response(logins === 1 ? { success: true, data: { sid: 'first-sid' } }
+          : { success: false, error: { code: logins === 2 ? 403 : 404 } });
+      }
+      return response({ success: true, data: { tasks: [] } });
+    }, { session: { sid: null } });
+    const emit = h.browser.storage.onChanged.emit;
+    if (delayEvents) h.browser.storage.onChanged.emit = (changes, area) => {
+      if (area !== 'session') return emit(changes, area);
+      const visible = Object.fromEntries(Object.entries(changes)
+        .filter(([key]) => key !== 'connectionTestRevision'));
+      if (Object.keys(visible).length) return emit(visible, area);
+    };
+    const original = h.browser.runtime.sendMessage;
+    let first = true, reconcileStarted = false;
+    h.browser.runtime.sendMessage = async message => {
+      const result = await original(message);
+      if (message.action === 'testConnection' && first) {
+        first = false; received.resolve(); await oldReply.promise;
+      }
+      if (message.action === 'getStatus') reconcileStarted = true;
+      return result;
+    };
+    const contains = h.browser.permissions.contains;
+    let held = false;
+    h.browser.permissions.contains = async request => {
+      const result = await contains(request);
+      if (reconcileStarted && !held) {
+        held = true; reading.resolve(); await permission.promise;
+      }
+      return result;
+    };
+    const a = popup(h, { view: 'tab' }), b = popup(h);
+    for (const p of [a, b]) { await p.evaluate('loadSettings()'); p.evaluate('showOtpPrompt(false); popupReady = true'); }
+    const older = a.nodes.get('btnTest').listeners.click();
+    await received.promise;
+    await b.nodes.get('btnTest').listeners.click();
+    oldReply.resolve();
+    await reading.promise;
+    await b.nodes.get('btnTest').listeners.click();
+    assert.equal(h.data.session.connectionTestRevision, 3);
+    assert.equal(h.data.session.connectionVersion, 1, 'a newer refusal accepts no new session');
+    permission.resolve();
+    await older;
+    assert.equal(a.nodes.get('statusText').textContent, 'otpWrong', String(delayEvents));
+    assert.equal(a.evaluate('connectBlocked'), true);
+    assert.equal(a.nodes.get('otpField').hidden, false);
+    assert.equal(logins, 3);
+  }
+});
+
+test('queued destination saves use the clicked or submitted folder and retain later typing', async () => {
+  for (const submit of ['click', 'enter']) for (const selected of ['  share/clicked  ', '']) {
+    for (const later of [null, 'share/unsaved', '']) {
+      const gate = deferred();
+      let leaving = false;
+      const h = await background(async (_url, options) => {
+        if (options.body?.get('method') === 'logout') { leaving = true; await gate.promise; }
+        if (options.body?.get('method') === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+        return response({ success: true, data: { tasks: [] } });
+      }, { local: { defaultDestination: 'share/previous' } });
+      const p = popup(h);
+      await p.evaluate('loadSettings()');
+      p.nodes.get('host').value = 'new-nas.example';
+      const connectionSave = p.nodes.get('btnSaveConnection').listeners.click();
+      await until(() => leaving);
+      p.nodes.get('defaultDestination').value = selected;
+      await p.evaluate('saveDestDraft()');
+      let prevented = false;
+      const destinationSave = submit === 'click'
+        ? p.nodes.get('btnSaveDest').listeners.click()
+        : p.nodes.get('defaultDestination').listeners.keydown({ key: 'Enter', preventDefault() { prevented = true; } });
+      assert.equal(p.nodes.get('btnSaveDest').disabled, true);
+      if (submit === 'enter') assert.equal(prevented, true);
+      if (later !== null) {
+        p.nodes.get('defaultDestination').value = later;
+        await p.evaluate('saveDestDraft()');
+      }
+      gate.resolve();
+      await Promise.all([connectionSave, destinationSave]);
+      await until(() => !p.nodes.get('btnSaveDest').disabled);
+      const label = `${submit}/${JSON.stringify(selected)}/${JSON.stringify(later)}`;
+      assert.equal(h.data.local.defaultDestination, selected.trim(), label);
+      assert.equal(h.data.session.destDraft, later ?? undefined, label);
+      assert.equal(p.nodes.get('defaultDestination').value, later ?? selected, label);
+      assert.equal(p.nodes.get('btnSaveDest').classList.contains('pending'),
+        later !== null && later.trim() !== selected.trim(), label);
+      const reopened = popup(h);
+      await reopened.evaluate('loadSettings()');
+      await reopened.evaluate('loadConnDraft()');
+      assert.equal(reopened.nodes.get('defaultDestination').value, later ?? selected.trim(), label);
+    }
+  }
+});
+
+test('each queued destination submission keeps its own value without saving subsequent edits', async () => {
+  const gate = deferred();
+  let leaving = false;
+  const h = await background(async (_url, options) => {
+    if (options.body?.get('method') === 'logout') { leaving = true; await gate.promise; }
+    if (options.body?.get('method') === 'login') return response({ success: true, data: { sid: 'new-sid' } });
+    return response({ success: true, data: { tasks: [] } });
+  });
+  const p = popup(h);
+  await p.evaluate('loadSettings()');
+  p.nodes.get('host').value = 'new-nas.example';
+  const connectionSave = p.nodes.get('btnSaveConnection').listeners.click();
+  await until(() => leaving);
+  p.nodes.get('defaultDestination').value = 'share/first';
+  await p.evaluate('saveDestDraft()');
+  const first = p.nodes.get('btnSaveDest').listeners.click();
+  p.nodes.get('defaultDestination').value = 'share/second';
+  await p.evaluate('saveDestDraft()');
+  p.nodes.get('defaultDestination').listeners.keydown({ key: 'Enter', preventDefault() {} });
+  p.nodes.get('defaultDestination').value = 'share/not-submitted';
+  await p.evaluate('saveDestDraft()');
+  gate.resolve();
+  await Promise.all([connectionSave, first]);
+  await p.evaluate('settingsSaves');
+  await until(() => !p.nodes.get('btnSaveDest').disabled);
+  const folders = h.writes.filter(write => write.area === 'local'
+    && Object.hasOwn(write.values, 'defaultDestination')).map(write => write.values.defaultDestination);
+  assert.deepEqual(folders, ['share/first', 'share/second']);
+  assert.equal(h.data.local.defaultDestination, 'share/second');
+  assert.equal(h.data.session.destDraft, 'share/not-submitted');
+  assert.equal(p.nodes.get('defaultDestination').value, 'share/not-submitted');
+});
+
+test('resume follow-ups retain their original NAS while a partial or unconfirmed result is described', async () => {
+  for (const action of ['resumeTask', 'resumeAll']) for (const changed of [false, true]) {
+    const describing = deferred(), released = deferred();
+    let formatReady = false, held = false, resumes = 0, oldFollowups = 0, newLists = 0;
+    const h = await background(async (url, options) => {
+      const method = options.body?.get('method');
+      if (method === 'resume') {
+        if (++resumes === 1 && action === 'resumeTask') throw new TypeError('Resume reply lost');
+        return { ok: true, status: 200, json: async () => {
+          formatReady = true;
+          return action === 'resumeAll'
+            ? { success: true, data: [{ id: 'a', error: 0 }, { id: 'b', error: 403 }] }
+            : { success: false, error: { code: 403 } };
+        } };
+      }
+      if (method === 'login') return response({ success: true, data: { sid: 'new-nas-sid' } });
+      if (method === 'list') {
+        if (new URL(url).hostname === 'new-nas.example') {
+          newLists++;
+          return response({ success: true, data: { tasks: [] } });
+        }
+        if (formatReady) oldFollowups++;
+        return response({ success: true, data: { tasks: [
+          { id: 'a', status: formatReady ? 'downloading' : 'paused' },
+          { id: 'b', status: 'paused' },
+        ] } });
+      }
+      return success();
+    });
+    const get = h.browser.storage.local.get;
+    h.browser.storage.local.get = async (...args) => {
+      const snapshot = await get(...args);
+      // Error 403 reads the destination after the API reply passed its epoch
+      // check. That read must not detach the watch from the original action.
+      if (formatReady && !held) {
+        held = true;
+        describing.resolve();
+        await released.promise;
+      }
+      return snapshot;
+    };
+    const resuming = h.send({ action, id: 'a', connection: h.connection });
+    await describing.promise;
+    if (changed) {
+      await h.send({ action: 'settingsUpdated', connection: { ...defaults, host: 'new-nas.example' } });
+      assert.equal((await h.send({ action: 'testConnection' })).success, true);
+      assert.equal(h.evaluate('cachedSid'), 'new-nas-sid');
+    }
+    released.resolve();
+    const result = await resuming;
+    await new Promise(resolve => setImmediate(resolve));
+    const label = `${action}/${changed}`;
+    assert.equal(result.success, false, label);
+    assert.equal(result.affected, action === 'resumeAll' ? 1 : 0, label);
+    assert.deepEqual(plain(result.failed), action === 'resumeAll' ? [{ id: 'b', code: 403 }] : [], label);
+    assert.deepEqual(plain(result.unconfirmed), action === 'resumeAll' ? [] : ['a'], label);
+    assert.equal(result.deliveryUnknown === true, action === 'resumeTask', label);
+    assert.match(result.error.message, /errTask403NoDest/, label);
+    assert.equal(newLists, 0, label);
+    assert.equal(oldFollowups, changed ? 0 : 1, label);
+    assert.equal(h.evaluate('cachedSid'), changed ? 'new-nas-sid' : 'old-sid', label);
+    assert.equal(h.requests.filter(request => request.body.method === 'logout'
+      && new URL(request.url).hostname === 'new-nas.example').length, 0, label);
+    assert.equal(h.alarmCalls.filter(call => call.created && call.name === 'download-station-poll').length,
+      changed ? 0 : 1, label);
+  }
+});
+
+test('a waiting plain test cannot dispatch after a newer OTP attempt starts', async () => {
+  for (const heldAt of ['permission', 'revision']) {
+    for (const rejectPreparation of [false, true]) {
+      for (const acceptedCode of [false, true]) {
+        const preparation = deferred(), waiting = deferred(), codeReply = deferred(), codeSent = deferred();
+        const h = await background(async (_url, options) => {
+          if (options.body?.get('method') === 'login') {
+            if (options.body.get('otp_code')) { codeSent.resolve(); return codeReply.promise; }
+            return response({ success: false, error: { code: 403 } });
+          }
+          return response({ success: true, data: { tasks: [] } });
+        }, { session: { sid: null, lastConnect: { success: false, otpRequired: true } } });
+        h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+        const p = popup(h);
+        p.evaluate('showOtpPrompt(false)');
+        await p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+        let sends = 0;
+        const send = h.browser.runtime.sendMessage;
+        h.browser.runtime.sendMessage = message => {
+          if (message.action === 'testConnection') sends++;
+          return send(message);
+        };
+        if (heldAt === 'revision') {
+          const get = h.browser.storage.session.get;
+          let first = true;
+          h.browser.storage.session.get = async keys => {
+            const result = await get(keys);
+            if (first && keys && Object.keys(keys).length === 1 && Object.hasOwn(keys, 'connectionTestRevision')) {
+              first = false; waiting.resolve(); await preparation.promise;
+            }
+            return result;
+          };
+        } else {
+          const contains = h.browser.permissions.contains;
+          let reads = 0;
+          h.browser.permissions.contains = async request => {
+            const result = await contains(request);
+            // The first read belongs to testConnection; the second is inside
+            // runConnect, after that attempt has received its sequence number.
+            if (++reads === 2) { waiting.resolve(); await preparation.promise; }
+            return result;
+          };
+        }
+        const older = p.nodes.get('btnTest').listeners.click();
+        await waiting.promise;
+        p.nodes.get('otpCode').value = '123456';
+        const newer = p.nodes.get('btnOtpSubmit').listeners.click();
+        await codeSent.promise;
+        assert.equal(p.evaluate('connectSeq'), 2);
+        assert.equal(p.evaluate('newestConnectAnswered'), 0);
+        if (rejectPreparation) preparation.reject(new Error('older preparation failed'));
+        else preparation.resolve();
+        await older;
+        const label = `${heldAt}/${rejectPreparation}/${acceptedCode}`;
+        assert.equal(sends, 1, label);
+        assert.equal(p.evaluate('otpPendingFor !== null'), true, label);
+        assert.equal(p.nodes.get('statusText').textContent, 'connecting', label);
+        assert.equal(p.nodes.get('otpCode').value, '123456', label);
+        codeReply.resolve(response(acceptedCode
+          ? { success: true, data: { sid: 'otp-session' } }
+          : { success: false, error: { code: 404 } }));
+        await newer;
+        await until(() => !p.evaluate('refreshInFlight'));
+        assert.deepEqual(h.requests.filter(r => r.body.method === 'login').map(r => r.body.otp_code), ['123456']);
+        assert.match(p.nodes.get('statusText').textContent, acceptedCode ? /^connected/ : /^otpWrong$/, label);
+        assert.equal(p.evaluate('connectBlocked'), !acceptedCode, label);
+        assert.equal(p.nodes.get('otpField').hidden, acceptedCode, label);
+        assert.equal(p.evaluate('otpPendingFor'), null);
+      }
+    }
+  }
+});
+
+test('a newer OTP permission reservation also cancels an older test before its sequence advances', async () => {
+  const preparation = deferred(), waiting = deferred(), permission = deferred(), permissionStarted = deferred();
+  const h = await background(async (_url, options) => options.body?.get('method') === 'login'
+    ? response({ success: false, error: { code: options.body.get('otp_code') ? 404 : 403 } })
+    : success(), { session: { sid: null, lastConnect: { success: false, otpRequired: true } } });
+  h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+  const p = popup(h);
+  p.evaluate('showOtpPrompt(false)');
+  await p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+  const get = h.browser.storage.session.get;
+  let firstRead = true;
+  h.browser.storage.session.get = async keys => {
+    const result = await get(keys);
+    if (firstRead && keys && Object.keys(keys).length === 1 && Object.hasOwn(keys, 'connectionTestRevision')) {
+      firstRead = false; waiting.resolve(); await preparation.promise;
+    }
+    return result;
+  };
+  const older = p.nodes.get('btnTest').listeners.click();
+  await waiting.promise;
+  const contains = h.browser.permissions.contains;
+  let firstPermission = true;
+  h.browser.permissions.contains = async request => {
+    const result = await contains(request);
+    if (firstPermission) { firstPermission = false; permissionStarted.resolve(); await permission.promise; }
+    return result;
+  };
+  p.nodes.get('otpCode').value = '123456';
+  const newer = p.nodes.get('btnOtpSubmit').listeners.click();
+  await permissionStarted.promise;
+  assert.equal(p.evaluate('connectSeq'), 1, 'the code handler has reserved its gate but not started runConnect');
+  assert.equal(p.evaluate('otpPendingFor !== null'), true);
+  preparation.resolve();
+  await older;
+  assert.equal(h.requests.filter(r => r.body.method === 'login').length, 0);
+  assert.equal(p.evaluate('otpPendingFor !== null'), true);
+  permission.resolve();
+  await newer;
+  assert.deepEqual(h.requests.filter(r => r.body.method === 'login').map(r => r.body.otp_code), ['123456']);
+  assert.equal(p.nodes.get('statusText').textContent, 'otpWrong');
+});
+
+test('a newer Save and test also supersedes a plain test still preparing its dispatch', async () => {
+  for (const heldAt of ['permission', 'revision']) {
+    for (const accepted of [false, true]) {
+      const preparation = deferred(), waiting = deferred(), loginReply = deferred(), loginSent = deferred();
+      const h = await background(async (_url, options) => {
+        if (options.body?.get('method') === 'login') { loginSent.resolve(); return loginReply.promise; }
+        return response({ success: true, data: { tasks: [] } });
+      }, { session: { sid: null, lastConnect: { success: false, error: { message: 'old refusal' } } } });
+      h.browser.runtime.getManifest = () => ({ version: '1.1.6' });
+      const p = popup(h);
+      p.evaluate('showOtpPrompt(false)');
+      await p.evaluate(scripts.popup.slice(scripts.popup.indexOf('(async function init() {')));
+      let sends = 0;
+      const send = h.browser.runtime.sendMessage;
+      h.browser.runtime.sendMessage = message => {
+        if (message.action === 'testConnection') sends++;
+        return send(message);
+      };
+      if (heldAt === 'revision') {
+        const get = h.browser.storage.session.get;
+        let first = true;
+        h.browser.storage.session.get = async keys => {
+          const result = await get(keys);
+          if (first && keys && Object.keys(keys).length === 1 && Object.hasOwn(keys, 'connectionTestRevision')) {
+            first = false; waiting.resolve(); await preparation.promise;
+          }
+          return result;
+        };
+      } else {
+        const contains = h.browser.permissions.contains;
+        let reads = 0;
+        h.browser.permissions.contains = async request => {
+          const result = await contains(request);
+          if (++reads === 2) { waiting.resolve(); await preparation.promise; }
+          return result;
+        };
+      }
+      const older = p.nodes.get('btnTest').listeners.click();
+      await waiting.promise;
+      const newer = p.nodes.get('btnSaveConnection').listeners.click();
+      await loginSent.promise;
+      assert.equal(p.evaluate('connectSeq'), 2);
+      let olderFinished = false;
+      older.then(() => { olderFinished = true; });
+      preparation.resolve();
+      await until(() => olderFinished || sends > 1);
+      assert.equal(sends, 1, `${heldAt}/${accepted}`);
+      await older;
+      loginReply.resolve(response(accepted ? { success: true, data: { sid: 'saved-session' } }
+        : { success: false, error: { code: 400 } }));
+      await newer;
+      await until(() => !p.evaluate('refreshInFlight'));
+      assert.match(p.nodes.get('statusText').textContent, accepted ? /^connected/ : /^connectionFailed$/);
+      assert.equal(p.evaluate('connectBlocked'), !accepted);
+      assert.equal(sends, 1);
+    }
+  }
 });

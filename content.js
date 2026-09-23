@@ -12,11 +12,21 @@
  */
 
 let autoCaptureMagnets = false;
+let captureRead = 0;
 
-// Load the setting once on script initialisation.
-browser.storage.local.get({ autoCaptureMagnets: false }).then((result) => {
-  autoCaptureMagnets = result.autoCaptureMagnets;
-});
+// The saved preference survives a denied or revoked website grant. Only the
+// background can check whether both HTTP and HTTPS are currently permitted.
+// Never trust a persisted effective state on a newly loaded page.
+async function syncMagnetCapture() {
+  const read = ++captureRead;
+  autoCaptureMagnets = false;
+  try {
+    const state = await browser.runtime.sendMessage({ action: 'getMagnetCaptureState' });
+    if (read === captureRead) autoCaptureMagnets = state?.enabled === true;
+  } catch {
+    // Leave the browser's normal magnet handler alone while unavailable.
+  }
+}
 
 // React to storage changes so we pick up updates without a page reload.
 // The area check matters: this listener runs in every frame of every tab, and
@@ -24,11 +34,17 @@ browser.storage.local.get({ autoCaptureMagnets: false }).then((result) => {
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if ('autoCaptureMagnets' in changes) {
-    // Cleared by "reset all settings", where undefined means back to the
-    // default — which is off.
-    autoCaptureMagnets = changes.autoCaptureMagnets.newValue === true;
+    syncMagnetCapture();
   }
 });
+
+// Permission changes are invalidations, never authoritative enabled values:
+// even a delayed message asks for the current preference and grants again.
+browser.runtime.onMessage.addListener((message) => {
+  if (message.action === 'magnetCaptureChanged') syncMagnetCapture();
+});
+
+syncMagnetCapture();
 
 /**
  * The anchor's magnet URL as a string, or null.
@@ -85,7 +101,7 @@ document.addEventListener(
     browser.runtime.sendMessage({
       // The literal, not ACTIONS.MAGNET_CLICKED: this script is injected into
       // every page on the web, and loading actions.js beside it would put a
-      // second file there for the sake of one string. Kept in step by hand —
+      // second file there for these message names. Kept in step by hand —
       // actions.js says so at the other end.
       action: 'magnetClicked',
       url,

@@ -1,4 +1,15 @@
 {
+  "magnetSaveFailedTitle": {"message":"Não foi possível salvar a configuração de links magnet"},
+  "taskActionPreviousConnection": {"message":"Resultado da conexão anterior com o NAS ($ADDRESS$): $REASON$ Confira as tarefas nesse NAS antes de tentar novamente.","description":"Result for an action started on an earlier NAS connection.","placeholders":{"ADDRESS":{"content":"$1","example":"https://nas.example:5001"},"REASON":{"content":"$2","example":"The action result could not be confirmed."}}},
+  "errNasPermission": {"message":"O Firefox não permitiu o acesso a $ADDRESS$. A extensão precisa desse acesso para fazer login e gerenciar downloads. Permita o acesso ao NAS em Configurações → Conexão.","description":"Firefox host permission is missing; $ADDRESS$ is the NAS origin.","placeholders":{"ADDRESS":{"content":"$1","example":"https://192.168.1.2:5001"}}},
+  "magnetPermissionHint": {"message":"Para reconhecer links magnet em que você clica em qualquer site e enviá-los ao seu NAS, a extensão precisa de acesso a sites HTTP e HTTPS. Essa função é opcional. Sua escolha fica salva; a captura é ativada automaticamente quando o Firefox permite o acesso. Talvez seja necessário recarregar as páginas que já estavam abertas quando você permitiu o acesso.","description":"Persistent explanation next to the optional magnet-capture switch, visible before requesting website access."},
+  "notifyNasPermission": {"message":"Falta acesso ao NAS para login e downloads. Permita-o em Configurações → Conexão.","description":"Short missing-NAS-permission notification: explains the purpose and points to the grant control. No variable address, to keep the notification brief."},
+  "notConnected": {"message":"Não conectado"},
+  "allowNasAccess": {"message":"Permitir acesso ao NAS"},
+  "nasPermissionTitle": {"message":"Acesso ao NAS não permitido"},
+  "errMagnetPermission": {"message":"Sua preferência está salva, mas a captura automática de links magnet está inativa porque o Firefox não permitiu o acesso a sites HTTP e HTTPS. Permita o acesso no botão abaixo para ativá-la."},
+  "magnetPermissionTitle": {"message":"Captura de links magnet inativa"},
+  "allowMagnetPermission": {"message":"Permitir acesso a sites"},
   "htmlLang": { "message": "pt-BR" },
   "portInvalid": { "message": "A porta precisa ser um número inteiro entre 1 e 65535." },
   "protocolInsecure": { "message": "O HTTP envia a senha e o identificador de sessão sem criptografia. Recomenda-se usar HTTPS para que os dados trafeguem criptografados." },
@@ -132,6 +143,7 @@
   "sortName": { "message": "Nome" },
   "sortProgress": { "message": "Progresso" },
   "sortSize": { "message": "Tamanho" },
+  "sortDirection": {"message":"Direção da ordenação"},
   "sortDescending": { "message": "Decrescente" },
   "sortAscending": { "message": "Crescente" },
 

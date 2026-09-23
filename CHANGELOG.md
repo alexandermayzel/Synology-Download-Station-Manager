@@ -3,6 +3,105 @@
 All notable changes to this extension are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.6] — 2026-09-23
+
+### Added
+
+- Missing Firefox permission to access the NAS has its own message and an
+  *Allow NAS access* button under *Settings → Connection*. A refused or revoked
+  permission is no longer reported as an unreachable NAS or a certificate error.
+- The NAS permission message and the hint beside the magnet capture option
+  explain why each needs website access. Notifications about missing NAS access
+  briefly explain the purpose and point to *Settings → Connection*, where the
+  full reason and NAS address remain visible.
+- *Test*, *Save and test connection* and two-factor submissions check NAS access
+  and show the *Allow NAS access* button when it is missing. Saving retains the
+  entered connection first. Only the access button opens the NAS permission
+  dialog; automatic requests stop without prompting or retrying missing access.
+- A right-click download reporting missing NAS access opens the connection
+  panel in the popup, or in an extension tab if Firefox cannot open the popup.
+  After granting access and testing, check the task list before sending again
+  if the download's outcome was unconfirmed. Nothing is resent automatically.
+- Automatic magnet capture needs access to HTTP and HTTPS websites. If missing,
+  its switch saves the preference and requests access directly. The toolbar popup
+  closes while the decision is pending; approval activates capture automatically.
+  Refusal or revocation keeps the preference on but capture inactive. A red panel
+  directly above the switch offers *Allow website access* to retry. This optional
+  feature's missing permission does not generate a system notification.
+  The hint explains that pages already open when access was granted may need
+  to be reloaded before capture works there.
+- Inline errors use consistent red frames, including connection, task and link
+  errors and a rejected two-factor code. Progress and success messages keep
+  their normal appearance.
+
+### Fixed
+
+- The context-menu entry remains visible for links and selected text without
+  permission to access the source page. If Firefox withholds the selection,
+  its links are checked after clicking; ordinary text is ignored.
+- Task requests and wake checks retain their original connection across retries.
+  Changing the connection stops further attempts while preserving uncertainty
+  about a request already sent. A wake check for the old NAS no longer blocks
+  adding downloads to the new one for the rest of its waiting period.
+- A refusal on a later task-action attempt no longer implies that an earlier
+  unanswered attempt had no effect. *Retry* keeps the original link if deletion
+  remains unconfirmed.
+- Finishing an earlier sign-out or reset no longer clears newer connection
+  drafts, including those entered in another popup or extension tab while the
+  previous NAS was still signing out. Old drafts are cleared even if the
+  initiating popup closes before cleanup finishes.
+- Saving the destination folder uses the value entered when Save or Enter was
+  pressed. Later edits remain an unsaved draft, including edits in another view.
+- A delayed resumption of an earlier session no longer hides a newer two-factor
+  prompt, erases its code or incorrectly reports a working connection.
+- Delayed startup status and two-factor requests from task actions no longer
+  replace a newer sign-in or its status. A successful sign-in in another view
+  also retires older connection-test failures. Conversely, an older successful
+  test reply cannot override a newer refusal from a test in another view.
+- A connection test still waiting to send is superseded when a newer two-factor
+  submission starts, preventing an additional sign-in without the code.
+- A pending connection save cannot keep the toolbar popup over the magnet
+  permission dialog. Local saves temporarily disable the magnet controls;
+  when another extension window is saving, the background retains the magnet
+  write so the popup can close. A failed write is shown in its red panel.
+- Task errors identify their original connection after a NAS change, including
+  messages already visible before the change. Unconfirmed outcomes stay visible;
+  old replies cannot overwrite the current connection's task list. A late
+  confirmation of an added or resumed download no longer starts monitoring the
+  newly configured NAS. Follow-up monitoring after Resume stays with its original
+  NAS even when only some tasks in a bulk action succeeded.
+- Website-permission changes no longer hide a failed magnet-preference save.
+  Its error and retry button remain available until the choice is saved
+  successfully, replaced by a new choice, or settings are reset.
+- The sort-direction selector has a translated accessible name. Spanish and
+  Brazilian Portuguese permission messages now clearly identify Firefox as
+  the browser that has not allowed the extension's NAS access.
+- All option switches keep the native checkbox inside the visible switch.
+  The outer popup frame cannot scroll when a switch receives focus; settings
+  and task lists continue to scroll within their own panels.
+- *Allow NAS access* closes the toolbar popup so Firefox's own permission
+  dialog is visible. After allowing access, reopen the extension to connect.
+  An extension tab stays open and tests the connection directly.
+- A connection test or two-factor code started in one extension popup or tab
+  cannot be sent to a NAS selected in another while the attempt was waiting.
+- Pressing Enter again while a two-factor submission is pending
+  no longer sends the same code twice after the first sign-in succeeds.
+- A delayed permission refusal no longer blocks a connection whose access has
+  since been granted.
+
+### Changed
+
+- Restores the certificate diagnostics and other improvements from 1.1.4 after
+  the 1.1.5 rollback to 1.1.3; see the 1.1.4 entry for those changes.
+- Magnet capture runs on HTTP and HTTPS pages. Local `file:` pages are no longer
+  included in the content script's declared scope.
+
+## 1.1.5 — addons.mozilla.org only
+
+Published to withdraw 1.1.4. Apart from the version number it is the 1.1.3
+implementation, unchanged. It has no commit, no tag and no comparison link of
+its own, which is why this repository goes from 1.1.4 straight to 1.1.6.
+
 ## [1.1.4] — 2026-09-23
 
 ### Added
@@ -374,6 +473,7 @@ same licence (MPL-2.0), with its own extension ID and version numbering.
 - Adaptive polling that stops on its own, and an optional session keepalive
   that is off by default so the NAS's disks can hibernate.
 
+[1.1.6]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.4...v1.1.6
 [1.1.4]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/alexandermayzel/Synology-Download-Station-Manager/compare/v1.1.1...v1.1.2

@@ -108,9 +108,11 @@ async function notify(category, title, message) {
  * says what happened and where the whole of it stands, and the connection panel
  * in the popup carries the reason in full, where it can also be copied.
  *
- * Only the certificate case is shortened. Everything else already fits.
+ * Missing NAS access also gets a short explanation of why access is needed.
+ * The address and full instructions stay in the connection panel.
  */
 function shortReason(err, fallback = null) {
+  if (err?.permissionMissing === true) return msg('notifyNasPermission');
   if (err?.certificateError === true) return msg('notifyCertificate');
   return err?.message ?? fallback;
 }
@@ -802,8 +804,34 @@ function holdUntilRead(resp, release) {
   };
 }
 
-async function fetchOnce(input, init, timeoutMs = REQUEST_TIMEOUT_MS, { holdBody = true } = {}) {
-  const epoch = sessionEpoch;
+// Permission API replies can describe the state before a grant-change event.
+// Repeat those reads instead of applying an answer the browser already retired.
+let permissionGeneration = 0;
+
+async function hasCurrentPermissions(request) {
+  for (;;) {
+    const generation = permissionGeneration;
+    const granted = await browser.permissions.contains(request);
+    if (generation === permissionGeneration) return granted;
+  }
+}
+
+/** A missing Firefox grant is a setup problem, before any request is sent. */
+async function requireNasPermission(input) {
+  if (await hasCurrentPermissions(hostPermissionForUrl(input))) return;
+  const error = new Error(msg('errNasPermission', new URL(input).origin));
+  error.permissionMissing = true;
+  error.deliveryUnknown = false;
+  throw error;
+}
+
+async function fetchOnce(input, init, timeoutMs = REQUEST_TIMEOUT_MS,
+  { holdBody = true, epoch = sessionEpoch } = {}) {
+  checkSessionEpoch(epoch);
+  // Outside the transport catch: no grant is neither an unreachable NAS nor
+  // uncertain delivery, and retrying cannot supply the user's permission.
+  await requireNasPermission(input);
+  checkSessionEpoch(epoch);
   // Before the request, so the browser's own reason for refusing it is caught.
   watchTransportErrors(input);
   const address = addressOf(input);
@@ -916,8 +944,13 @@ async function fetchOnce(input, init, timeoutMs = REQUEST_TIMEOUT_MS, { holdBody
  * Only reads and other repeatable operations may be retried. A failed fetch
  * cannot prove that a create was not already processed by the NAS.
  */
-async function apiFetch(input, init, { repeatable = true, timeout, deadline } = {}) {
+async function apiFetch(input, init,
+  { repeatable = true, timeout, deadline, epoch = sessionEpoch, delivery } = {}) {
+  // Every attempt belongs to the connection this call started on. Leaving the
+  // default to fetchOnce would adopt a new epoch after a settings change while
+  // still retrying the old URL and session id.
   const perAttempt = timeout ?? (repeatable ? REQUEST_TIMEOUT_MS : WRITE_TIMEOUT_MS);
+  let deliveryUnknown = delivery?.unknown === true;
   for (let attempt = 1; ; attempt++) {
     // A caller working to a deadline of its own gets what is left of it and no
     // more. Without this the retries below ran their full course inside a
@@ -929,14 +962,27 @@ async function apiFetch(input, init, { repeatable = true, timeout, deadline } = 
       : Math.min(perAttempt, deadline - Date.now());
     if (left <= 0) {
       const err = new Error(msg('errNasUnreachable'));
-      // Out of time before this went out, so nothing was sent — no open
-      // delivery to report.
+      // This attempt never went out; an earlier one may still have arrived.
       err.nasUnreachable = true;
+      if (deliveryUnknown) err.deliveryUnknown = true;
       throw err;
     }
     try {
-      return await fetchOnce(input, init, left);
+      return await fetchOnce(input, init, left, { epoch });
     } catch (err) {
+      // A later refusal only answers its own attempt. Even HTTP 403 cannot
+      // settle an earlier pause/delete whose answer was lost.
+      deliveryUnknown ||= err.deliveryUnknown === true;
+      if (deliveryUnknown) {
+        err.deliveryUnknown = true;
+        if (err.connectionChanged) {
+          err.sent = true;
+          err.confirmed = null;
+        }
+      }
+      // Task writes also need this history when fetch returns an HTTP response
+      // and when withSession starts another call after a fresh login.
+      if (delivery) delivery.unknown = deliveryUnknown;
       // Only wait for another go if there is still time to take one.
       const room = deadline === undefined || Date.now() + RETRY_DELAY_MS < deadline;
       const mayRepeat = repeatable && err.nasUnreachable && room;
@@ -1042,10 +1088,9 @@ async function discoverApiPaths(protocol, host, port) {
     }
     return discovered;
   } catch (err) {
-    // A refused certificate is the one failure the fallback paths cannot work
-    // around: every later request goes to the same address and is turned down
-    // the same way. Passing it on turns a wall hit four times into one answer.
-    if (err?.certificateError) throw err;
+    // Neither a refused certificate nor missing website access can be fixed
+    // by trying another API path at the same address.
+    if (err?.certificateError || err?.permissionMissing) throw err;
     return fallback;
   }
 }
@@ -1073,7 +1118,7 @@ const DEVICE_NAME = 'Firefox - Download Station Manager';
  * Throws on failure. A 403 carries `otpRequired` so callers can tell "needs a
  * code" apart from "wrong credentials".
  */
-async function login(settings, otpCode, knownApis, { deadline } = {}) {
+async function login(settings, otpCode, knownApis, { deadline, epoch = sessionEpoch } = {}) {
   const { protocol, host, port, username, password } = settings;
   if (!isConfigured(settings)) {
     throw new Error(msg('setupRequired'));
@@ -1088,6 +1133,9 @@ async function login(settings, otpCode, knownApis, { deadline } = {}) {
   const base = buildBaseUrl(protocol, host, port);
 
   const { deviceToken } = await browser.storage.local.get({ deviceToken: '' });
+  // A saved connection can change while discovery or this read is waiting.
+  // Never send a code or password prepared by a view of the previous one.
+  checkSessionEpoch(epoch);
 
   const params = new URLSearchParams({
     api:      'SYNO.API.Auth',
@@ -1118,7 +1166,7 @@ async function login(settings, otpCode, knownApis, { deadline } = {}) {
   // kept as the reason. A password or a device token can be offered as often
   // as it takes, which is what a sleeping NAS relies on; see wakeNas.
   const resp = await apiFetch(`${base}/${apis.authPath}`, { method: 'POST', body: params },
-    { deadline, repeatable: !otpCode });
+    { deadline, repeatable: !otpCode, epoch });
   const json = await resp.json();
 
   if (!json.success) {
@@ -1291,8 +1339,9 @@ function blockedSignIn() {
     new Error(cachedConnectFailure?.error?.message ?? msg('connectionFailed')),
     {
       connectBlocked: true,
-      authFailed: true,
+      authFailed: cachedConnectFailure?.permissionMissing !== true,
       certificateError: cachedConnectFailure?.certificateError === true,
+      permissionMissing: cachedConnectFailure?.permissionMissing === true,
       startedAt: signInsAccepted,
       otpRequired: cachedConnectFailure?.otpRequired === true,
       otpWrong: cachedConnectFailure?.otpWrong === true,
@@ -1453,8 +1502,70 @@ async function clearAll() {
   return browser.storage.session.remove(['sid', 'apiPaths', 'sessionConnection', 'lastConnect']);
 }
 
+// Draft operations have their own queue: typing must not wait for NAS logout.
+// Every view writes through this queue, so a checked removal cannot overtake
+// newer input between its storage read and the actual removal.
+let connectionDraftWrites = Promise.resolve();
+
+function updateConnectionDraft({ operation, draft, revision }) {
+  const run = connectionDraftWrites.then(async () => {
+    const stored = await browser.storage.session.get({ connDraftRevision: 0 });
+    const current = stored.connDraftRevision;
+    if (operation === 'read') return { ok: true, revision: current };
+    if (operation === 'write') {
+      await browser.storage.session.set({ connDraft: draft, connDraftRevision: current + 1 });
+    } else if (current === revision) {
+      await browser.storage.session.remove('connDraft');
+      await browser.storage.session.set({ connDraftRevision: current + 1 });
+    }
+    return { ok: true };
+  });
+  connectionDraftWrites = run.catch(() => {});
+  return run;
+}
+
+// Folder edits have independent ownership, including an intentionally empty
+// folder. Serialize removal with writes from every view, just like credentials.
+let destinationDraftWrites = Promise.resolve();
+
+function updateDestinationDraft({ operation, draft, revision }) {
+  const run = destinationDraftWrites.then(async () => {
+    const { destDraftRevision: current } = await browser.storage.session.get({ destDraftRevision: 0 });
+    if (operation === 'read') return { ok: true, revision: current };
+    if (operation === 'write') {
+      await browser.storage.session.set({ destDraft: draft, destDraftRevision: current + 1 });
+    } else if (current === revision) {
+      await browser.storage.session.remove('destDraft');
+      await browser.storage.session.set({ destDraftRevision: current + 1 });
+    }
+    return { ok: true };
+  });
+  destinationDraftWrites = run.catch(() => {});
+  return run;
+}
+
+// A later magnet choice or reset retires errors from an earlier queued save.
+let magnetPreferenceGeneration = 0;
+
 /** Apply a connection change while its previous endpoint is still known. */
-function updateSettings({ connection, options = {}, signOut = false, reset = false }) {
+function updateSettings({ connection, options = {}, signOut = false, reset = false, draftRevision, destDraftRevision }) {
+  const magnetGeneration = reset || Object.hasOwn(options, 'autoCaptureMagnets')
+    ? ++magnetPreferenceGeneration : null;
+  // The popup can close while the old NAS is signing out. Capture ownership
+  // before queuing this operation and finish its cleanup here, independently
+  // of the view that requested it. A later draft write keeps its newer revision.
+  const draftSnapshot = reset || signOut
+    ? Number.isSafeInteger(draftRevision) && draftRevision >= 0
+      ? Promise.resolve({ revision: draftRevision })
+      : updateConnectionDraft({ operation: 'read' })
+    : null;
+  draftSnapshot?.catch(() => {});
+  const destinationSnapshot = reset
+    ? Number.isSafeInteger(destDraftRevision) && destDraftRevision >= 0
+      ? Promise.resolve({ revision: destDraftRevision })
+      : updateDestinationDraft({ operation: 'read' })
+    : null;
+  destinationSnapshot?.catch(() => {});
   return queueSettingsWrite(async () => {
     await stateReady;
     const previous = await getSettings();
@@ -1476,6 +1587,17 @@ function updateSettings({ connection, options = {}, signOut = false, reset = fal
       if (reset) await browser.storage.local.clear();
       await browser.storage.local.remove('deviceToken');
       await browser.storage.local.set(connectionSettings(next));
+      if (draftSnapshot) {
+        const { revision } = await draftSnapshot;
+        await updateConnectionDraft({ operation: 'clear', revision });
+      }
+      // Retire the old reset state before waiting for the NAS. Input entered
+      // during that network wait is new work and must not be cleared afterwards.
+      if (reset) {
+        const { revision } = await destinationSnapshot;
+        await updateDestinationDraft({ operation: 'clear', revision });
+        await browser.storage.session.remove(['bulkDraft', 'lastAdd', 'lastTab', 'setupRequired']);
+      }
       await logoutSession(oldSid, oldConnection, oldApis);
       updateBadge([]);
     }
@@ -1485,8 +1607,105 @@ function updateSettings({ connection, options = {}, signOut = false, reset = fal
       .filter(([key]) => !CONNECTION_KEYS.includes(key) && key !== 'deviceToken'));
     await browser.storage.local.set(optionValues);
     await syncKeepaliveAlarm();
+    if (magnetGeneration !== null) {
+      // These removals share the write queue with error records: every saved
+      // choice settles older errors, even while another choice is queued.
+      await browser.storage.session.remove('magnetPreferenceError');
+    }
     return { ok: true };
   });
+}
+
+/** Own the save after its toolbar popup closes to reveal Firefox's prompt. */
+function queueMagnetPreference(enabled) {
+  const writing = updateSettings({ options: { autoCaptureMagnets: enabled } });
+  const generation = magnetPreferenceGeneration;
+  writing.catch(error => queueSettingsWrite(async () => {
+    if (generation !== magnetPreferenceGeneration) return;
+    await browser.storage.session.set({
+      magnetPreferenceError: { message: error?.message || msg('extensionError'), enabled },
+    });
+  })).catch(() => {});
+  // This confirms queue ownership, not that the preference is already stored.
+  return { accepted: true };
+}
+
+let magnetSettingsGeneration = 0;
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && 'autoCaptureMagnets' in changes) magnetSettingsGeneration++;
+});
+
+/** The preference stays saved; capturing requires both broad website grants. */
+async function getMagnetCaptureState() {
+  for (;;) {
+    const writes = settingsWriteQueue;
+    await writes;
+    const permission = permissionGeneration;
+    const preference = magnetSettingsGeneration;
+    const { autoCaptureMagnets } = await browser.storage.local.get({ autoCaptureMagnets: false });
+    const enabled = autoCaptureMagnets === true
+      && await hasCurrentPermissions({ origins: [...MAGNET_ORIGINS] });
+    if (writes !== settingsWriteQueue || permission !== permissionGeneration
+        || preference !== magnetSettingsGeneration) continue;
+    return { enabled };
+  }
+}
+
+/** Existing content scripts remain loaded after host access is revoked. */
+async function invalidateMagnetCapture() {
+  try {
+    const tabs = await browser.tabs.query({});
+    await Promise.all(tabs.map(tab => browser.tabs.sendMessage(tab.id, {
+      action: ACTIONS.MAGNET_CAPTURE_CHANGED,
+    }).catch(() => {})));
+  } catch {
+    // Closed tabs and pages without our content script need no update.
+  }
+}
+
+// Restoring website access lifts only a refusal caused by that missing grant.
+// Password, two-factor and certificate failures still need their own remedy.
+browser.permissions.onAdded.addListener(() => {
+  permissionGeneration++;
+  const capture = invalidateMagnetCapture();
+  const connection = queueSettingsWrite(async () => {
+    await stateReady;
+    const failure = cachedConnectFailure;
+    if (!failure?.permissionMissing) return;
+    const settings = await getSettings();
+    const permitted = await hasCurrentPermissions(hostPermissionForUrl(
+      buildConnectionUrl(settings.protocol, settings.host, settings.port)));
+    if (!permitted || cachedConnectFailure !== failure) return;
+    cachedConnectFailure = null;
+    await browser.storage.session.remove('lastConnect');
+  });
+  return Promise.all([capture, connection]);
+});
+
+// Revoking access suspends capture without changing the user's preference.
+browser.permissions.onRemoved.addListener(({ origins = [] }) => {
+  permissionGeneration++;
+  if (origins.length === 0) return;
+  return invalidateMagnetCapture();
+});
+
+async function getConnectionStatus() {
+  await stateReady;
+  for (;;) {
+    await settingsWriteQueue;
+    const epoch = sessionEpoch;
+    const generation = permissionGeneration;
+    const settings = await getSettings();
+    let missingUrl = null;
+    if (isConfigured(settings)) {
+      const url = buildConnectionUrl(settings.protocol, settings.host, settings.port);
+      if (!await hasCurrentPermissions(hostPermissionForUrl(url))) missingUrl = url;
+    }
+    if (epoch !== sessionEpoch || generation !== permissionGeneration) continue;
+    if (missingUrl) return { connected: false, permissionMissing: true,
+      error: { message: msg('errNasPermission', new URL(missingUrl).origin) } };
+    return { connected: cachedSid !== null };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,48 +1929,75 @@ function taskActionVerdict(result, ids) {
  */
 async function apiBulkTaskAction(method, ids, epoch = sessionEpoch) {
   if (ids.length === 0) return { success: true, affected: 0, failed: [], unconfirmed: [] };
-  const result = await withSession(async (settings, sid, apis) => {
-    const base = buildBaseUrl(settings.protocol, settings.host, settings.port);
-    const body = new URLSearchParams({
-      api:     'SYNO.DownloadStation.Task',
-      version: String(apis.taskVersion),
-      method,
-      id:      ids.join(','),
-      _sid:    sid,
-    });
-    const resp = await apiFetch(`${base}/${apis.taskPath}`, { method: 'POST', body });
-    // This action has been sent. A body that never finishes arriving says
-    // nothing about whether the NAS carried it out — see readSentResponse.
-    return readSentResponse(resp);
-    // What counts as carried out is what the NAS said about these very ids —
-    // not that it accepted the call. A connection change noticed in between is
-    // told which of the two happened, and says so.
-  }, { epoch, verdict: reply => taskActionVerdict(reply, ids) });
+  // Kept for this whole operation, including transport retries and a renewed
+  // session. Only a positive answer for an id settles its earlier lost reply.
+  const delivery = { unknown: false };
+  let result;
+  try {
+    result = await withSession(async (settings, sid, apis) => {
+      const base = buildBaseUrl(settings.protocol, settings.host, settings.port);
+      const body = new URLSearchParams({
+        api:     'SYNO.DownloadStation.Task',
+        version: String(apis.taskVersion),
+        method,
+        id:      ids.join(','),
+        _sid:    sid,
+      });
+      const resp = await apiFetch(`${base}/${apis.taskPath}`, { method: 'POST', body }, { delivery });
+      // This action has been sent. A body that never finishes arriving says
+      // nothing about whether the NAS carried it out — see readSentResponse.
+      return readSentResponse(resp);
+    }, { epoch, verdict: reply => {
+      const confirmed = taskActionVerdict(reply, ids);
+      return delivery.unknown && confirmed === false ? null : confirmed;
+    } });
+  } catch (err) {
+    // withSession checks answered calls; a rejected fetch or response body
+    // never reaches that check. Keep its delivery outcome, but prevent an old
+    // resume from starting a watch (and logging out an idle session) on a NAS
+    // configured while the answer was on its way. Login errors may be shared.
+    if (epoch !== sessionEpoch) {
+      err = Object.assign(new Error(err.message), err, { connectionChanged: true });
+    }
+    if (!delivery.unknown || err.confirmed === true) throw err;
+    // A failed replacement login is shared with other callers. Copy its error:
+    // only this operation had already sent a task write before that login.
+    throw Object.assign(new Error(err.message), err,
+      { deliveryUnknown: true, sent: true, confirmed: null });
+  }
   if (!result.success) {
-    // A parsed error code is a refusal of the whole call, not missing news.
-    return { ...result, affected: 0, failed: [], unconfirmed: [], error: {
-      ...result.error, message: await describeTaskError(result.error?.code ?? 'unknown'),
+    const reason = await describeTaskError(result.error?.code ?? 'unknown');
+    const unconfirmed = delivery.unknown ? [...ids] : [];
+    // A first-attempt refusal is definite. After a lost reply it leaves every
+    // id open, even though this later call itself was plainly turned down.
+    return { ...result, affected: 0, failed: [], unconfirmed,
+      ...(delivery.unknown ? { deliveryUnknown: true } : {}), error: {
+      ...result.error, message: unconfirmed.length
+        ? `${reason}\n${msg('taskActionUnconfirmed', String(unconfirmed.length))}` : reason,
     } };
   }
 
   const responses = taskResultCodes(result);
 
-  const failed = [], unconfirmed = [];
+  const failed = [], unconfirmed = [], refusals = [];
   let affected = 0;
   for (const id of ids) {
     const code = responses.get(id) ?? null; // never mentioned reads the same as unreadable
     if (code === 0) affected++;
-    else if (code === null) unconfirmed.push(id);
-    else failed.push({ id, code });
+    else {
+      if (code === null || delivery.unknown) unconfirmed.push(id);
+      else failed.push({ id, code });
+      if (code !== null) refusals.push({ id, code });
+    }
   }
 
   // One description per code, not per task: a hundred tasks refused for the
   // same reason are one sentence, and phrasing a 403 reads the settings.
   const texts = new Map();
-  for (const code of new Set(failed.map(item => item.code))) {
+  for (const code of new Set(refusals.map(item => item.code))) {
     texts.set(code, await describeTaskError(code));
   }
-  const messages = failed.map(item => `${item.id}: ${texts.get(item.code)}`);
+  const messages = refusals.map(item => `${item.id}: ${texts.get(item.code)}`);
   // Not notifyUncertain: the NAS did answer here, just not about these tasks.
   if (unconfirmed.length) messages.push(msg('taskActionUnconfirmed', String(unconfirmed.length)));
 
@@ -1761,8 +2007,9 @@ async function apiBulkTaskAction(method, ids, epoch = sessionEpoch) {
     affected,
     failed,
     unconfirmed,
+    ...(delivery.unknown ? { deliveryUnknown: unconfirmed.length > 0 } : {}),
     ...(messages.length
-      ? { error: { code: failed[0]?.code ?? 'unknown', message: messages.join('\n') } }
+      ? { error: { code: refusals[0]?.code ?? 'unknown', message: messages.join('\n') } }
       : {}),
   };
 }
@@ -1781,10 +2028,10 @@ function mayBeRunning(result) {
  * Apply a bulk action to whichever tasks currently match `pick`.
  * The id list has to be fetched first — the API has no "all" shorthand.
  */
-async function bulkOverTasks(method, pick, connection) {
+async function bulkOverTasks(method, pick, connection, epoch) {
   // "Delete all" confirmed while looking at the old NAS's list must not clear
   // out the new one — see taskActionEpoch.
-  const epoch = await taskActionEpoch(connection);
+  epoch ??= await taskActionEpoch(connection);
   // Reading the list changes nothing on the NAS, so a failure here is a
   // connection problem and not an action whose result is in doubt.
   const listed = await nothingSent(apiListTasks(epoch));
@@ -1835,11 +2082,14 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
   try {
     // A kept sign-in failure also bars this add path. Even a successful wake
     // would only clear its diagnostic before the delete meets the same block.
+    checkSessionEpoch(epoch);
     if (signInBlocked()) throw blockedSignIn();
-    await wakeNas();
+    await wakeNas({ epoch });
   } catch (err) {
     return { success: false, deliveryUnknown: false,
-      certificateError: err.certificateError === true, error: { message: err.message } };
+      connectionChanged: err.connectionChanged === true,
+      certificateError: err.certificateError === true,
+      permissionMissing: err.permissionMissing === true, error: { message: err.message } };
   }
   let removed;
   try {
@@ -1862,7 +2112,6 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
     // whenever the change was noticed *after* the delete had gone out: the task
     // could already be gone, taking the only copy of this link with it, and the
     // retry let both go. `sent` says the request had left; see checkSessionEpoch.
-    if (err?.authFailed) throw err;
     if (err?.deliveryUnknown !== true && err?.sent !== true) throw err;
     // The delete went out, and the NAS turned it down. The task is standing
     // with its link in it, exactly as when a refusal arrives without any
@@ -1871,9 +2120,12 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
     // as a deletion: the retry announced a task it had not removed.
     if (err?.confirmed === false) throw err;
     return keptLinkOutcome(
-      { success: false, deliveryUnknown: err?.deliveryUnknown === true },
+      { success: false, deliveryUnknown: err?.deliveryUnknown === true,
+        permissionMissing: err?.permissionMissing === true },
       uri, err?.message ?? msg('notifyUncertain'), destination,
-      { resent: false, removed: err?.confirmed === true, cause: causeOf(err) });
+      { resent: false, removed: err?.confirmed === true,
+        cause: causeOf(err) ?? (err?.deliveryUnknown && !err?.nasUnreachable && !err?.connectionChanged
+          ? err.message : null) });
   }
   if (!removed.success) {
     // A delete nobody confirmed may well have gone through, and the task it
@@ -1888,7 +2140,8 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
     const alreadyGone = removed.failed?.some(item => item.code === 404);
     if (!removed.unconfirmed?.length && !alreadyGone) return removed;
     return keptLinkOutcome(removed, uri,
-      removed.error?.message ?? msg('notifyUncertain'), destination, { resent: false });
+      removed.error?.message ?? msg('notifyUncertain'), destination,
+      { resent: false, cause: removed.deliveryUnknown ? removed.error?.message : null });
   }
 
   let outcome, reason, cause = null;
@@ -1898,7 +2151,8 @@ async function apiRetryTask(id, uri, unzipPassword, { epoch = sessionEpoch, dest
     reason = await describeTaskError(outcome.error?.code ?? 'unknown',
       outcome.destinationUsed ?? destination);
   } catch (err) {
-    outcome = { success: false, deliveryUnknown: err.deliveryUnknown === true };
+    outcome = { success: false, deliveryUnknown: err.deliveryUnknown === true,
+      permissionMissing: err.permissionMissing === true };
     reason = err.deliveryUnknown ? msg('notifyUncertain') : err.message;
     // The uncertainty above stands, but it is not all there is to say: where
     // the browser named a cause, that is the one thing the user can act on.
@@ -1951,9 +2205,9 @@ async function keptLinkOutcome(outcome, uri, reason, destination,
   };
 }
 
-/** The browser's own reason for a refusal, where it gave one. */
+/** A specific connection problem to keep alongside delivery uncertainty. */
 function causeOf(err) {
-  return err?.certificateError ? err.message : null;
+  return err?.certificateError || err?.permissionMissing ? err.message : null;
 }
 
 /*
@@ -1981,8 +2235,8 @@ function causeOf(err) {
  * — notification categories included — lives in one place rather than being
  * repeated by every caller that counts something up.
  */
-async function reportAddOutcome(added, failed, reason, extra = {}) {
-  if (added > 0) startDownloadPolling();
+async function reportAddOutcome(added, failed, reason, extra = {}, epoch = sessionEpoch) {
+  if (added > 0) startDownloadPolling(epoch);
 
   // Refused and unconfirmed are not the same thing and are no longer counted as
   // one. A link turned down never reached the NAS; one whose answer went missing
@@ -1994,11 +2248,10 @@ async function reportAddOutcome(added, failed, reason, extra = {}) {
 
   const title = failed === 0 ? msg('extensionName') : msg('notifyPartial');
   // How the reason is said out loud, decided once for both places below.
-  // `certificateReason` marks a reason that *is* the browser's wording for a
-  // refused certificate, and that wording is regularly longer than the one line
-  // a notification shows — so it was the part that got cut off. The reason
-  // handed back to the popup keeps it in full.
-  const announced = extra.certificateReason ? msg('notifyCertificate') : (reason ?? '');
+  // Shorten the selected reason, including when the lookup failed for a
+  // different reason from an earlier add. The popup keeps the full message.
+  const announced = shortReason({ certificateError: extra.certificateReason,
+    permissionMissing: extra.permissionReason, message: reason ?? '' });
   const said  = failed === 0 || refused === 0
     ? msg('notifyBulkAdded', String(added))
     : msg('notifyBulkPartial', String(added), String(refused), announced);
@@ -2026,12 +2279,13 @@ async function reportAddOutcome(added, failed, reason, extra = {}) {
  * again. This took the name as an argument while files were added the same way;
  * links are the only ones left.
  */
-async function summariseAdd(added, failed, lookupRefused = null) {
+async function summariseAdd(added, failed, lookupRefused = null, epoch = sessionEpoch) {
   // Which failure speaks for the whole batch. Not simply the first one any
   // more: a link turned down before anything was sent sorts ahead of a refused
   // sign-in by position alone, and reporting it buried the one thing the user
   // could act on — the notification named a comma while the password was wrong.
-  const first = failed.find(entry => entry.authFailed)
+  const first = failed.find(entry => entry.permissionMissing)
+    ?? failed.find(entry => entry.authFailed)
     ?? failed.find(entry => isConfigError(entry.code))
     ?? failed.find(entry => entry.certificateError && !entry.unknown)
     ?? failed[0];
@@ -2048,9 +2302,10 @@ async function summariseAdd(added, failed, lookupRefused = null) {
     : first.code !== undefined ? await describeTaskError(first.code, first.destinationUsed)
     : first.message;
   // A named API refusal explains the failed lookup without turning a valid
-  // login into a blocked connection. Only authentication and TLS failures do that.
+  // login into a blocked connection. Authentication, TLS and missing browser
+  // permission do block further requests until the user resolves the cause.
   const blockConnection = lookupRefused?.authFailed === true
-    || lookupRefused?.certificateError === true;
+    || lookupRefused?.certificateError === true || lookupRefused?.permissionMissing === true;
 
   return reportAddOutcome(added.length, failed.length, reason, {
     // Counted apart, so the announcement can tell a refusal from a download
@@ -2061,17 +2316,20 @@ async function summariseAdd(added, failed, lookupRefused = null) {
     // reason had nothing to travel with and was dropped.
     namedReason:     !!lookupRefused,
     blockConnection,
+    permissionMissing: lookupRefused?.permissionMissing === true || first?.permissionMissing === true,
     // The announcement says it short; the message handed back keeps the
     // browser's wording, because the popup has room to show all of it.
     certificateReason: lookupRefused
       ? lookupRefused.certificateError === true
       : first?.certificateError === true && !first.unknown,
+    permissionReason: lookupRefused
+      ? lookupRefused.permissionMissing === true : first?.permissionMissing === true,
     failedUrls:      failed.map(f => f.item),
     deliveryUnknown: failed.some(f => f.unknown),
     // A sign-in problem is reported even with notifications switched off.
     configError:     blockConnection || isConfigError(lookupRefused?.code)
-      || failed.some(f => f.authFailed || isConfigError(f.code)),
-  });
+      || failed.some(f => f.authFailed || f.permissionMissing || isConfigError(f.code)),
+  }, epoch);
 }
 
 /**
@@ -2160,7 +2418,9 @@ async function onNas(wanted, epoch, taskKeys) {
       // one: the lookup kept asking for the whole budget and then reported the
       // NAS as unreachable, throwing away the browser's own explanation. What
       // the create did stays unknown either way — that is the caller's to keep.
-      if (err?.authFailed || err?.certificateError) return { found, answered, refusal: err };
+      if (err?.authFailed || err?.certificateError || err?.permissionMissing) {
+        return { found, answered, refusal: err };
+      }
       // Not answering this time. There may still be room for another ask.
     }
     if (found.size === looking.size || Date.now() + CONFIRM_GAP_MS >= deadline) {
@@ -2311,6 +2571,7 @@ async function addBatchWithDetail(batch, unzipPassword, added, failed, budget, e
     for (const item of batch) failed.push({
       item, unknown: err.deliveryUnknown === true, authFailed: err.authFailed,
       certificateError: err.certificateError === true,
+      permissionMissing: err.permissionMissing === true,
       message: err.message,
     });
     return;
@@ -2336,15 +2597,17 @@ async function addBatchWithDetail(batch, unzipPassword, added, failed, budget, e
     } catch (err) {
       failed.push({ item, unknown: err.deliveryUnknown === true,
         authFailed: err.authFailed, certificateError: err.certificateError === true,
+        permissionMissing: err.permissionMissing === true,
         message: err.message });
       // Same reason as the loop over batches: the next sign-in meets the same
       // password. Asking one link at a time turned one refusal into fifty.
       // A certificate that blocked preparation is just as final; no create
       // was sent, so the remaining links need neither a retry nor a lookup.
-      if (err.authFailed || (err.certificateError && err.deliveryUnknown !== true)) {
+      if (err.authFailed || err.permissionMissing || (err.certificateError && err.deliveryUnknown !== true)) {
         for (const rest of batch.slice(i + 1)) {
           failed.push({ item: rest, authFailed: err.authFailed,
-            certificateError: err.certificateError === true, message: err.message });
+            certificateError: err.certificateError === true,
+            permissionMissing: err.permissionMissing === true, message: err.message });
         }
         return;
       }
@@ -2355,8 +2618,8 @@ async function addBatchWithDetail(batch, unzipPassword, added, failed, budget, e
 async function addDownloadTasksBulk(urls, unzipPassword, { announce = false, epoch, connection } = {}) {
   if (await connectionChangedSince(epoch, connection)) {
     return reportAddOutcome(0, urls.length, msg('addConnectionChanged'), {
-      failedUrls: [...urls], deliveryUnknown: false, configError: false,
-    });
+      failedUrls: [...urls], connectionChanged: true, deliveryUnknown: false, configError: false,
+    }, epoch);
   }
   if (!await requireSetup()) {
     return { success: false, setupRequired: true, error: { message: msg('setupRequired') } };
@@ -2377,24 +2640,30 @@ async function addDownloadTasksBulk(urls, unzipPassword, { announce = false, epo
     else sendable.push(url);
   }
   // Nothing left worth waking the NAS for.
-  if (sendable.length === 0) return summariseAdd(added, failed);
+  if (sendable.length === 0) return summariseAdd(added, failed, null, epoch);
 
   // Nothing has been sent yet, so a NAS that cannot be woken is a clean
   // failure: every link stays in the list and none of them was half-added.
   try {
     // A saved sign-in failure already prevents this add. A successful wake
     // would clear its connection panel without allowing the blocked login.
+    checkSessionEpoch(epoch);
     if (signInBlocked()) throw blockedSignIn();
-    await wakeNas({ announce });
+    await wakeNas({ announce, epoch });
   } catch (err) {
-    return reportAddOutcome(0, urls.length, err.message, {
+    return reportAddOutcome(0, urls.length,
+      err.connectionChanged ? msg('addConnectionChanged') : err.message, {
       // The message handed back keeps the browser's wording for the popup; the
       // announcement takes the short form — see shortReason. Without this the
       // whole reason went into a notification again by this one route, and was
       // cut off there exactly as before.
       certificateReason: err.certificateError === true,
-      failedUrls: [...urls], deliveryUnknown: false, configError: err.authFailed === true,
-    });
+      permissionReason: err.permissionMissing === true,
+      permissionMissing: err.permissionMissing === true,
+      connectionChanged: err.connectionChanged === true,
+      failedUrls: [...urls], deliveryUnknown: false,
+      configError: err.authFailed === true || err.permissionMissing === true,
+    }, epoch);
   }
 
   // Shared across every batch, so a long list cannot multiply the follow-up
@@ -2410,12 +2679,13 @@ async function addDownloadTasksBulk(urls, unzipPassword, { announce = false, epo
     // attempt against an account DSM is entitled to lock. The rest are reported
     // without being sent — which is what they are.
     // The same applies when the certificate refused discovery or sign-in.
-    const refused = failed.find(entry => entry.authFailed
+    const refused = failed.find(entry => entry.authFailed || entry.permissionMissing
       || (entry.certificateError && !entry.unknown));
     if (!refused) continue;
     for (const item of batches.slice(i + 1).flat()) {
       failed.push({ item, authFailed: refused.authFailed,
-        certificateError: refused.certificateError === true, message: refused.message });
+        certificateError: refused.certificateError === true,
+        permissionMissing: refused.permissionMissing === true, message: refused.message });
     }
     break;
   }
@@ -2423,7 +2693,7 @@ async function addDownloadTasksBulk(urls, unzipPassword, { announce = false, epo
   // Whatever went unanswered is settled against the task list — see onNas.
   const lookupRefused = await settleUncertain(added, failed, epoch, LINK_MATCH);
 
-  return summariseAdd(added, failed, lookupRefused);
+  return summariseAdd(added, failed, lookupRefused, epoch);
 }
 
 /**
@@ -2478,15 +2748,25 @@ let newestListAnswered = 0;
 let connectTestsStarted = 0;
 let newestConnectTestAnswered = 0;
 
-async function apiTestConnection(otpCode) {
+async function apiTestConnection(otpCode, expected = {}) {
   await stateReady;
   await settingsWriteQueue;
   const epoch = sessionEpoch;
-  // Who this attempt is, so a late answer can be placed in time: the connection
-  // it was aimed at, the sign-ins already accepted when it set off, and its own
-  // place in the queue of tests.
+  // Who this attempt is, before any snapshot read can be overtaken by another
+  // test: its connection, accepted sign-ins and position among test requests.
   const attempt = { epoch, startedAt: signInsAccepted, seq: ++connectTestsStarted };
   const settings = await getSettings();
+  const version = expected.connectionVersion === undefined ? undefined : await readConnectionVersion();
+  // The requesting view may still display another NAS or an older password.
+  // Reject its snapshot before discovery/login and leave current results alone.
+  if (epoch !== sessionEpoch
+      || (expected.connection !== undefined && expected.connection !== connectionKey(settings))
+      || (expected.connectionVersion !== undefined && expected.connectionVersion !== version)
+      || (expected.connectionSnapshot !== undefined
+        && CONNECTION_KEYS.some(key => expected.connectionSnapshot?.[key] !== settings[key]))) {
+    return { success: false, connectionChanged: true, outdated: true,
+      error: { message: msg('connectionFailed') } };
+  }
   try {
     checkSessionEpoch(epoch);
     const apis = await discoverApiPaths(settings.protocol, settings.host, settings.port);
@@ -2495,7 +2775,7 @@ async function apiTestConnection(otpCode) {
     // An explicit code bypasses the shared-login cache: the user just typed
     // it, so this attempt must actually carry it.
     if (otpCode) {
-      const result = await login(settings, otpCode, apis);
+      const result = await login(settings, otpCode, apis, { epoch });
       await acceptLogin(result, settings, apis, epoch);
     } else {
       // Reuse an existing login attempt, including one started by an add in a
@@ -2522,6 +2802,7 @@ async function apiTestConnection(otpCode) {
       // Carried so the announcement can be kept short — see shortReason. The
       // message itself stays as it is: the popup has room for all of it.
       certificateError: err.certificateError === true,
+      permissionMissing: err.permissionMissing === true,
       error: { message: err.message },
     }, attempt);
   }
@@ -2594,7 +2875,23 @@ function outdatedAttempt(attempt = {}, { success = false, recorded = false } = {
  * A connection that changed underneath is not kept. The details it failed
  * against are gone, and the reason would be read against the new ones.
  */
-async function rememberConnectOutcome(outcome, attempt) {
+function rememberConnectOutcome(outcome, attempt) {
+  // Serialize the outcome and its revision with logins and settings changes.
+  // A permission response shares the grant listener's queue too, so a restored
+  // grant cannot be followed by this older refusal becoming a permanent block.
+  return queueSettingsWrite(async () => {
+    if (outcome.permissionMissing) {
+      const settings = await getSettings();
+      if (await hasCurrentPermissions(hostPermissionForUrl(
+        buildConnectionUrl(settings.protocol, settings.host, settings.port)))) {
+        return { ...outcome, outdated: true };
+      }
+    }
+    return recordConnectOutcome(outcome, attempt);
+  });
+}
+
+async function recordConnectOutcome(outcome, attempt) {
   // An answer from an attempt that has been overtaken says nothing about the
   // connection configured now. It is not stored and not announced — and it does
   // not clear what a newer attempt has already left here. A stale refusal used
@@ -2609,6 +2906,13 @@ async function rememberConnectOutcome(outcome, attempt) {
   // been asked about again since, and used to be handed back as the current one.
   const { success } = outcome;
   if (outdatedAttempt(attempt, { success })) return { ...outcome, outdated: true };
+  // Unlike connectionVersion, this also advances for refusals. A success can
+  // already be on its way to one view when another view's newer test fails.
+  // Persisted rather than starting over when Firefox restarts the event page.
+  const { connectionTestRevision } = await browser.storage.session.get({ connectionTestRevision: 0 });
+  if (outdatedAttempt(attempt, { success })) return { ...outcome, outdated: true };
+  const testRevision = connectionTestRevision + 1;
+  const recordedOutcome = { ...outcome, testRevision };
   if (attempt?.seq !== undefined) newestConnectTestAnswered = attempt.seq;
   // Every look from here on is the second kind: this attempt is now itself the
   // newest to have answered, so only a higher number is somebody else.
@@ -2621,10 +2925,12 @@ async function rememberConnectOutcome(outcome, attempt) {
     // success overtaken while it was clearing the record was reported as the
     // connection's current state.
     if (outdatedAttempt(attempt, settled)) return { ...outcome, outdated: true };
-    return outcome;
+    await browser.storage.session.set({ connectionTestRevision: testRevision });
+    if (outdatedAttempt(attempt, settled)) return { ...outcome, outdated: true };
+    return recordedOutcome;
   }
-  cachedConnectFailure = { ...outcome, at: Date.now() };
-  await browser.storage.session.set({ lastConnect: cachedConnectFailure });
+  cachedConnectFailure = { ...recordedOutcome, at: Date.now() };
+  await browser.storage.session.set({ lastConnect: cachedConnectFailure, connectionTestRevision: testRevision });
   // Asked again, because that await is a window of its own: signing out during
   // it left the announcement to arrive about a connection nobody is using, and
   // a newer test answering during it made this the older of two refusals — it
@@ -2634,11 +2940,10 @@ async function rememberConnectOutcome(outcome, attempt) {
   // notify(). Being asked for a code is not a refusal: DSM asks that of a
   // correct password too, and the popup puts the prompt back up on its own.
   if (!outcome.otpRequired) {
-    notifyAlways(msg('notifyError'), outcome.certificateError
-      ? msg('notifyCertificate')
-      : (outcome.error?.message ?? msg('connectionFailed')));
+    notifyAlways(msg('notifyError'), shortReason({ ...outcome, message: outcome.error?.message },
+      msg('connectionFailed')));
   }
-  return outcome;
+  return recordedOutcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -2688,8 +2993,10 @@ const WAKE_SETTLE_MS = 2000;
  * broken. Only sent once the first probe has actually failed, so an awake NAS
  * stays silent.
  */
-async function wakeNas({ announce = false } = {}) {
+async function wakeNas({ announce = false, epoch = sessionEpoch } = {}) {
+  checkSessionEpoch(epoch);
   const { protocol, host, port } = await getSettings();
+  checkSessionEpoch(epoch);
   const url = `${buildBaseUrl(protocol, host, port)}/query.cgi` +
     '?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth';
 
@@ -2700,9 +3007,13 @@ async function wakeNas({ announce = false } = {}) {
     try {
       // holdBody: false — the answer's content is of no interest here, only
       // that one arrived, so nothing would ever read it and release the hold.
-      await fetchOnce(url, {}, WAKE_PROBE_TIMEOUT_MS, { holdBody: false });
+      await fetchOnce(url, {}, WAKE_PROBE_TIMEOUT_MS, { holdBody: false, epoch });
+      checkSessionEpoch(epoch);
       break;
     } catch (err) {
+      // A late refusal belongs to the old NAS too. Stop before classifying it
+      // or waiting for another probe, while this add still owns the queue.
+      checkSessionEpoch(epoch);
       // It answered, just not with a 200 — waiting will not change that.
       if (!err.nasUnreachable) throw err;
       // Only start another probe if there is room for it to finish. Checking
@@ -2713,10 +3024,12 @@ async function wakeNas({ announce = false } = {}) {
       if (!hadToWait && announce) notify('added', msg('extensionName'), msg('notifyWaking'));
       hadToWait = true;
       await sleep(WAKE_GAP_MS);
+      checkSessionEpoch(epoch);
     }
   }
 
   if (hadToWait) await sleep(WAKE_SETTLE_MS);
+  checkSessionEpoch(epoch);
 }
 
 /**
@@ -2764,12 +3077,26 @@ function whileResuming(work) {
  * watch again; not watching one that is running costs the user the very notice
  * they were waiting for.
  *
- * A refused sign-in and a changed connection never reached the task, so neither
- * starts anything.
+ * A refused initial sign-in never reached the task. A replacement sign-in may
+ * follow an unanswered resume; that earlier attempt still needs a watch.
  */
-function watchIfPerhapsResumed(err) {
-  if (err?.connectionChanged || err?.authFailed) return;
-  if (err?.deliveryUnknown) startDownloadPolling();
+function watchIfPerhapsResumed(err, epoch) {
+  if (err?.connectionChanged || (err?.authFailed && !err?.deliveryUnknown)) return;
+  if (err?.deliveryUnknown) startDownloadPolling(epoch);
+}
+
+/** Keep both resume follow-ups bound while replies and error descriptions wait. */
+function resumeWithWatch(connection, run) {
+  return whileResuming(taskActionEpoch(connection).then(async epoch => {
+    try {
+      const result = await run(epoch);
+      if (mayBeRunning(result)) startDownloadPolling(epoch);
+      return result;
+    } catch (err) {
+      watchIfPerhapsResumed(err, epoch);
+      throw err;
+    }
+  }));
 }
 /** Tail of the chain; the next add hangs off it. */
 let addQueue = Promise.resolve();
@@ -2917,13 +3244,20 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
   // user to go and check for a download that was never sent.
   try {
     // Keep the same pre-wake guard as the bulk path, including its diagnostic.
+    checkSessionEpoch(epoch);
     if (signInBlocked()) throw blockedSignIn();
-    await wakeNas({ announce });
+    await wakeNas({ announce, epoch });
   } catch (err) {
-    if (err.authFailed) notifyAlways(msg('notifyError'), shortReason(err));
+    if (err.connectionChanged) {
+      notify('failed', msg('notifyFailed'), msg('addConnectionChanged'));
+      return { success: false, connectionChanged: true, deliveryUnknown: false,
+        error: { message: msg('addConnectionChanged') } };
+    }
+    if (err.authFailed || err.permissionMissing) notifyAlways(msg('notifyError'), shortReason(err));
     else notify('failed', msg('notifyError'), shortReason(err));
     return { success: false, deliveryUnknown: false,
-      certificateError: err.certificateError === true, error: { message: err.message } };
+      certificateError: err.certificateError === true,
+      permissionMissing: err.permissionMissing === true, error: { message: err.message } };
   }
 
   try {
@@ -2931,7 +3265,7 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
     if (result.success) {
       notify('added', msg('extensionName'), msg('notifyAdded'));
       // Also refreshes the badge right away via its immediate first tick.
-      startDownloadPolling();
+      startDownloadPolling(epoch);
     } else {
       const code = result.error?.code ?? 'unknown';
       const body = await describeTaskError(code, result.destinationUsed);
@@ -2942,7 +3276,7 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
     return result;
   } catch (err) {
     // A sign-in failure gets through either way — see notify() above.
-    if (err.authFailed) {
+    if (err.authFailed || (err.permissionMissing && !err.deliveryUnknown)) {
       notifyAlways(msg('notifyError'), shortReason(err));
     } else if (err.connectionChanged) {
       // Changed while the NAS was being woken; the create was never sent.
@@ -2956,7 +3290,7 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
       const { found, answered, refusal } = await onNas([LINK_MATCH.key(url)], epoch, LINK_MATCH.taskKeys);
       if (found.size > 0) {
         notify('added', msg('extensionName'), msg('notifyAdded'));
-        startDownloadPolling();
+        startDownloadPolling(epoch);
         return { success: true, deliveryUnknown: false };
       }
       // The lookup could not get in. That reason is worth more to the user
@@ -2965,13 +3299,14 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
         // A page click has no popup displaying deliveryUnknown. Keep that
         // uncertainty in the title, visible even when the reason is cut off.
         const title = msg('notifyAddUnconfirmed');
-        if (refusal.authFailed || refusal.certificateError || isConfigError(refusal.code)) {
+        if (refusal.authFailed || refusal.certificateError || refusal.permissionMissing || isConfigError(refusal.code)) {
           notifyAlways(title, shortReason(refusal));
         } else {
           notify('failed', title, shortReason(refusal));
         }
         return { success: false, deliveryUnknown: true,
           certificateError: refusal.certificateError === true,
+          permissionMissing: refusal.permissionMissing === true,
           error: { code: refusal.code, message: refusal.message } };
       }
       // Same three outcomes as the bulk path — see settleUncertain. Only the
@@ -2987,6 +3322,7 @@ async function addDownloadTask(url, { announce = false, epoch } = {}) {
       success: false,
       deliveryUnknown: err.deliveryUnknown === true,
       certificateError: err.certificateError === true,
+      permissionMissing: err.permissionMissing === true,
       error: { message: err.message },
     };
   }
@@ -3085,7 +3421,10 @@ const POLL_ALARM = 'download-station-poll';
  * Begin (or restart) the poll loop and run one tick straight away, so the
  * badge reflects the new task immediately instead of a minute later.
  */
-function startDownloadPolling() {
+function startDownloadPolling(epoch) {
+  // A confirmed create stays successful after a NAS switch, but its follow-up
+  // belongs to the old connection. Leave the new watch and session untouched.
+  if (epoch !== sessionEpoch) return;
   setPollFailures(0); // a fresh start deserves a fresh set of attempts
   browser.alarms.create(POLL_ALARM, { periodInMinutes: 1 });
   // Fresh: a poll already running asked before whatever called this.
@@ -3119,16 +3458,20 @@ async function resumeWatch(tasks, epoch) {
 }
 
 /**
- * True while the popup is open. Tracked through a port so it clears itself
- * when the popup is dismissed — used to avoid logging out from under a popup
- * that is still refreshing.
+ * True while any popup or extension tab is open. Each view owns a port so
+ * closing one cannot log out another view that is still refreshing.
  */
 let popupOpen = false;
+const popupPorts = new Set();
 
 browser.runtime.onConnect.addListener((port) => {
   if (port.name !== 'popup') return;
+  popupPorts.add(port);
   popupOpen = true;
-  port.onDisconnect.addListener(() => { popupOpen = false; });
+  port.onDisconnect.addListener(() => {
+    popupPorts.delete(port);
+    popupOpen = popupPorts.size > 0;
+  });
 });
 
 /**
@@ -3335,7 +3678,7 @@ async function runPoll() {
     // downloads that were still running, and they finished with no notification
     // and no badge. The alarm stays: while the block holds, a tick costs nothing
     // because it never reaches the network.
-    if (err?.connectBlocked) return;
+    if (err?.connectBlocked || err?.permissionMissing) return;
     if (err?.authFailed) {
       browser.alarms.clear(POLL_ALARM);
       clearWatched();
@@ -3392,25 +3735,74 @@ function extractUris(text) {
 // explicitly — returning early on a real link would leave it hidden from a
 // previous non-URL selection.
 browser.contextMenus.onShown.addListener(async (info) => {
-  const visible = !!info.linkUrl || extractUris(info.selectionText).length > 0;
+  // Before the click, Firefox withholds linkUrl/selectionText without access
+  // to the source page. Context types remain available even without that
+  // permission. Validate a withheld selection when the user clicks instead.
+  const contexts = info.contexts ?? [];
+  const visible = contexts.includes('link') || !!info.linkUrl
+    || (info.selectionText === undefined
+      ? contexts.includes('selection')
+      : extractUris(info.selectionText).length > 0);
   browser.contextMenus.update('download-station-add', { visible });
   browser.contextMenus.refresh();
 });
 
+/** A queued add's permission refusal is useful only for the current connection. */
+async function contextMenuNeedsNasAccess(epoch) {
+  for (;;) {
+    if (await connectionChangedSince(epoch)) return false;
+    const generation = permissionGeneration;
+    const settings = await getSettings();
+    const granted = await hasCurrentPermissions(hostPermissionForUrl(
+      buildConnectionUrl(settings.protocol, settings.host, settings.port)));
+    if (await connectionChangedSince(epoch)) return false;
+    if (generation === permissionGeneration) return !granted;
+  }
+}
+
+/** Bring an explicitly requested download's missing NAS access into view. */
+async function offerNasAccessFromContextMenu(result, epoch, windowId) {
+  // A kept sign-in failure can stop the add before it reaches the permission
+  // check. Inspect today's grant after any failure of this connection too.
+  if (result?.success !== false || result.setupRequired || result.connectionChanged) return;
+  try {
+    if (!await contextMenuNeedsNasAccess(epoch)) return;
+    const targetWindow = Number.isInteger(windowId) ? { windowId } : {};
+    try {
+      await browser.action.openPopup(targetWindow);
+    } catch {
+      // Firefox 142–148 requires a user gesture for openPopup. The awaits above
+      // have consumed it, so use the same interface in an ordinary extension
+      // tab. Its startup permission check opens Settings → Connection in both.
+      if (!await contextMenuNeedsNasAccess(epoch)) return;
+      await browser.tabs.create({
+        url: browser.runtime.getURL('popup/popup.html'),
+        active: true,
+        ...targetWindow,
+      });
+    }
+  } catch {
+    // The add already reported the missing grant in a notification. Keep that
+    // fallback if Firefox cannot open either surface (e.g. the window closed).
+  }
+}
+
 // Queued, not refused: two right-clicks in a row are two different links, and
 // the second must not be dropped because the first is still waiting for a NAS
 // to wake up. `announce` because a right-click has no window to report into.
-browser.contextMenus.onClicked.addListener((info) => {
-  if (info.linkUrl) {
-    enqueueAdd(epoch => addDownloadTask(info.linkUrl, { announce: true, epoch }));
-    return;
-  }
-  const uris = extractUris(info.selectionText);
-  if (uris.length === 1) {
-    enqueueAdd(epoch => addDownloadTask(uris[0], { announce: true, epoch }));
-  } else if (uris.length > 1) {
-    enqueueAdd(epoch => addDownloadTasksBulk(uris, undefined, { announce: true, epoch }));
-  }
+browser.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== 'download-station-add') return;
+  const uris = info.linkUrl ? [info.linkUrl] : extractUris(info.selectionText);
+  if (uris.length === 0) return;
+  return enqueueAdd(async epoch => {
+    const result = uris.length === 1
+      ? await addDownloadTask(uris[0], { announce: true, epoch })
+      : await addDownloadTasksBulk(uris, undefined, { announce: true, epoch });
+    await offerNasAccessFromContextMenu(result, epoch, tab?.windowId);
+    return result;
+  }).catch(err => {
+    notify('failed', msg('notifyFailed'), err?.message ?? String(err));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3430,8 +3822,9 @@ browser.contextMenus.onClicked.addListener((info) => {
  * and keep the plain reason; pausing, resuming or deleting says the result is
  * unconfirmed; only adding talks about a download having arrived.
  *
- * A refused sign-in never reached the task API, so nothing was sent and there
- * is nothing uncertain about it — its own reason stands.
+ * A refused initial sign-in never reached the task API, so its own reason
+ * stands. A replacement login after an unanswered task write cannot settle
+ * that earlier write; both the uncertainty and the new refusal are retained.
  */
 function respondWith(promise, sendResponse, uncertain) {
   promise
@@ -3443,6 +3836,7 @@ function respondWith(promise, sendResponse, uncertain) {
       otpWrong:    err?.otpWrong === true,
       connectionChanged: err?.connectionChanged === true,
       connectBlocked: err?.connectBlocked === true,
+      permissionMissing: err?.permissionMissing === true,
       deliveryUnknown: err?.deliveryUnknown === true,
       error: {
         // The uncertainty stands — but where the browser named a cause, that
@@ -3450,8 +3844,10 @@ function respondWith(promise, sendResponse, uncertain) {
         // it. Pausing against a refused certificate used to reach the popup as
         // nothing but "the result is unconfirmed", with the one thing the user
         // could act on dropped on the way.
-        message: uncertain && err?.deliveryUnknown && !err?.authFailed
-          ? [msg(uncertain), err?.certificateError ? err.message : null].filter(Boolean).join(' ')
+        message: uncertain && err?.deliveryUnknown && (!err?.authFailed || err?.sent)
+          ? [msg(uncertain), causeOf(err)
+            ?? (err?.sent && !err?.nasUnreachable && !err?.connectionChanged ? err.message : null)]
+            .filter(Boolean).join(' ')
           : (err?.message ?? String(err)),
       },
     }));
@@ -3459,10 +3855,52 @@ function respondWith(promise, sendResponse, uncertain) {
 
 browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   switch (message.action) {
+    case ACTIONS.CONNECTION_DRAFT:
+    case ACTIONS.DESTINATION_DRAFT: {
+      const ownView = typeof _sender.url === 'string'
+        && _sender.url.startsWith(browser.runtime.getURL(''));
+      const destination = message.action === ACTIONS.DESTINATION_DRAFT;
+      const valid = message.operation === 'read'
+        || (message.operation === 'clear' && Number.isSafeInteger(message.revision) && message.revision >= 0)
+        || (message.operation === 'write' && (destination ? typeof message.draft === 'string'
+          : message.draft && CONNECTION_KEYS.every(key => typeof message.draft[key] === 'string')
+            && Object.keys(message.draft).every(key => CONNECTION_KEYS.includes(key))));
+      if (!ownView || !valid) {
+        sendResponse({ ok: false, error: { message: msg('extensionError') } });
+        return false;
+      }
+      respondWith(destination ? updateDestinationDraft(message) : updateConnectionDraft(message), sendResponse);
+      return true;
+    }
+
+    case ACTIONS.QUEUE_MAGNET_PREFERENCE:
+      // Only an extension view may submit this write. The webpage content
+      // script gets a read-only capture query, never a preference setter.
+      if (typeof _sender.url !== 'string' || !_sender.url.startsWith(browser.runtime.getURL(''))
+          || typeof message.enabled !== 'boolean'
+          || Object.keys(message).some(key => key !== 'action' && key !== 'enabled')) {
+        sendResponse({ accepted: false, error: { message: msg('extensionError') } });
+      } else {
+        sendResponse(queueMagnetPreference(message.enabled));
+      }
+      return false;
+
+    case ACTIONS.GET_MAGNET_CAPTURE_STATE:
+      respondWith(getMagnetCaptureState(), sendResponse);
+      return true;
+
     // Like the context menu: a click on a page, one link, no window of its own.
     case ACTIONS.MAGNET_CLICKED:
       respondWith(
-        enqueueAdd(epoch => addDownloadTask(message.url, { announce: true, epoch })),
+        enqueueAdd(async epoch => {
+          // A click may reach us before its tab receives a revocation notice,
+          // or wait in this queue while capture is turned off. No notification
+          // is needed for capture that is currently inactive.
+          if (!(await getMagnetCaptureState()).enabled) {
+            return { success: false, magnetCaptureDisabled: true };
+          }
+          return addDownloadTask(message.url, { announce: true, epoch });
+        }),
         sendResponse, 'notifyUncertain',
       );
       return true;
@@ -3496,7 +3934,7 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     case ACTIONS.TEST_CONNECTION:
-      respondWith(apiTestConnection(message.otpCode), sendResponse);
+      respondWith(apiTestConnection(message.otpCode, message), sendResponse);
       return true;
 
     // Every action on listed tasks first checks that the list came from the
@@ -3508,13 +3946,8 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
 
     case ACTIONS.RESUME_TASK:
-      respondWith(whileResuming(taskActionEpoch(message.connection)
-        .then(epoch => apiBulkTaskAction('resume', [message.id], epoch))
-        .then(r => {
-          if (mayBeRunning(r)) startDownloadPolling();
-          return r;
-        })
-        .catch((err) => { watchIfPerhapsResumed(err); throw err; })),
+      respondWith(resumeWithWatch(message.connection,
+        epoch => apiBulkTaskAction('resume', [message.id], epoch)),
         sendResponse, 'actionResultUnknown');
       return true;
 
@@ -3528,11 +3961,11 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       respondWith(
         taskActionEpoch(message.connection)
           .then(epoch => exclusiveAdd(() => apiRetryTask(message.id, message.uri, message.unzipPassword,
-            { epoch, destination: message.destination })))
-          .then((r) => {
-            if (r.success) startDownloadPolling();
-            return r;
-          }),
+            { epoch, destination: message.destination }))
+            .then((r) => {
+              if (r.success) startDownloadPolling(epoch);
+              return r;
+            })),
         sendResponse, 'notifyUncertain',
       );
       return true;
@@ -3546,12 +3979,8 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     case ACTIONS.RESUME_ALL:
       respondWith(
-        whileResuming(bulkOverTasks('resume', t => canResumeTask(t.status), message.connection)
-          .then((r) => {
-            if (mayBeRunning(r)) startDownloadPolling();
-            return r;
-          })
-          .catch((err) => { watchIfPerhapsResumed(err); throw err; })),
+        resumeWithWatch(message.connection,
+          epoch => bulkOverTasks('resume', t => canResumeTask(t.status), message.connection, epoch)),
         sendResponse, 'actionResultUnknown',
       );
       return true;
@@ -3576,10 +4005,8 @@ browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return true;
 
     case ACTIONS.GET_STATUS:
-      // Wait for cachedSid to be restored from storage.session before replying
-      stateReady.then(() => {
-        sendResponse({ connected: cachedSid !== null });
-      });
+      // A cached NAS session cannot bypass a Firefox permission the user revoked.
+      respondWith(getConnectionStatus(), sendResponse);
       return true; // keep message channel open for async response
 
     case ACTIONS.SETTINGS_UPDATED: {

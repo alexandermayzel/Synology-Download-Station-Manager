@@ -1,4 +1,15 @@
 {
+  "magnetSaveFailedTitle": {"message":"Не удалось сохранить настройку magnet-ссылок"},
+  "taskActionPreviousConnection": {"message":"Результат для предыдущего подключения к NAS ($ADDRESS$): $REASON$ Перед повторной попыткой проверьте задачи на этом NAS.","description":"Result for an action started on an earlier NAS connection.","placeholders":{"ADDRESS":{"content":"$1","example":"https://nas.example:5001"},"REASON":{"content":"$2","example":"The action result could not be confirmed."}}},
+  "errNasPermission": {"message":"Firefox не разрешил доступ к $ADDRESS$. Он нужен расширению для входа и управления загрузками. Разрешите доступ к NAS в разделе «Настройки → Подключение».","description":"Firefox host permission is missing; $ADDRESS$ is the NAS origin.","placeholders":{"ADDRESS":{"content":"$1","example":"https://192.168.1.2:5001"}}},
+  "magnetPermissionHint": {"message":"Чтобы распознавать нажатия на magnet-ссылки на любых сайтах и отправлять эти ссылки на ваш NAS, расширению нужен доступ к сайтам HTTP и HTTPS. Эта функция необязательна. Ваш выбор сохраняется; перехват включится автоматически, когда Firefox разрешит доступ. Возможно, потребуется перезагрузить страницы, которые были открыты до предоставления доступа.","description":"Persistent explanation next to the optional magnet-capture switch, visible before requesting website access."},
+  "notifyNasPermission": {"message":"Для входа и загрузок нет доступа к NAS. Разрешите его в разделе «Настройки → Подключение».","description":"Short missing-NAS-permission notification: explains the purpose and points to the grant control. No variable address, to keep the notification brief."},
+  "notConnected": {"message":"Нет подключения"},
+  "allowNasAccess": {"message":"Разрешить доступ к NAS"},
+  "nasPermissionTitle": {"message":"Доступ к NAS не разрешён"},
+  "errMagnetPermission": {"message":"Ваш выбор сохранён, но автоматический перехват magnet-ссылок неактивен, поскольку Firefox не разрешил доступ к сайтам HTTP и HTTPS. Разрешите доступ кнопкой ниже, чтобы активировать перехват."},
+  "magnetPermissionTitle": {"message":"Перехват magnet-ссылок неактивен"},
+  "allowMagnetPermission": {"message":"Разрешить доступ к сайтам"},
   "htmlLang": { "message": "ru" },
   "portInvalid": { "message": "Порт должен быть целым числом от 1 до 65535." },
   "protocolInsecure": { "message": "HTTP передаёт пароль и идентификатор сессии в открытом виде. Рекомендуется использовать HTTPS, чтобы данные передавались в зашифрованном виде." },
@@ -132,6 +143,7 @@
   "sortName": { "message": "Имени" },
   "sortProgress": { "message": "Прогрессу" },
   "sortSize": { "message": "Размеру" },
+  "sortDirection": {"message":"Направление сортировки"},
   "sortDescending": { "message": "По убыванию" },
   "sortAscending": { "message": "По возрастанию" },
 
